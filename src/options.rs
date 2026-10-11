@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use crate::baseline;
 use crate::cocomo;
 use crate::gate;
 use crate::generated;
@@ -64,6 +65,10 @@ pub struct Options {
     pub format: Format,
     /// Repository config the run started from, when one was found.
     pub config: Option<PathBuf>,
+    /// Write this snapshot of the business files after scanning.
+    pub snapshot: Option<PathBuf>,
+    /// Compare the scan with this previously written snapshot.
+    pub baseline: Option<baseline::Snapshot>,
     /// 0 means "use every available core".
     pub jobs: usize,
 }
@@ -98,6 +103,8 @@ impl Default for Options {
             ci: false,
             format: Format::Text,
             config: None,
+            snapshot: None,
+            baseline: None,
             jobs: 0,
         }
     }

@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::baseline;
 use crate::cocomo;
 use crate::options::{Format, Options};
 use crate::scan::{self, Entry, FileFacts, Progress, Totals};
@@ -49,6 +50,8 @@ pub struct Report {
     pub function_count: usize,
     /// Cost estimate for the business code lines, when requested.
     pub cocomo: Option<CocomoRow>,
+    /// Comparison with a saved snapshot, when --baseline asked for one.
+    pub diff: Option<baseline::Diff>,
 }
 
 impl Report {
@@ -210,7 +213,7 @@ pub fn scan(
         None
     };
 
-    Report {
+    let mut report = Report {
         roots: roots.to_vec(),
         options: options.clone(),
         entries,
@@ -223,7 +226,13 @@ pub fn scan(
         functions,
         function_count,
         cocomo: cocomo_row,
-    }
+        diff: None,
+    };
+    report.diff = options
+        .baseline
+        .as_ref()
+        .map(|snapshot| baseline::Diff::of(&report, snapshot, cwd));
+    report
 }
 
 /// 1234567 -> 1,234,567, matching Python string formatting.
@@ -283,6 +292,59 @@ fn table_row(label: &str, values: &[u32], width: usize) -> String {
 }
 
 /// Render a report in the requested format.
+/// "+86", "-1,204" or "0", for a change against the baseline.
+fn delta_plain(value: i64) -> String {
+    if value == 0 {
+        return "0".to_string();
+    }
+    format!(
+        "{}{}",
+        if value > 0 { "+" } else { "-" },
+        group(value.unsigned_abs())
+    )
+}
+
+/// `delta_plain` right aligned, for a report column.
+fn delta_cell(value: i64) -> String {
+    format!("{:>10}", delta_plain(value))
+}
+
+/// The biggest code moves, biggest first.
+fn diff_movers(diff: &baseline::Diff, limit: usize) -> Vec<(String, i64)> {
+    diff.files
+        .iter()
+        .take(limit)
+        .map(|delta| (delta.path.clone(), delta.code_delta()))
+        .collect()
+}
+
+/// The "what changed" block the text report prints for `--baseline`.
+fn render_baseline_text(diff: &baseline::Diff, cwd: &Path, out: &mut Vec<String>) {
+    out.push(format!(
+        "Since baseline {} ({} added, {} deleted, {} changed)",
+        scan::relative(&diff.path, cwd),
+        group(diff.added() as u32),
+        group(diff.deleted() as u32),
+        group(diff.changed() as u32)
+    ));
+    for (label, before, after) in diff.counters() {
+        out.push(
+            pad(&format!("  {}", label), 22)
+                + &number(after, 12)
+                + "  "
+                + &delta_cell(after as i64 - before as i64),
+        );
+    }
+    let movers = diff_movers(diff, 5);
+    if !movers.is_empty() {
+        out.push("  Largest moves".to_string());
+        for (path, delta) in movers {
+            out.push(format!("    {:>10}  {}", delta_plain(delta), path));
+        }
+    }
+    out.push(String::new());
+}
+
 pub fn render(report: &Report, cwd: &Path) -> String {
     render_with(report, &report.options, cwd)
 }
@@ -318,11 +380,24 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         for title in &titles {
             head.push_str(&format!("{:>10}", title));
         }
+        let diffs = report.diff.as_ref();
+        if diffs.is_some() {
+            head.push_str(&format!("{:>10}", "Delta"));
+        }
         out.push(head);
-        out.push("-".repeat(width + 10 * titles.len()));
+        let mut rule = width + 10 * titles.len();
+        if diffs.is_some() {
+            rule += 10;
+        }
+        out.push("-".repeat(rule));
         for (label, entry) in labels.iter().zip(ordered.iter()) {
             let values: Vec<u32> = columns.iter().map(|key| entry.column(key)).collect();
-            out.push(table_row(label, &values, width));
+            let mut row = table_row(label, &values, width);
+            if let Some(diff) = diffs {
+                let path = baseline::key(entry, &report.roots, cwd);
+                row.push_str(&delta_cell(diff.code_delta(&path).unwrap_or(0)));
+            }
+            out.push(row);
         }
         out.push(String::new());
     }
@@ -360,6 +435,9 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
     out.push("Roots: ".to_string() + &roots.join(", "));
     if let Some(path) = &options.config {
         out.push("Config: ".to_string() + &scan::relative(path, cwd));
+    }
+    if let Some(path) = &options.snapshot {
+        out.push("Snapshot written: ".to_string() + &scan::relative(path, cwd));
     }
     out.push(format!(
         "Scope: {}, {} ignored directory names",
@@ -414,6 +492,10 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         );
     }
     out.push(String::new());
+
+    if let Some(diff) = &report.diff {
+        render_baseline_text(diff, cwd, &mut out);
+    }
 
     if options.smells {
         out.push("Rust smells".to_string());
@@ -598,6 +680,32 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push(format!("| {} | {} |", name, group(value)));
     }
     out.push(String::new());
+    if let Some(diff) = &report.diff {
+        out.push(format!(
+            "### Since baseline `{}`",
+            scan::relative(&diff.path, cwd)
+        ));
+        out.push(String::new());
+        out.push("| Metric | Before | After | Change |".to_string());
+        out.push("| --- | ---: | ---: | ---: |".to_string());
+        for (label, before, after) in diff.counters() {
+            out.push(format!(
+                "| {} | {} | {} | {} |",
+                label,
+                group(before),
+                group(after),
+                delta_plain(after as i64 - before as i64)
+            ));
+        }
+        out.push(format!(
+            "| Files | | {} | {} added, {} deleted, {} changed |",
+            report.business.len(),
+            diff.added(),
+            diff.deleted(),
+            diff.changed()
+        ));
+        out.push(String::new());
+    }
     if let Some(row) = &report.cocomo {
         out.push(format!("### COCOMO estimate ({})", row.project));
         out.push(String::new());
@@ -629,18 +737,33 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
         if options.top > 0 {
             ordered.truncate(options.top);
         }
-        out.push(format!("| File | {} |", titles.join(" | ")));
-        out.push(format!(
-            "| --- | {} |",
-            vec!["---:"; titles.len()].join(" | ")
-        ));
+        let diffs = report.diff.as_ref();
+        let mut head = titles.join(" | ");
+        let mut rule: Vec<&str> = vec!["---:"; titles.len()];
+        if diffs.is_some() {
+            head.push_str(" | Delta");
+            rule.push("---:");
+        }
+        out.push(format!("| File | {} |", head));
+        out.push(format!("| --- | {} |", rule.join(" | ")));
         for entry in ordered {
             let values: Vec<String> = columns.iter().map(|key| group(entry.column(key))).collect();
-            out.push(format!(
-                "| `{}` | {} |",
+            let mut row = format!(
+                "| `{}` | {}",
                 file_label(entry, options, cwd),
                 values.join(" | ")
-            ));
+            );
+            match diffs {
+                Some(diff) => {
+                    let path = baseline::key(entry, &report.roots, cwd);
+                    row.push_str(&format!(
+                        " | {} |",
+                        delta_plain(diff.code_delta(&path).unwrap_or(0))
+                    ));
+                }
+                None => row.push_str(" |"),
+            }
+            out.push(row);
         }
         out.push(String::new());
     }
@@ -709,6 +832,9 @@ fn render_csv(report: &Report, options: &Options, cwd: &Path) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut header: Vec<String> = vec!["path".to_string()];
     header.extend(columns.iter().map(|key| key.to_string()));
+    if report.diff.is_some() {
+        header.push("code_delta".to_string());
+    }
     out.push(header.join(","));
     if options.by_file {
         let mut ordered = scan::sort_entries(business.clone(), &options.sort);
@@ -718,6 +844,10 @@ fn render_csv(report: &Report, options: &Options, cwd: &Path) -> String {
         for entry in ordered {
             let mut row: Vec<String> = vec![csv_field(&scan::relative(entry.path(), cwd))];
             row.extend(columns.iter().map(|key| entry.column(key).to_string()));
+            if let Some(diff) = &report.diff {
+                let path = baseline::key(entry, &report.roots, cwd);
+                row.push(diff.code_delta(&path).unwrap_or(0).to_string());
+            }
             out.push(row.join(","));
         }
     } else {
@@ -731,6 +861,9 @@ fn render_csv(report: &Report, options: &Options, cwd: &Path) -> String {
                 stats.column(key).to_string()
             }
         }));
+        if let Some(diff) = &report.diff {
+            row.push((diff.new.code as i64 - diff.old.code as i64).to_string());
+        }
         out.push(row.join(","));
     }
     out.join("\n") + "\n"
@@ -814,6 +947,13 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
     out.push_str(&format!(
         "  \"config\": {},\n",
         match &options.config {
+            Some(path) => json_string(&scan::relative(path, cwd)),
+            None => "null".to_string(),
+        }
+    ));
+    out.push_str(&format!(
+        "  \"snapshot\": {},\n",
+        match &options.snapshot {
             Some(path) => json_string(&scan::relative(path, cwd)),
             None => "null".to_string(),
         }
@@ -926,6 +1066,47 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         }
         out.push_str(&format!("  \"functions\": {},\n", json_array(&items, 2)));
     }
+    if let Some(diff) = &report.diff {
+        let mut items: Vec<String> = Vec::with_capacity(diff.files.len());
+        for delta in &diff.files {
+            items.push(format!(
+                "{{\"path\": {}, \"code\": {}, \"code_delta\": {}, \"added\": {}, \"deleted\": {}}}",
+                json_string(&delta.path),
+                delta.new.map(|row| row.code).unwrap_or(0),
+                delta.code_delta(),
+                delta.added(),
+                delta.deleted()
+            ));
+        }
+        out.push_str("  \"baseline\": {\n");
+        out.push_str(&format!(
+            "    \"path\": {},\n",
+            json_string(&scan::relative(&diff.path, cwd))
+        ));
+        out.push_str(&format!("    \"added\": {},\n", diff.added()));
+        out.push_str(&format!("    \"deleted\": {},\n", diff.deleted()));
+        out.push_str(&format!("    \"changed\": {},\n", diff.changed()));
+        out.push_str("    \"totals\": {\n");
+        out.push_str(&format!(
+            "      \"lines\": [{}, {}],\n",
+            diff.old.lines, diff.new.lines
+        ));
+        out.push_str(&format!(
+            "      \"code\": [{}, {}],\n",
+            diff.old.code, diff.new.code
+        ));
+        out.push_str(&format!(
+            "      \"complexity\": [{}, {}],\n",
+            diff.old.complexity, diff.new.complexity
+        ));
+        out.push_str(&format!(
+            "      \"smells\": [{}, {}]\n",
+            diff.old.smells, diff.new.smells
+        ));
+        out.push_str("    },\n");
+        out.push_str(&format!("    \"files\": {}\n", json_array(&items, 4)));
+        out.push_str("  },\n");
+    }
     let mut rows: Vec<String> = Vec::with_capacity(report.entries.len());
     for entry in &report.entries {
         let stats = &entry.stats;
@@ -947,6 +1128,12 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         row.push_str(&format!("      \"comment\": {},\n", stats.comment));
         row.push_str(&format!("      \"doc\": {},\n", stats.doc));
         row.push_str(&format!("      \"code\": {},\n", stats.code));
+        if let Some(diff) = &report.diff {
+            row.push_str(&format!(
+                "      \"code_delta\": {},\n",
+                optional_number(diff.code_delta(&baseline::key(entry, &report.roots, cwd)))
+            ));
+        }
         row.push_str(&format!("      \"test\": {},\n", stats.test));
         row.push_str(&format!("      \"physical\": {},\n", stats.physical));
         row.push_str(&format!("      \"complexity\": {},\n", stats.complexity));

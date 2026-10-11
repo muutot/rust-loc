@@ -181,6 +181,35 @@ the command line already asked for. The report echoes the file it used on a
 `Config:` line, and a typo is fatal: `.rustloc.toml:12: unknown key `sortt`
 in [report]`.
 
+### Baselines and snapshots
+
+`--snapshot <PATH>` writes every business file and its counters to a small
+tab separated file, and `--baseline <PATH>` compares a later scan with it.
+The file is sorted by path, so it reads well in a diff and can live in the
+repository next to the code:
+
+```console
+> rust-loc --snapshot ci/baseline.txt              # record where we are
+> rust-loc --baseline ci/baseline.txt --by-file    # what changed since
+Since baseline ci/baseline.txt (2 added, 1 deleted, 6 changed)
+  Lines                       38,204      +412
+  Code                        31,077      +305
+  Complexity (est.)            2,914       -18
+  Smells                         204       +11
+  Largest moves
+          +180  src/cli.rs
+           +64  src/gui/window.rs
+           -31  src/legacy.rs
+```
+
+`--by-file` adds a `Delta` column to the listing, `--format json` adds a
+`baseline` object (every moved file plus the before/after totals) and
+`--format csv` adds a `code_delta` column, so a build can script the
+comparison. Files are keyed by their path below the scan root, so a snapshot
+taken from another directory still lines up. A file that does not start with
+`# rust-loc snapshot v1`, or a row that is not `path` TAB `lines` TAB `code`
+TAB `complexity` TAB `smells`, is refused with the line number.
+
 ## Usage
 
 ```text
@@ -192,6 +221,8 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--format <text\|json\|csv\|markdown>` | output format (default `text`) |
 | `--config <PATH>` | read this `.rustloc.toml` instead of searching |
 | `--no-config` | ignore any `.rustloc.toml` |
+| `--snapshot <PATH>` | save the business files for a later `--baseline` |
+| `--baseline <PATH>` | compare with a snapshot and report the changes |
 | `--json` | alias for `--format json` |
 | `--by-file`, `--per-file` | per-file breakdown |
 | `--by-module` | per-module (top level component) breakdown |
@@ -233,6 +264,8 @@ usage error.
 > rust-loc --cocomo --cocomo-project-type embedded --format markdown
 > rust-loc --fail-if "code>100000" --fail-if "unsafe>0" --ci
 > rust-loc --config ci/.rustloc.toml --format json
+> rust-loc --snapshot ci/baseline.txt
+> rust-loc --baseline ci/baseline.txt --by-file --sort code
 ```
 
 ## Windows UI
@@ -392,6 +425,7 @@ by hand).
    `--cocomo`;
 4. ~~a CI gate: fail when the test-to-code ratio or complexity budget
    regresses~~ - shipped as `--fail-if` / `--ci`;
-5. baseline comparison (scan once, store JSON, diff two revisions);
+5. ~~baseline comparison (scan once, store it, diff two revisions)~~ -
+   shipped as `--snapshot` / `--baseline`;
 6. git hotspots: churn times complexity per file;
 7. ~~a native Windows UI (Win32, no web runtime)~~ - shipped as `rust-loc-gui`.

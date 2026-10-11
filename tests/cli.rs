@@ -629,6 +629,78 @@ fn a_broken_config_stops_the_run_and_names_the_line() {
 }
 
 #[test]
+fn a_snapshot_records_the_business_files() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let out = workspace.run(&["--snapshot", "base.txt"]);
+    assert!(out.contains("Snapshot written: base.txt"), "{}", out);
+    let text = std::fs::read_to_string(workspace.path.join("base.txt")).unwrap();
+    assert!(text.starts_with("# rust-loc snapshot v1"), "{}", text);
+    assert!(text.contains("src/lib.rs"), "{}", text);
+}
+
+#[test]
+fn a_baseline_reports_what_changed() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    workspace.write("src/gone.rs", "fn gone() {}\n");
+    workspace.run(&["--snapshot", "base.txt"]);
+    workspace.write("src/lib.rs", &format!("{}{}", BASIC, "fn extra() {}\n"));
+    std::fs::remove_file(workspace.path.join("src/gone.rs")).unwrap();
+    workspace.write("src/new.rs", "fn new() {}\n");
+
+    let text = workspace.run(&["--baseline", "base.txt"]);
+    assert!(
+        text.contains("Since baseline base.txt (1 added, 1 deleted, 1 changed)"),
+        "{}",
+        text
+    );
+    assert!(text.contains("Largest moves"), "{}", text);
+    assert!(text.contains("+1  src/new.rs"), "{}", text);
+    assert!(text.contains("-1  src/gone.rs"), "{}", text);
+
+    let document = workspace.document(&["--baseline", "base.txt"]);
+    let baseline = document.get("baseline").unwrap();
+    assert_eq!(baseline.get("added").unwrap().integer(), 1);
+    assert_eq!(baseline.get("deleted").unwrap().integer(), 1);
+    assert_eq!(baseline.get("changed").unwrap().integer(), 1);
+    assert_eq!(baseline.get("path").unwrap().text(), "base.txt");
+    assert_eq!(
+        baseline.get("totals").unwrap().get("code").unwrap().items()[1].integer(),
+        document
+            .get("summary")
+            .unwrap()
+            .get("code")
+            .unwrap()
+            .integer()
+    );
+
+    let csv = workspace.run(&["--baseline", "base.txt", "--by-file", "--format", "csv"]);
+    assert!(csv.contains("code_delta"), "{}", csv);
+    assert!(csv.lines().any(|line| line.ends_with(",1")), "{}", csv);
+}
+
+#[test]
+fn a_broken_baseline_stops_the_run() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    workspace.write("base.txt", "not a snapshot\n");
+    let args: Vec<String> = vec![
+        workspace.path.display().to_string(),
+        "--no-gitignore".to_string(),
+        "--baseline".to_string(),
+        "base.txt".to_string(),
+    ];
+    let error = cli::parse(&args, &workspace.path).unwrap_err();
+    assert!(error.contains("base.txt:1"), "{}", error);
+    assert!(
+        error.contains("missing the # rust-loc snapshot v1 header"),
+        "{}",
+        error
+    );
+}
+
+#[test]
 fn help_flag_documents_every_switch() {
     let workspace = Workspace::new();
     let out = workspace.run(&["--help"]);

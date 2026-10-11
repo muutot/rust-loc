@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use crate::baseline;
 use crate::cocomo;
 use crate::config;
 use crate::gate;
@@ -26,6 +27,8 @@ OPTIONS:
     --root <PATH>            add a scan root (repeatable)
     --config <PATH>          read this .rustloc.toml instead of the default
     --no-config              ignore any .rustloc.toml
+    --snapshot <PATH>        save this scan for a later --baseline diff
+    --baseline <PATH>        compare with a snapshot from --snapshot
     --format <FORMAT>        output format: text, json, csv, markdown [default: text]
     --json                   alias for --format json
     --by-file, --per-file    per-file breakdown
@@ -73,6 +76,16 @@ pub struct Invocation {
     pub roots: Vec<PathBuf>,
 }
 
+/// A path from the command line, resolved against the working directory.
+fn resolve_path(value: &str, cwd: &Path) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        cwd.join(path)
+    }
+}
+
 fn take(arguments: &[String], index: &mut usize, name: &str) -> Result<String, String> {
     *index += 1;
     arguments
@@ -84,12 +97,7 @@ fn take(arguments: &[String], index: &mut usize, name: &str) -> Result<String, S
 fn resolve_roots(requested: &[String], cwd: &Path) -> Result<Vec<PathBuf>, String> {
     let mut roots: Vec<PathBuf> = Vec::new();
     for raw in requested {
-        let candidate = PathBuf::from(raw);
-        let path = if candidate.is_absolute() {
-            candidate
-        } else {
-            cwd.join(&candidate)
-        };
+        let path = resolve_path(raw, cwd);
         if !path.exists() {
             return Err(format!("path does not exist: {}", raw));
         }
@@ -126,7 +134,9 @@ fn config_request(arguments: &[String]) -> Result<(Option<String>, bool), String
 
 /// Flags that eat the argument after them, so the pre-pass can tell a scan
 /// root apart from a flag value.
-const VALUE_FLAGS: [&str; 13] = [
+const VALUE_FLAGS: [&str; 15] = [
+    "--snapshot",
+    "--baseline",
     "--root",
     "--config",
     "--format",
@@ -234,6 +244,14 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
             }
             "--no-config" => {}
             other if other.starts_with("--config=") => {}
+            "--snapshot" => {
+                let value = take(arguments, &mut index, "--snapshot")?;
+                options.snapshot = Some(resolve_path(&value, cwd));
+            }
+            "--baseline" => {
+                let value = take(arguments, &mut index, "--baseline")?;
+                options.baseline = Some(baseline::Snapshot::load(&resolve_path(&value, cwd))?);
+            }
             "--by-file" | "--per-file" => options.by_file = true,
             "--by-module" => options.by_module = true,
             "--show-excluded" => options.show_excluded = true,
@@ -427,6 +445,9 @@ pub fn run_checked(arguments: &[String], cwd: &Path) -> Result<(String, String, 
         Action::Version => Ok((format!("rust-loc {}\n", crate::VERSION), String::new(), 0)),
         Action::Report => {
             let report = report::scan(&invocation.roots, &invocation.options, cwd, None);
+            if let Some(path) = &invocation.options.snapshot {
+                baseline::Snapshot::of(&report, cwd).save(path)?;
+            }
             let mut rendered = report::render(&report, cwd);
             if invocation.options.format != Format::Csv {
                 rendered.push('\n');
