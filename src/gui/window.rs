@@ -1825,6 +1825,8 @@ unsafe extern "system" fn main_proc(
                         .contains(&other)
                     {
                         export(hwnd, (other - app::ID_EXPORT_MENU) as usize);
+                    } else if other == app::ID_EXPORT_PNG {
+                        export_png(hwnd);
                     } else if other == app::ID_COPY_COMMAND {
                         copy_command(hwnd);
                     } else if other == app::ID_CTX_OPEN {
@@ -2133,6 +2135,11 @@ fn show_export_menu(hwnd: HWND) {
             )
         };
     }
+    let png = wide(&i18n::fill(
+        i18n::t().menu_export_as,
+        &[("format", "PNG".to_string())],
+    ));
+    unsafe { AppendMenuW(menu, MF_STRING, app::ID_EXPORT_PNG as usize, png.as_ptr()) };
     unsafe { AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null()) };
     let copy = wide(i18n::t().menu_copy_command);
     unsafe {
@@ -2168,6 +2175,8 @@ fn show_export_menu(hwnd: HWND) {
         if (app::ID_EXPORT_MENU..app::ID_EXPORT_MENU + app::FORMATS.len() as i32).contains(&command)
         {
             export(hwnd, (command - app::ID_EXPORT_MENU) as usize);
+        } else if command == app::ID_EXPORT_PNG {
+            export_png(hwnd);
         } else if command == app::ID_COPY_COMMAND {
             copy_command(hwnd);
         }
@@ -2236,6 +2245,35 @@ fn export(hwnd: HWND, index: usize) {
         };
         report_status(hwnd, &message);
     }
+}
+
+/// Save the report as a PNG card: the same layout the SVG export draws,
+/// rasterised into a DIB and handed to the small encoder in `png`.
+fn export_png(hwnd: HWND) {
+    let payload = with_state(|state| {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        state
+            .report
+            .as_ref()
+            .and_then(|report| crate::gui::card::encode(report, &state.options, &cwd))
+    })
+    .flatten();
+    let Some(bytes) = payload else {
+        let message = i18n::t().status_nothing_to_export;
+        report_status(hwnd, message);
+        return;
+    };
+    let Some(path) = dialog::save_file(hwnd, "rust-loc.png") else {
+        return;
+    };
+    let message = match std::fs::write(&path, bytes) {
+        Ok(()) => i18n::fill(i18n::t().status_exported, &[("path", path.clone())]),
+        Err(error) => i18n::fill(
+            i18n::t().status_export_failed,
+            &[("error", error.to_string())],
+        ),
+    };
+    report_status(hwnd, &message);
 }
 
 fn geometry() -> (i32, i32, i32, i32) {

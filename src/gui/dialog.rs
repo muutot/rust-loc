@@ -48,6 +48,8 @@ fn filter_for(name: &str) -> (Vec<u16>, Vec<u16>) {
         Some("json") => ("JSON report", "*.json", "json"),
         Some("csv") => ("CSV report", "*.csv", "csv"),
         Some("md") => ("Markdown report", "*.md", "md"),
+        Some("svg") => ("SVG report", "*.svg", "svg"),
+        Some("png") => ("PNG image", "*.png", "png"),
         _ => ("Text report", "*.txt", "txt"),
     };
     let mut spec: Vec<u16> = Vec::new();

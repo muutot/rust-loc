@@ -18,6 +18,7 @@ pub mod languages;
 pub mod lexer;
 pub mod metrics;
 pub mod options;
+pub mod png;
 pub mod report;
 pub mod scan;
 pub mod svg;

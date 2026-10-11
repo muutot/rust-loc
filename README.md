@@ -352,7 +352,16 @@ loop, just shapes and text, so any viewer - or a README - can show it:
 
 ![rust-loc SVG report](docs/report.svg)
 
-The GUI *Export* menu offers the same SVG next to text, JSON, CSV and Markdown.
+The GUI *Export* menu offers the same SVG next to text, JSON, CSV and Markdown,
+and adds *Export as PNG*: the identical card rasterised through GDI into a 32-bit
+bitmap and written by the small encoder in `src/png.rs`. The encoder is hand
+written - row filters, a fixed-Huffman deflate, the chunk CRCs - so the export
+is an ordinary PNG a few tens of kilobytes large, with no image crate linked in:
+
+![rust-loc PNG report](docs/report.png)
+
+After a layout change, regenerate that image with
+`cargo test --lib write_the_documented_card -- --ignored`.
 
 ## Usage
 
@@ -599,3 +608,5 @@ by hand).
     `--duplicates`.
 13. ~~watch the roots and rescan when files change~~ - shipped in `rust-loc-gui`.
 14. ~~a shareable report without HTML~~ - shipped as `--format svg`.
+15. ~~a raster export for slides and issue trackers~~ - the GUI writes the card
+    as a PNG.

@@ -49,6 +49,8 @@ pub const ID_ACCEL_CTX_MENU: i32 = 1107;
 /// Export menu commands; the format is `index` into `app::FORMATS`.
 pub const ID_EXPORT_MENU: i32 = 1200;
 pub const ID_COPY_COMMAND: i32 = 1205;
+/// Export the window itself as a PNG image.
+pub const ID_EXPORT_PNG: i32 = 1206;
 /// Row context menu commands.
 pub const ID_CTX_OPEN: i32 = 1210;
 pub const ID_CTX_REVEAL: i32 = 1211;

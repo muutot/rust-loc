@@ -5,6 +5,7 @@
 //! bindings are thin declarations over the system DLLs.
 
 mod app;
+mod card;
 mod dialog;
 mod i18n;
 mod model;

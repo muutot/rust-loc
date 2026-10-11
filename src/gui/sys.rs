@@ -14,10 +14,11 @@ pub use windows_sys::Win32::Foundation::{
 // GDI: double buffered painting, brushes, pens, fonts and text measurement.
 pub use windows_sys::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC,
-    CreateFontIndirectW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
-    FillRect, GetTextExtentPoint32W, InvalidateRect, RoundRect, ScreenToClient, SelectObject,
-    SetBkColor, SetBkMode, SetTextColor, HBRUSH, HDC, HFONT, HGDIOBJ, LOGFONTW, PAINTSTRUCT,
-    PS_SOLID, SRCCOPY,
+    CreateDIBSection, CreateFontIndirectW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject,
+    DrawTextW, EndPaint, FillRect, GetTextExtentPoint32W, InvalidateRect, RoundRect,
+    ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetTextColor, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HBRUSH, HDC, HFONT, HGDIOBJ, LOGFONTW,
+    PAINTSTRUCT, PS_SOLID, SRCCOPY,
 };
 
 pub use windows_sys::Win32::System::Com::CoTaskMemFree;
