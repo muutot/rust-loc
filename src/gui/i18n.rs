@@ -54,9 +54,11 @@ pub fn lang() -> Lang {
     CURRENT.with(|cell| cell.get())
 }
 
-/// The header subtitle: it names the languages the current selection reads,
-/// so a Python-only or mixed run does not claim to have counted Rust.
-pub fn subtitle(sources: crate::sources::Sources) -> String {
+/// The header subtitle: it names the languages the current selection reads, so
+/// a Python-only or mixed run does not claim to have counted Rust, and says
+/// whether test code made it into the totals.
+pub fn subtitle(sources: crate::sources::Sources, include_tests: bool) -> String {
+    let catalog = t();
     let (en, zh) = match sources {
         crate::sources::Sources::Rust => ("Rust business code statistics", "Rust 业务代码统计"),
         crate::sources::Sources::Python => {
@@ -67,9 +69,12 @@ pub fn subtitle(sources: crate::sources::Sources) -> String {
             "Rust 与 Python 业务代码统计",
         ),
     };
-    let tail = match lang() {
-        Lang::En => "test code excluded",
-        Lang::Zh => "已排除测试代码",
+    // The tail follows the switch: a scan that keeps test code in its totals
+    // must not claim to have left it out.
+    let tail = if include_tests {
+        catalog.subtitle_tests_included
+    } else {
+        catalog.subtitle_tests_excluded
     };
     let head = match lang() {
         Lang::En => en,
@@ -149,6 +154,18 @@ mod tests {
     }
 
     #[test]
+    fn the_subtitle_follows_the_test_switch() {
+        let sources = crate::sources::Sources::Rust;
+        set_lang(Lang::Zh);
+        assert!(subtitle(sources, false).ends_with("已排除测试代码"));
+        assert!(subtitle(sources, true).ends_with("已包含测试代码"));
+        set_lang(Lang::En);
+        assert!(subtitle(sources, true).ends_with("test code included"));
+        assert!(subtitle(sources, false).ends_with("test code excluded"));
+        set_lang(Lang::Zh);
+    }
+
+    #[test]
     fn catalog_lookup_switches_language() {
         set_lang(Lang::En);
         assert_eq!(t().button_scan, "Scan  (F5)");
@@ -173,6 +190,8 @@ catalog! {
     // -- shell -------------------------------------------------------------
     window_title => ("rust-loc — source code statistics", "rust-loc — 代码统计"),
     no_scan_yet => ("no scan yet", "尚未扫描"),
+    subtitle_tests_excluded => ("test code excluded", "已排除测试代码"),
+    subtitle_tests_included => ("test code included", "已包含测试代码"),
     header_code => ("code", "代码"),
     header_comment => ("comment", "注释"),
     header_blank => ("blank", "空行"),
@@ -316,6 +335,7 @@ catalog! {
     scope_excludes => ("{n} exclude glob(s)", "{n} 个排除通配符"),
     scope_tests_included => ("tests included", "已包含测试"),
     status_scanned => ("Scanned {files} files in {seconds} s · {test} test lines kept out", "已扫描 {files} 个文件，用时 {seconds} s · 排除 {test} 行测试代码"),
+    status_scanned_tests => ("Scanned {files} files in {seconds} s · {test} test lines included", "已扫描 {files} 个文件，用时 {seconds} s · 已包含 {test} 行测试代码"),
     status_ready => ("Ready", "就绪"),
     status_scanning => ("Scanning…", "正在扫描…"),
     status_no_root => ("No root selected", "未选择根目录"),

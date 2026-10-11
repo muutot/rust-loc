@@ -1197,8 +1197,14 @@ pub fn test_line_total(report: &Report) -> u64 {
 
 /// The status bar line shown after a scan.
 pub fn scan_status(report: &Report, seconds: f64) -> String {
+    let t = i18n::t();
+    let template = if report.options.include_tests {
+        t.status_scanned_tests
+    } else {
+        t.status_scanned
+    };
     fill(
-        i18n::t().status_scanned,
+        template,
         &[
             ("files", human_int(report.entries.len() as u64)),
             ("seconds", format!("{seconds:.2}")),

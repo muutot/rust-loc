@@ -2859,7 +2859,10 @@ unsafe extern "system" fn main_proc(
                     let spec = paint::Shell {
                         brand: "rust-loc",
                         version: &version,
-                        subtitle: &i18n::subtitle(state.options.sources),
+                        subtitle: &i18n::subtitle(
+                            state.options.sources,
+                            state.options.include_tests,
+                        ),
                         summary: &summary,
                         header: state.header_rect,
                         sidebar: state.sidebar_rect,
