@@ -32,9 +32,21 @@ pub const DEFAULT_IGNORE_DIRS: [&str; 15] = [
 
 const TEST_DIR_NAMES: [&str; 3] = ["tests", "benches", "test"];
 
-/// Progress callback: `(done, total, path)`. A UI can show a progress bar
-/// without duplicating the walking logic.
-pub type Progress<'a> = dyn Fn(usize, usize, &Path) + Sync + 'a;
+/// Which part of a scan a progress report belongs to. They run one after the
+/// other, so a bar that only knows the file count sits at 100% while the
+/// slowest stage - blaming every business file - is still ahead of it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stage {
+    /// Reading and analysing the discovered files.
+    Files,
+    /// Blaming the business files for the author tables.
+    Blame,
+}
+
+/// Progress callback: `(stage, done, total, path)`, where `total` counts the
+/// work of that one stage. A UI can show a progress bar without duplicating the
+/// walking logic.
+pub type Progress<'a> = dyn Fn(Stage, usize, usize, &Path) + Sync + 'a;
 
 /// Canonical, non-verbatim path.
 pub fn resolve_path(path: &Path) -> PathBuf {
@@ -709,7 +721,7 @@ pub fn collect_files(
                 facts.push(item);
             }
             if let Some(callback) = progress {
-                callback(index + 1, total, path);
+                callback(Stage::Files, index + 1, total, path);
             }
         }
         return facts;
@@ -733,7 +745,7 @@ pub fn collect_files(
                 }
                 let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
                 if let Some(callback) = progress {
-                    callback(finished, total, path);
+                    callback(Stage::Files, finished, total, path);
                 }
             });
         }

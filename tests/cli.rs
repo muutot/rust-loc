@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rust_loc::cli;
 use rust_loc::options::{Format, Options};
 use rust_loc::report::{self, Report};
+use rust_loc::scan::Stage;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -838,8 +839,8 @@ fn scan_reports_progress_for_every_file() {
     workspace.write("src/a.rs", "fn a() {}\n");
     workspace.write("src/b.rs", "fn b() {}\n");
     let seen = std::sync::Mutex::new(Vec::new());
-    let callback = |done: usize, total: usize, _path: &std::path::Path| {
-        seen.lock().unwrap().push((done, total));
+    let callback = |stage: Stage, done: usize, total: usize, _path: &std::path::Path| {
+        seen.lock().unwrap().push((stage, done, total));
     };
     let options = Options {
         gitignore: false,
@@ -853,8 +854,10 @@ fn scan_reports_progress_for_every_file() {
         Some(&callback),
     );
     let mut seen = seen.into_inner().unwrap();
-    seen.sort();
-    assert_eq!(seen, vec![(1, 2), (2, 2)]);
+    seen.sort_by_key(|entry| entry.1);
+    // A scan without `--authors` has only the read stage to report, and it
+    // must not count it out of a total it never reaches.
+    assert_eq!(seen, vec![(Stage::Files, 1, 2), (Stage::Files, 2, 2)]);
 }
 
 #[test]
@@ -1389,6 +1392,37 @@ fn authors_split_the_business_lines_of_a_repository() {
             .unwrap()
             .integer()
     );
+}
+
+#[test]
+fn blame_reports_the_stage_that_outlasts_the_read() {
+    let workspace = Workspace::new();
+    workspace.write("src/first.rs", "fn a() {}\n");
+    workspace.write("src/second.rs", "fn b() {}\n");
+    if !git_ok(&workspace.path, &["init", "-q"]) {
+        return; // git is not installed; nothing to assert
+    }
+    assert!(commit_as(&workspace, "Ada", "ada@example.com", "first"));
+
+    let seen = std::sync::Mutex::new(Vec::new());
+    let callback = |stage: Stage, done: usize, total: usize, _path: &std::path::Path| {
+        seen.lock().unwrap().push((stage, done, total));
+    };
+    let invocation = workspace.invocation(&["--no-gitignore", "--authors"]);
+    report::scan(
+        &invocation.roots,
+        &invocation.options,
+        &workspace.path,
+        Some(&callback),
+    );
+
+    // The read fills its bar first, then blaming the same files takes over.
+    // Both have to reach the UI, or the bar sits at 100% while the slow half
+    // of the scan is still running.
+    let seen = seen.into_inner().unwrap();
+    assert!(seen.contains(&(Stage::Files, 2, 2)), "{seen:?}");
+    assert!(seen.contains(&(Stage::Blame, 1, 2)), "{seen:?}");
+    assert!(seen.contains(&(Stage::Blame, 2, 2)), "{seen:?}");
 }
 
 #[test]

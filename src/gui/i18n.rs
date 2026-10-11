@@ -393,6 +393,8 @@ catalog! {
     overlay_title => ("Scanning sources", "正在扫描源码"),
     overlay_files => ("{done} / {total} files", "{done} / {total} 个文件"),
     overlay_discovering => ("Discovering files", "正在发现文件"),
+    overlay_stage_files => ("Reading sources", "读取源码"),
+    overlay_stage_blame => ("Reading authors", "统计作者"),
     // -- menus -------------------------------------------------------------
     menu_export_as => ("Export table as {format}", "导出表格为 {format}"),
     menu_copy_command => ("Copy equivalent CLI command", "复制等效命令行"),

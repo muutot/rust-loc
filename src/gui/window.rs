@@ -561,10 +561,11 @@ unsafe extern "system" fn veil_proc(
         WM_PAINT => {
             let painted = buffered(hwnd, theme::VEIL_BG, |hdc, client| {
                 with_state(|state| {
+                    let stage = state.progress_stage;
                     let done = state.progress_done;
                     let total = state.progress_total;
                     let path = state.progress_path.clone();
-                    paint::overlay(hdc, client, done, total, &path, &state.theme);
+                    paint::overlay(hdc, client, stage, done, total, &path, &state.theme);
                 })
                 .is_some()
             });

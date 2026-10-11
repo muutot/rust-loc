@@ -164,8 +164,8 @@ pub fn scan(
         let offset = done;
         done += files.len();
         let forward: Option<Box<Progress<'_>>> = match progress {
-            Some(callback) => Some(Box::new(move |index, _total, path| {
-                callback(offset + index, total, path)
+            Some(callback) => Some(Box::new(move |stage, index, _total, path| {
+                callback(stage, offset + index, total, path)
             })),
             None => None,
         };
@@ -316,7 +316,11 @@ pub fn scan(
     };
 
     let authors = if options.authors {
-        Some(crate::authors::Authors::collect(&business_refs, options))
+        Some(crate::authors::Authors::collect(
+            &business_refs,
+            options,
+            progress,
+        ))
     } else {
         None
     };

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use crate::git;
 use crate::options::Options;
-use crate::scan::{self, Entry};
+use crate::scan::{self, Entry, Progress, Stage};
 use crate::sources::Lang;
 use crate::{lexer, pylexer};
 
@@ -102,9 +102,13 @@ impl Authors {
     ///
     /// The repository is resolved from each file, so the report credits the
     /// same authors whether it ran inside the tree or somewhere else.
-    pub fn collect(entries: &[&Entry], options: &Options) -> Authors {
+    pub fn collect(
+        entries: &[&Entry],
+        options: &Options,
+        progress: Option<&Progress<'_>>,
+    ) -> Authors {
         let tops = repo_tops(entries);
-        let blamed = blame_all(&tops, entries, options);
+        let blamed = blame_all(&tops, entries, options, progress);
         let available = blamed.iter().any(|result| result.repo);
         let mut files: Vec<FileShare> = Vec::new();
         let mut untracked = 0usize;
@@ -189,8 +193,15 @@ fn repo_tops(entries: &[&Entry]) -> Vec<Option<PathBuf>> {
         .collect()
 }
 
-/// Blame every entry in parallel, keeping one slot per entry.
-fn blame_all(tops: &[Option<PathBuf>], entries: &[&Entry], options: &Options) -> Vec<Blamed> {
+/// Blame every entry in parallel, keeping one slot per entry. Every finished
+/// file is reported to `progress`, because this stage outlasts the read that
+/// filled the bar before it.
+fn blame_all(
+    tops: &[Option<PathBuf>],
+    entries: &[&Entry],
+    options: &Options,
+    progress: Option<&Progress<'_>>,
+) -> Vec<Blamed> {
     let total = entries.len();
     let blame = |index: usize| -> Blamed {
         match &tops[index] {
@@ -206,6 +217,9 @@ fn blame_all(tops: &[Option<PathBuf>], entries: &[&Entry], options: &Options) ->
     if workers <= 1 || total < 4 {
         for (index, slot) in results.iter_mut().enumerate() {
             *slot = blame(index);
+            if let Some(callback) = progress {
+                callback(Stage::Blame, index + 1, total, entries[index].path());
+            }
         }
         return results;
     }
@@ -213,6 +227,7 @@ fn blame_all(tops: &[Option<PathBuf>], entries: &[&Entry], options: &Options) ->
         .map(|_| std::sync::Mutex::new(Blamed::plain()))
         .collect();
     let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| loop {
@@ -223,6 +238,10 @@ fn blame_all(tops: &[Option<PathBuf>], entries: &[&Entry], options: &Options) ->
                 let result = blame(index);
                 if let Ok(mut slot) = slots[index].lock() {
                     *slot = result;
+                }
+                let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if let Some(callback) = progress {
+                    callback(Stage::Blame, finished, total, entries[index].path());
                 }
             });
         }

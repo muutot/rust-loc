@@ -1351,8 +1351,18 @@ pub fn combo_item(hdc: HDC, item: &DRAWITEMSTRUCT, theme: &theme::Theme) {
     );
 }
 
-/// Paint the scan overlay: scrim, card, progress track and caption.
-pub fn overlay(hdc: HDC, area: &RECT, done: usize, total: usize, path: &str, theme: &theme::Theme) {
+/// Paint the scan overlay: scrim, card, progress track and caption. The stage
+/// names the work the numbers belong to, so a bar that has just filled up
+/// reads as "next: blaming" rather than as a scan that is somehow stuck.
+pub fn overlay(
+    hdc: HDC,
+    area: &RECT,
+    stage: Option<crate::scan::Stage>,
+    done: usize,
+    total: usize,
+    path: &str,
+    theme: &theme::Theme,
+) {
     let width = area.right - area.left;
     let height = area.bottom - area.top;
     if width <= 0 || height <= 0 {
@@ -1465,6 +1475,15 @@ pub fn overlay(hdc: HDC, area: &RECT, done: usize, total: usize, path: &str, the
         )
     } else {
         i18n::t().overlay_discovering.to_string()
+    };
+    let counter = match stage {
+        Some(crate::scan::Stage::Blame) => {
+            format!("{} · {counter}", i18n::t().overlay_stage_blame)
+        }
+        Some(crate::scan::Stage::Files) => {
+            format!("{} · {counter}", i18n::t().overlay_stage_files)
+        }
+        None => counter,
     };
     let caption_text = if path.is_empty() {
         counter

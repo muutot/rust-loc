@@ -142,6 +142,8 @@ pub struct AppState {
     pub progress_done: usize,
     pub progress_total: usize,
     pub progress_path: String,
+    /// The stage the numbers above belong to; `None` before the first report.
+    pub progress_stage: Option<crate::scan::Stage>,
     pub started: Option<Instant>,
     pub elapsed: f64,
     pub receiver: Option<Receiver<scan::Msg>>,
@@ -260,6 +262,7 @@ impl AppState {
             progress_done: 0,
             progress_total: 0,
             progress_path: String::new(),
+            progress_stage: None,
             started: None,
             elapsed: 0.0,
             receiver: None,
@@ -459,6 +462,7 @@ impl AppState {
         self.progress_done = 0;
         self.progress_total = 0;
         self.progress_path = String::new();
+        self.progress_stage = None;
         self.started = Some(Instant::now());
         self.status = i18n::t().status_scanning.to_string();
         let options = self.options.clone();
@@ -473,7 +477,13 @@ impl AppState {
         if let Some(receiver) = &self.receiver {
             loop {
                 match receiver.try_recv() {
-                    Ok(scan::Msg::Progress { done, total, path }) => {
+                    Ok(scan::Msg::Progress {
+                        stage,
+                        done,
+                        total,
+                        path,
+                    }) => {
+                        self.progress_stage = Some(stage);
                         self.progress_done = done;
                         self.progress_total = total;
                         self.progress_path = path;
