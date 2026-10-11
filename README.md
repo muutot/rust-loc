@@ -351,8 +351,10 @@ The email is the identity when git has one, otherwise the name, and lines that
 are still uncommitted are kept in a `Not Committed Yet` row instead of being
 dropped. Files git does not track (ignored, or outside the repository) are
 reported in the header so the blamed lines never silently disagree with the
-summary. `--format json` adds `authors_available`, `authors_untracked`, an
-`authors` array and, with `--by-file`, a `file_authors` array, and
+summary. Each file is blamed in the repository that holds it, so one run
+reports the same authors from wherever it started. `--format json` adds
+`authors_available`, `authors_untracked`, an `authors` array and, with
+`--by-file`, a `file_authors` array, and
 `--format markdown` carries the same table plus one bullet list per file.
 
 The attribution is blame attribution: a reformatted line belongs to whoever last

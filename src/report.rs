@@ -316,11 +316,7 @@ pub fn scan(
     };
 
     let authors = if options.authors {
-        Some(crate::authors::Authors::collect(
-            &business_refs,
-            options,
-            cwd,
-        ))
+        Some(crate::authors::Authors::collect(&business_refs, options))
     } else {
         None
     };

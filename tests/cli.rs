@@ -1392,6 +1392,39 @@ fn authors_split_the_business_lines_of_a_repository() {
 }
 
 #[test]
+fn blame_follows_the_file_rather_than_the_shell() {
+    let workspace = Workspace::new();
+    workspace.write("src/first.rs", "fn a() {}\n");
+    if !git_ok(&workspace.path, &["init", "-q"]) {
+        return; // git is not installed; nothing to assert
+    }
+    assert!(commit_as(&workspace, "Ada", "ada@example.com", "first"));
+
+    // Asked from a directory that is not the repository at all, the blame still
+    // finds it from the file, which is how the window asks for it.
+    let elsewhere = std::env::temp_dir();
+    if git_ok(&elsewhere, &["rev-parse", "--show-toplevel"]) {
+        return; // the temp tree happens to live inside a repository
+    }
+    let args = vec![
+        workspace.path.display().to_string(),
+        "--no-gitignore".to_string(),
+        "--authors".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+    let out = cli::run(&args, &elsewhere).expect("cli::run failed");
+    let document = json::parse(&out);
+    assert!(document.get("authors_available").unwrap().flag());
+    let rows = document.get("authors").unwrap().items();
+    let names: Vec<String> = rows
+        .iter()
+        .map(|row| row.get("name").unwrap().text().to_string())
+        .collect();
+    assert!(names.iter().any(|name| name == "Ada"), "{:?}", names);
+}
+
+#[test]
 fn a_file_lists_every_author_that_touched_it() {
     let workspace = Workspace::new();
     workspace.write("src/shared.rs", "fn a() {}\n");

@@ -4,7 +4,8 @@
 //! the tree holds, but who holds them. Every business file is blamed, and each
 //! blamed line is classified the way the rest of the report classifies it, so
 //! an author's code/comment/blank split adds up to the same totals the summary
-//! prints.
+//! prints. Each file is blamed in the repository it lives in, so one tree
+//! reports the same authors from wherever the process was started.
 //!
 //! Nothing here runs unless the flag is given: one `git blame` per file costs
 //! far more than the scan itself.
@@ -76,9 +77,10 @@ pub struct FileShare {
 /// Everything `--authors` collected.
 #[derive(Debug, Default)]
 pub struct Authors {
-    /// False when the scan root is not inside a git repository.
+    /// False when no scanned file lives in a git repository.
     pub available: bool,
-    /// Files git could not blame: untracked, or outside the repository.
+    /// Files git could not blame: untracked, or outside the repository, and
+    /// only counted once the scan has a repository to blame against.
     pub untracked: usize,
     /// Files that were blamed, in scan order.
     pub files: Vec<FileShare>,
@@ -88,35 +90,33 @@ pub struct Authors {
 
 impl Authors {
     /// Blame every entry and fold the result per author and per file.
-    pub fn collect(entries: &[&Entry], options: &Options, cwd: &Path) -> Authors {
-        let Some(top) = scan::run_git(cwd, &["rev-parse", "--show-toplevel"]) else {
-            return Authors::default();
-        };
-        let top = PathBuf::from(top.trim());
-        if !top.is_dir() {
-            return Authors::default();
-        }
-        let blamed = blame_all(&top, entries, options);
+    ///
+    /// The repository is resolved from each file, so the report credits the
+    /// same authors whether it ran inside the tree or somewhere else.
+    pub fn collect(entries: &[&Entry], options: &Options) -> Authors {
+        let tops = repo_tops(entries);
+        let blamed = blame_all(&tops, entries, options);
+        let available = blamed.iter().any(|result| result.repo);
         let mut files: Vec<FileShare> = Vec::new();
         let mut untracked = 0usize;
-        for (entry, loaded) in entries.iter().zip(blamed) {
-            match loaded {
+        for (entry, result) in entries.iter().zip(blamed) {
+            match result.shares {
                 Some(authors) => files.push(FileShare {
                     path: entry.path().to_path_buf(),
                     authors,
                 }),
-                None => untracked += 1,
+                None if available => untracked += 1,
+                None => {}
             }
         }
         let rows = fold(&files);
         Authors {
-            available: true,
+            available,
             untracked,
             files,
             rows,
         }
     }
-
     /// The rows a listing shows, after `--top` truncation.
     pub fn shown(&self, top: usize) -> &[AuthorRow] {
         if top == 0 || top >= self.rows.len() {
@@ -132,21 +132,77 @@ impl Authors {
     }
 }
 
+/// What blaming one file produced.
+struct Blamed {
+    /// Whether the file lives inside a repository, tracked or not.
+    repo: bool,
+    /// The line shares, once git could blame the file.
+    shares: Option<Vec<Share>>,
+}
+
+impl Blamed {
+    /// A file that no repository claimed.
+    fn plain() -> Blamed {
+        Blamed {
+            repo: false,
+            shares: None,
+        }
+    }
+}
+
+/// The repository every entry lives in, asked once per directory so a tree
+/// costs one `rev-parse` per folder instead of one per file.
+fn repo_tops(entries: &[&Entry]) -> Vec<Option<PathBuf>> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut asked: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
+    entries
+        .iter()
+        .map(|entry| {
+            if let Some(root) = roots
+                .iter()
+                .find(|root| entry.path().starts_with(root.as_path()))
+            {
+                return Some(root.clone());
+            }
+            let dir = entry.path().parent()?;
+            if let Some(known) = asked.get(dir) {
+                return known.clone();
+            }
+            let found = scan::run_git(dir, &["rev-parse", "--show-toplevel"])
+                .map(|text| PathBuf::from(text.trim()))
+                .filter(|root| root.is_dir() && entry.path().starts_with(root));
+            if let Some(root) = &found {
+                roots.push(root.clone());
+            }
+            asked.insert(dir.to_path_buf(), found.clone());
+            found
+        })
+        .collect()
+}
+
 /// Blame every entry in parallel, keeping one slot per entry.
-fn blame_all(top: &Path, entries: &[&Entry], options: &Options) -> Vec<Option<Vec<Share>>> {
+fn blame_all(tops: &[Option<PathBuf>], entries: &[&Entry], options: &Options) -> Vec<Blamed> {
     let total = entries.len();
+    let blame = |index: usize| -> Blamed {
+        match &tops[index] {
+            Some(top) => blame_file(top, entries[index], options),
+            None => Blamed::plain(),
+        }
+    };
+    let mut results: Vec<Blamed> = entries.iter().map(|_| Blamed::plain()).collect();
     if total == 0 {
-        return Vec::new();
+        return results;
     }
     let workers = options.worker_count().max(1).min(total);
     if workers <= 1 || total < 4 {
-        return entries
-            .iter()
-            .map(|entry| blame_file(top, entry, options))
-            .collect();
+        for (index, slot) in results.iter_mut().enumerate() {
+            *slot = blame(index);
+        }
+        return results;
     }
-    let slots: Vec<std::sync::Mutex<Option<Vec<Share>>>> =
-        (0..total).map(|_| std::sync::Mutex::new(None)).collect();
+    let slots: Vec<std::sync::Mutex<Blamed>> = (0..total)
+        .map(|_| std::sync::Mutex::new(Blamed::plain()))
+        .collect();
     let cursor = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for _ in 0..workers {
@@ -155,24 +211,31 @@ fn blame_all(top: &Path, entries: &[&Entry], options: &Options) -> Vec<Option<Ve
                 if index >= total {
                     break;
                 }
-                if let Some(result) = blame_file(top, entries[index], options) {
-                    if let Ok(mut slot) = slots[index].lock() {
-                        *slot = Some(result);
-                    }
+                let result = blame(index);
+                if let Ok(mut slot) = slots[index].lock() {
+                    *slot = result;
                 }
             });
         }
     });
     slots
         .into_iter()
-        .map(|slot| slot.into_inner().ok().flatten())
+        .map(|slot| slot.into_inner().unwrap_or_else(|_| Blamed::plain()))
         .collect()
 }
 
 /// Blame one file and split its lines across the authors that wrote them.
-fn blame_file(top: &Path, entry: &Entry, options: &Options) -> Option<Vec<Share>> {
-    let relative = git::repo_relative(entry.path(), top)?;
-    let blame = scan::run_git(top, &["blame", "--incremental", "--", &relative])?;
+fn blame_file(top: &Path, entry: &Entry, options: &Options) -> Blamed {
+    let Some(relative) = git::repo_relative(entry.path(), top) else {
+        return Blamed::plain();
+    };
+    let Some(blame) = scan::run_git(top, &["blame", "--incremental", "--", &relative]) else {
+        // Inside the repository, but git does not track the file.
+        return Blamed {
+            repo: true,
+            shares: None,
+        };
+    };
     let authors: Vec<(String, String)> = parse_blame(&blame);
     let classes = classify(entry.path(), entry.lang());
     let mut shares: Vec<Share> = Vec::new();
@@ -211,7 +274,10 @@ fn blame_file(top: &Path, entry: &Entry, options: &Options) -> Option<Vec<Share>
         shares[slot].lines.add(lines);
     }
     sort_shares(&mut shares);
-    Some(shares)
+    Blamed {
+        repo: true,
+        shares: Some(shares),
+    }
 }
 
 /// One classified line of a file.
