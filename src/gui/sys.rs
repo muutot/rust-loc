@@ -7,8 +7,8 @@
 //! runtime, no UI toolkit, nothing beyond the system DLLs.
 
 pub use windows_sys::Win32::Foundation::{
-    CloseHandle, GlobalFree, HANDLE, HINSTANCE, HWND, INVALID_HANDLE_VALUE, LPARAM, LRESULT, POINT,
-    RECT, SIZE, WPARAM,
+    CloseHandle, GetLastError, GlobalFree, ERROR_IO_PENDING, HINSTANCE, HWND, INVALID_HANDLE_VALUE,
+    LPARAM, LRESULT, POINT, RECT, SIZE, WAIT_TIMEOUT, WPARAM,
 };
 
 // GDI: double buffered painting, brushes, pens, fonts and text measurement.
@@ -33,12 +33,16 @@ pub use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
 // Directory watch for automatic rescans.
 pub use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadDirectoryChangesW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY,
-    FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE,
-    FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    CreateFileW, ReadDirectoryChangesW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED,
+    FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
+    FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 pub use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
 pub use windows_sys::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT};
+pub use windows_sys::Win32::System::IO::{
+    CancelIoEx, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED,
+};
 
 // List view, status bar and the standard controls the shell is built from.
 pub use windows_sys::Win32::UI::Controls::Dialogs::{

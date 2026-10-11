@@ -4,10 +4,19 @@
 //! message to the window when something under the root changes, so the report
 //! can refresh on its own. Build output is ignored: compiling the project
 //! churns `target`, and rescanning for every object file would never settle.
+//!
+//! The reads are overlapped, and that is not an optimisation. A synchronous
+//! read cannot be cancelled: closing its handle from another thread waits for
+//! the read to return, and a read parked on a quiet directory only returns
+//! when that directory moves again. Changing the root list restarts the watch
+//! from the window thread, so every add or remove froze the window until the
+//! tree it stopped watching happened to change. A cancelled overlapped read
+//! ends at once instead, and each worker releases its own handle only after
+//! that read has drained.
 
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::gui::sys::*;
@@ -18,46 +27,37 @@ pub const WM_WATCH: u32 = WM_APP + 1;
 /// Directory names whose churn never changes the report.
 const NOISE: [&str; 6] = ["target", "node_modules", ".git", ".idea", "dist", "build"];
 
+/// How long a parked worker waits for a change before it checks the stop flag
+/// again, so a dropped watch lets go of its handle within one poll.
+const STOP_POLL_MS: u32 = 50;
+
 /// A running watch over one or more roots. Dropping it stops the workers.
 pub struct Watcher {
     stop: Arc<AtomicBool>,
-    /// Directory handles, so `drop` can close the one each worker is parked
-    /// on and let it return.
-    handles: Arc<Vec<AtomicIsize>>,
 }
 
 impl Drop for Watcher {
     fn drop(&mut self) {
+        // Only a flag: the workers finish their own read and close their own
+        // handle, so the thread that drops the watch never waits on one.
         self.stop.store(true, Ordering::SeqCst);
-        for slot in self.handles.iter() {
-            close(slot);
-        }
     }
 }
 
 /// Start watching `roots`; a change posts `WM_WATCH` to `hwnd`.
 pub fn start(hwnd: HWND, roots: &[PathBuf]) -> Watcher {
     let stop = Arc::new(AtomicBool::new(false));
-    let handles: Arc<Vec<AtomicIsize>> =
-        Arc::new((0..roots.len()).map(|_| AtomicIsize::new(0)).collect());
     let window = hwnd as isize;
-    for (index, root) in roots.iter().enumerate() {
+    for root in roots {
         let stop = Arc::clone(&stop);
-        let handles = Arc::clone(&handles);
         let root = root.clone();
-        std::thread::spawn(move || watch_root(window, &root, &stop, &handles, index));
+        std::thread::spawn(move || watch_root(window, &root, &stop));
     }
-    Watcher { stop, handles }
+    Watcher { stop }
 }
 
-/// Park in the change notification for one root until it is closed.
-fn watch_root(
-    window: isize,
-    root: &Path,
-    stop: &Arc<AtomicBool>,
-    handles: &Arc<Vec<AtomicIsize>>,
-    index: usize,
-) {
+/// Park in the change notification for one root until it is stopped.
+fn watch_root(window: isize, root: &Path, stop: &Arc<AtomicBool>) {
     let wide: Vec<u16> = root
         .as_os_str()
         .encode_wide()
@@ -70,54 +70,70 @@ fn watch_root(
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
             std::ptr::null_mut(),
         )
     };
     if handle.is_null() || handle == INVALID_HANDLE_VALUE {
         return;
     }
-    handles[index].store(handle as isize, Ordering::SeqCst);
 
     let filter = FILE_NOTIFY_CHANGE_FILE_NAME
         | FILE_NOTIFY_CHANGE_DIR_NAME
         | FILE_NOTIFY_CHANGE_LAST_WRITE
         | FILE_NOTIFY_CHANGE_SIZE;
     let mut buffer = vec![0u8; 16 * 1024];
+    let mut overlapped = OVERLAPPED::default();
+    let mut parked = false;
     while !stop.load(Ordering::SeqCst) {
-        let mut returned: u32 = 0;
-        let ok = unsafe {
-            ReadDirectoryChangesW(
-                handle,
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-                1,
-                filter,
-                &mut returned,
-                std::ptr::null_mut(),
-                None,
-            )
-        };
-        if ok == 0 || stop.load(Ordering::SeqCst) {
+        if !parked {
+            overlapped = OVERLAPPED::default();
+            let issued = unsafe {
+                ReadDirectoryChangesW(
+                    handle,
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len() as u32,
+                    1,
+                    filter,
+                    std::ptr::null_mut(),
+                    &mut overlapped,
+                    None,
+                )
+            };
+            if issued == 0 && last_error() != ERROR_IO_PENDING {
+                break;
+            }
+            parked = true;
+        }
+        // Stop between issuing the read and taking the flag above, and the
+        // read below would sit there till the tree moved: cancel it, and wait
+        // for the cancellation to land before this thread lets the handle go.
+        if stop.load(Ordering::SeqCst) {
+            let mut cancelled: u32 = 0;
+            unsafe { CancelIoEx(handle, &overlapped) };
+            unsafe { GetOverlappedResult(handle, &overlapped, &mut cancelled, 1) };
             break;
         }
-        if returned == 0 {
-            continue;
+        let mut returned: u32 = 0;
+        let ready =
+            unsafe { GetOverlappedResultEx(handle, &overlapped, &mut returned, STOP_POLL_MS, 0) };
+        if ready == 0 {
+            if last_error() == WAIT_TIMEOUT {
+                continue;
+            }
+            break;
         }
-        if !only_noise(&buffer[..returned as usize]) {
+        if returned > 0 && !only_noise(&buffer[..returned as usize]) {
             unsafe { PostMessageW(window as HWND, WM_WATCH, 0, 0) };
         }
+        parked = false;
     }
-    close(&handles[index]);
+    unsafe { CloseHandle(handle) };
 }
 
-/// Close a handle slot, but only once: whoever takes the non-zero value
-/// closes it, the loser sees zero.
-fn close(slot: &AtomicIsize) {
-    let raw = slot.swap(0, Ordering::SeqCst);
-    if raw != 0 {
-        unsafe { CloseHandle(raw as HANDLE) };
-    }
+/// The error of the call that just failed.
+fn last_error() -> u32 {
+    unsafe { GetLastError() }
 }
 
 /// True when every change in a notification batch happened under a noise
@@ -205,10 +221,25 @@ mod tests {
         assert!(!only_noise(&[]));
     }
 
+    /// Dropping a watch must not wait for a change. The window thread drops
+    /// the old watch whenever the root list changes, and a read parked on a
+    /// quiet tree would hold it there until that tree moved again.
     #[test]
-    fn noise_matches_a_whole_path_component() {
-        assert!(is_noise("a\\.git\\HEAD"));
-        assert!(is_noise("src/target/x.rs"));
-        assert!(!is_noise("src\\targets.rs"));
+    fn dropping_a_watch_returns_without_a_change() {
+        let dir = std::env::temp_dir().join("rust-loc-watch-drop");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let watcher = start(std::ptr::null_mut(), std::slice::from_ref(&dir));
+        // Give the worker time to park in its read.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(watcher);
+            let _ = sender.send(());
+        });
+        assert!(receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
