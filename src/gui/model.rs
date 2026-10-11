@@ -258,6 +258,12 @@ pub fn is_text_column(key: &str) -> bool {
     key == "location" || key == "author"
 }
 
+/// The sort column a header item stands for. The label owns item zero, so the
+/// report's own columns are the items after it.
+pub fn header_item_column(item: i32) -> i32 {
+    item - 1
+}
+
 /// Column a tab sorts on until the user clicks a header: worst first for the
 /// function list, most code first for the file and module lists.
 pub fn default_sort(view: View) -> (i32, bool) {
@@ -1482,6 +1488,14 @@ mod tests {
         // The hint has to follow the column the user sorted by, not the tab.
         let sorted = table_hint(View::Functions, Some(&report), 0, 0, 4, true);
         assert!(sorted.contains("sorted by Depth ▼"), "{sorted}");
+    }
+
+    #[test]
+    fn a_header_item_names_the_column_under_it() {
+        // The label column is header item zero, so the counters start at one.
+        assert_eq!(header_item_column(0), -1);
+        assert_eq!(header_item_column(1), 0);
+        assert_eq!(header_item_column(7), 6);
     }
 
     #[test]

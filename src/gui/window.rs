@@ -2445,21 +2445,32 @@ unsafe extern "system" fn main_proc(
                 show_context_menu(hwnd, false);
                 return 0;
             }
-            if code == HDN_ITEMCLICKW && (*header).idFrom == app::ID_LIST as usize {
-                let info = lparam as *const NMLISTVIEW;
-                let sub = (*info).iSubItem;
-                with_state(|state| {
-                    let column = if sub <= 0 { -1 } else { sub - 1 };
-                    if column == state.sort_column {
-                        state.sort_descending = !state.sort_descending;
-                    } else {
-                        state.sort_column = column;
-                        state.sort_descending = column >= 0;
-                    }
-                    state.rebuild();
-                    reconfigure_list(state);
-                    invalidate(hwnd);
-                });
+            if code == HDN_ITEMCLICKW {
+                let info = lparam as *const NMHEADERW;
+                if !info.is_null() {
+                    with_state(|state| {
+                        // A list view's header reports itself with an id of zero, so
+                        // it is recognised by its window. Its first item is the
+                        // label column and the report's columns follow it.
+                        let header = send(state.control(app::ID_LIST), LVM_GETHEADER, 0, 0) as HWND;
+                        if header.is_null()
+                            || (*info).hdr.hwndFrom != header
+                            || (*info).iButton != 0
+                        {
+                            return;
+                        }
+                        let column = model::header_item_column((*info).iItem);
+                        if column == state.sort_column {
+                            state.sort_descending = !state.sort_descending;
+                        } else {
+                            state.sort_column = column;
+                            state.sort_descending = column >= 0;
+                        }
+                        state.rebuild();
+                        reconfigure_list(state);
+                        invalidate(hwnd);
+                    });
+                }
             }
             0
         }
