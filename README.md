@@ -235,7 +235,49 @@ used; files from other roots have no churn and drop out. When git is missing,
 or the root is not a repository, the section prints `no git history for these
 files` instead of failing. `--top` caps the rows (default 15), and `--format
 json` adds a `hotspots` array plus `hotspot_total` so a build can script the
-ranking.
+### Maintainability and cognitive complexity
+
+`--metrics` adds a maintainability card, built from three counts that come out
+of the same single pass:
+
+- **Halstead volume** `V = N log2 n`. Operators are Rust punctuation and
+  keywords, operands are names, numbers and literals; punctuation is counted a
+  character at a time, so `->` is two operators.
+- **Cognitive complexity** scores control flow the way a reviewer reads it: one
+  point per `if`/`else`/`for`/`while`/`loop`/`match`, plus one for every level of
+  control flow it sits inside. `else if` is one branch rather than two, and `?`
+  is not counted. `--functions` then gains a `Cog` column, so the worst
+  functions can be ranked by how hard they are to follow rather than by raw
+  branch count.
+- **Maintainability index** `(171 - 5.2 ln V - 0.23 G - 16.2 ln LOC) * 100 / 171`,
+  clamped to `0..100`. The formula is calibrated for units, not for
+  thousand-line files, so every function is scored on its own lines and branch
+  count with the file volume shared out by code lines, and the code-line
+  weighted mean is reported with the bands `rust-code-analysis` uses.
+
+```console
+> rust-loc --metrics --by-file --sort cognitive --top 3
+File                                             Lines     Blank   Comment      Code      Test      Cplx       Cog
+------------------------------------------------------------------------------------------------------------------
+src/lexer.rs                                     1,125        67        60       998        30       326       507
+src/gui/window.rs                                2,379        94        62     2,223         0       230       245
+src/report.rs                                    1,517        67        54     1,396         0       175       214
+
+Maintainability
+  MI score                    33.8  low
+  Halstead volume          628,528
+  Tokens                    71,311   (46,275 operators, 25,036 operands)
+  Cognitive complexity       1,722
+  Methods / arguments    344 / 657
+```
+
+The `Methods / arguments` line is NOM/NARGS, so `--metrics` collects the
+function list even without `--functions`. `--format json` puts the same numbers
+in a `maintainability` object and a `cognitive` field on every function, and
+`--format csv` adds a `cognitive` column. The card and the extra columns stay
+out of the report unless the flag is given.
+
+RANKING_PLACEHOLDER
 
 ## Usage
 
@@ -267,6 +309,7 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--top-functions <n>` | rows in the function list (default 20, `0` = all) |
 | `--smells` | add the panic-call / lint-escape counters to the report |
 | `--hotspots` | rank files by complexity times git churn |
+| `--metrics` | add cognitive complexity, Halstead volume and the MI score |
 | `--exclude-generated` | drop generated/minified files from the totals |
 | `--mark-generated` | tag listings with `(gen)`/`(min)` instead |
 | `--min-gen-line-length <n>` | minified line-length threshold (default 255) |
@@ -295,6 +338,7 @@ usage error.
 > rust-loc --snapshot ci/baseline.txt
 > rust-loc --baseline ci/baseline.txt --by-file --sort code
 > rust-loc --hotspots --top 10
+> rust-loc --metrics --by-file --sort cognitive --top 10
 ```
 
 ## Windows UI

@@ -48,6 +48,7 @@ OPTIONS:
     --top-functions <N>      rows in the function list [default: 20, 0 = all]
     --smells                 count unwrap/expect/panic!/todo!/#[allow] escapes
     --hotspots               rank files by complexity and git churn
+    --metrics                add cognitive complexity, Halstead and MI
     --exclude-generated      drop generated/minified files from the totals
     --mark-generated         tag listings with (gen)/(min) instead
     --min-gen-line-length <N>  average line length that marks a file minified
@@ -262,6 +263,7 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
             "--functions" => options.functions = true,
             "--smells" => options.smells = true,
             "--hotspots" => options.hotspots = true,
+            "--metrics" => options.metrics = true,
             "--exclude-generated" | "--no-gen" => options.exclude_generated = true,
             "--mark-generated" => options.mark_generated = true,
             "--cocomo" => options.cocomo = true,

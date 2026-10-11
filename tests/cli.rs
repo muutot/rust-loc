@@ -1234,3 +1234,85 @@ fn hotspots_rank_files_by_complexity_and_churn() {
         "the most churned file should lead"
     );
 }
+
+#[test]
+fn metrics_stay_hidden_unless_asked_for() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let out = workspace.run(&[]);
+    assert!(!out.contains("Maintainability"), "{}", out);
+    let options = workspace.invocation(&["--metrics"]).options;
+    assert!(options.metrics);
+    assert!(options.column_keys().contains(&"cognitive"));
+    assert!(options.column_titles().contains(&"Cog"));
+}
+
+#[test]
+fn metrics_add_the_maintainability_card() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", SMELLY);
+    let out = workspace.run(&["--metrics"]);
+    for label in [
+        "Maintainability",
+        "MI score",
+        "Halstead volume",
+        "Tokens",
+        "Cognitive complexity",
+        "Methods / arguments",
+    ] {
+        assert!(out.contains(label), "{} missing from:\n{}", label, out);
+    }
+}
+
+#[test]
+fn metrics_json_reports_the_index_and_the_halstead_counts() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", SMELLY);
+    let out = workspace.run(&["--metrics", "--format", "json"]);
+    let document = json::parse(&out);
+    let row = document.get("maintainability").unwrap();
+    assert!(row.get("mi").unwrap().number() > 0.0);
+    assert!(!row.get("band").unwrap().text().is_empty());
+    assert!(row.get("halstead_volume").unwrap().number() > 0.0);
+    assert!(row.get("operators").unwrap().integer() > 0);
+    assert!(row.get("operands").unwrap().integer() > 0);
+    assert!(row.get("cognitive").unwrap().integer() > 0);
+    assert_eq!(row.get("methods").unwrap().integer(), 1);
+    assert_eq!(row.get("arguments").unwrap().integer(), 1);
+    assert_eq!(
+        row.get("sloc").unwrap().integer(),
+        document
+            .get("summary")
+            .unwrap()
+            .get("code")
+            .unwrap()
+            .integer()
+    );
+}
+
+#[test]
+fn functions_gain_a_cognitive_column_with_metrics() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BRANCHY);
+    let shown = workspace.run(&["--functions", "--metrics"]);
+    assert!(shown.contains("Cog"), "{}", shown);
+    let plain = workspace.run(&["--functions"]);
+    assert!(!plain.contains("Cog"), "{}", plain);
+    let out = workspace.run(&["--functions", "--metrics", "--format", "json"]);
+    let document = json::parse(&out);
+    let functions = document.get("functions").unwrap().items();
+    let branchy = functions
+        .iter()
+        .find(|row| row.get("name").unwrap().text() == "branchy")
+        .expect("branchy should be listed");
+    assert_eq!(branchy.get("cognitive").unwrap().integer(), 3);
+}
+
+#[test]
+fn metrics_do_not_disturb_the_default_columns() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let options = workspace.invocation(&[]).options;
+    assert!(!options.column_keys().contains(&"cognitive"));
+    assert!(options.column_keys().contains(&"complexity"));
+}

@@ -6,11 +6,54 @@
 //! records the line spans of test-only cfg attributes so callers can exclude
 //! test code without parsing the file again.
 
+use std::collections::HashSet;
+
+/// Halstead token counts for one scope: the business code, or the whole file
+/// when `--include-tests` asks for everything.
+///
+/// "Operators" are Rust punctuation and keywords, "operands" are names,
+/// numbers and literals. Punctuation is counted per character, so `->` counts
+/// as two operators; that is an approximation of the token-tree tools the
+/// volume formula comes from, and it is the volume alone that feeds the index.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Halstead {
+    pub operators: u32,
+    pub operands: u32,
+    pub distinct_operators: u32,
+    pub distinct_operands: u32,
+}
+
+impl Halstead {
+    /// `N`, every token seen.
+    pub fn length(self) -> u32 {
+        self.operators + self.operands
+    }
+
+    /// `n`, the tokens that are distinct.
+    pub fn vocabulary(self) -> u32 {
+        self.distinct_operators + self.distinct_operands
+    }
+
+    /// `V = N log2 n`, the program volume.
+    pub fn volume(self) -> f64 {
+        let vocabulary = self.vocabulary();
+        if vocabulary == 0 {
+            0.0
+        } else {
+            f64::from(self.length()) * f64::from(vocabulary).log2()
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Metrics {
     pub complexity: u32,
+    /// Control-flow nesting counted the way Sonar does: one per branch, plus
+    /// one for every level of nesting it sits inside.
+    pub cognitive: u32,
     pub unsafe_kw: u32,
     pub test_fns: u32,
+    pub halstead: Halstead,
 }
 
 /// One `fn` body with the cheap per-function metrics.
@@ -20,6 +63,9 @@ pub struct FunctionInfo {
     pub line: u32,
     pub code: u32,
     pub complexity: u32,
+    /// Cognitive complexity inside this body, independent of the enclosing
+    /// function, so a closure does not inherit its parent's nesting.
+    pub cognitive: u32,
     pub params: u32,
     pub depth: u32,
     pub test: bool,
@@ -62,8 +108,43 @@ struct OpenFn {
     body_depth: u32,
     params: u32,
     complexity: u32,
+    cognitive: u32,
+    /// Control-flow depth when the body opened, so the nesting penalty can
+    /// be counted from the function boundary.
+    control_base: u32,
     max_depth: u32,
     test: bool,
+}
+
+/// Accumulates one Halstead scope while the lexer walks the file. The token
+/// slices borrow the file text, so nothing outlives `analyze`.
+#[derive(Default)]
+struct TokenCounter<'a> {
+    operators: u32,
+    operands: u32,
+    distinct_operators: HashSet<&'a [u8]>,
+    distinct_operands: HashSet<&'a [u8]>,
+}
+
+impl<'a> TokenCounter<'a> {
+    fn operator(&mut self, token: &'a [u8]) {
+        self.operators += 1;
+        self.distinct_operators.insert(token);
+    }
+
+    fn operand(&mut self, token: &'a [u8]) {
+        self.operands += 1;
+        self.distinct_operands.insert(token);
+    }
+
+    fn finish(&self) -> Halstead {
+        Halstead {
+            operators: self.operators,
+            operands: self.operands,
+            distinct_operators: self.distinct_operators.len() as u32,
+            distinct_operands: self.distinct_operands.len() as u32,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -84,6 +165,50 @@ pub struct Analysis {
 
 pub const COMPLEXITY_KEYWORDS: [&str; 6] = ["if", "else", "for", "while", "loop", "match"];
 const COMPLEXITY_OPERATORS: [&[u8]; 4] = [b"&&", b"||", b"==", b"!="];
+
+/// Rust keywords, sorted, counted as Halstead operators rather than operands.
+/// A unit test keeps the sort order honest.
+const KEYWORDS: [&[u8]; 39] = [
+    b"Self",
+    b"as",
+    b"async",
+    b"await",
+    b"box",
+    b"break",
+    b"const",
+    b"continue",
+    b"crate",
+    b"dyn",
+    b"else",
+    b"enum",
+    b"extern",
+    b"false",
+    b"fn",
+    b"for",
+    b"if",
+    b"impl",
+    b"in",
+    b"let",
+    b"loop",
+    b"match",
+    b"mod",
+    b"move",
+    b"mut",
+    b"pub",
+    b"ref",
+    b"return",
+    b"self",
+    b"static",
+    b"struct",
+    b"super",
+    b"trait",
+    b"true",
+    b"type",
+    b"unsafe",
+    b"use",
+    b"where",
+    b"while",
+];
 
 const CODE: u8 = 0;
 const LINE_COMMENT: u8 = 1;
@@ -268,6 +393,48 @@ fn identifier_end(bytes: &[u8], i: usize) -> Option<usize> {
     Some(j)
 }
 
+/// End of a numeric literal. Underscores and the base prefixes count as part
+/// of it, a `.` only when a digit follows (so the range `1..2` is two
+/// numbers), and a trailing type suffix like `u32` comes along.
+fn number_end(bytes: &[u8], start: usize) -> usize {
+    let n = bytes.len();
+    let mut i = start;
+    if bytes[i] == b'0'
+        && i + 1 < n
+        && matches!(bytes[i + 1], b'x' | b'X' | b'b' | b'B' | b'o' | b'O')
+    {
+        i += 2;
+        while i < n && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        return i;
+    }
+    let digits = |index: &mut usize| {
+        while *index < n && (bytes[*index].is_ascii_digit() || bytes[*index] == b'_') {
+            *index += 1;
+        }
+    };
+    digits(&mut i);
+    if i < n && bytes[i] == b'.' && i + 1 < n && bytes[i + 1].is_ascii_digit() {
+        i += 1;
+        digits(&mut i);
+    }
+    if i < n && matches!(bytes[i], b'e' | b'E') {
+        let mut exponent = i + 1;
+        if exponent < n && matches!(bytes[exponent], b'+' | b'-') {
+            exponent += 1;
+        }
+        if exponent < n && bytes[exponent].is_ascii_digit() {
+            i = exponent;
+            digits(&mut i);
+        }
+    }
+    while i < n && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    i
+}
+
 /// Classify one file. The text must already have normalised newlines.
 pub fn analyze(text: &str) -> Analysis {
     let bytes = text.as_bytes();
@@ -305,6 +472,17 @@ pub fn analyze(text: &str) -> Analysis {
     let mut open_fns: Vec<OpenFn> = Vec::new();
     let mut pending_fn: Option<PendingFn> = None;
     let mut brace_depth: u32 = 0;
+    // Cognitive complexity needs to know how deep the control flow is, which
+    // the brace stack alone cannot say (a `struct {` nests no control flow).
+    let mut control_depth: u32 = 0;
+    let mut block_control: Vec<bool> = Vec::new();
+    let mut pending_control = false;
+    let mut after_else = false;
+    // Where the literal being read started, and whether it is business code.
+    let mut literal_start = 0usize;
+    let mut literal_business = false;
+    let mut tokens: TokenCounter<'_> = TokenCounter::default();
+    let mut tokens_all: TokenCounter<'_> = TokenCounter::default();
 
     while i < n {
         let ch = bytes[i];
@@ -365,6 +543,11 @@ pub fn analyze(text: &str) -> Analysis {
                 escaped = true;
             } else if ch == b'"' {
                 state = CODE;
+                let literal = &bytes[literal_start..=i];
+                if literal_business {
+                    tokens.operand(literal);
+                }
+                tokens_all.operand(literal);
             }
             i += 1;
             continue;
@@ -385,7 +568,13 @@ pub fn analyze(text: &str) -> Analysis {
                     .iter()
                     .all(|byte| *byte == b'#')
             {
-                i += 1 + raw_hashes;
+                let end = i + 1 + raw_hashes;
+                let literal = &bytes[literal_start..end];
+                if literal_business {
+                    tokens.operand(literal);
+                }
+                tokens_all.operand(literal);
+                i = end;
                 state = CODE;
                 continue;
             }
@@ -403,6 +592,11 @@ pub fn analyze(text: &str) -> Analysis {
                 escaped = true;
             } else if ch == b'\'' {
                 state = CODE;
+                let literal = &bytes[literal_start..=i];
+                if literal_business {
+                    tokens.operand(literal);
+                }
+                tokens_all.operand(literal);
             }
             i += 1;
             continue;
@@ -495,6 +689,8 @@ pub fn analyze(text: &str) -> Analysis {
                 code[line] = true;
             }
             raw_hashes = hashes;
+            literal_start = i;
+            literal_business = !skipping_test;
             i += len;
             state = RAW_STRING;
             continue;
@@ -505,6 +701,8 @@ pub fn analyze(text: &str) -> Analysis {
                 code[line] = true;
             }
             escaped = false;
+            literal_start = i;
+            literal_business = !skipping_test;
             state = STRING;
             i += 1;
             continue;
@@ -519,6 +717,8 @@ pub fn analyze(text: &str) -> Analysis {
                     || (i + 2 < n && bytes[i + 2] == b'\'' && bytes[i + 1] != b'\n'));
             if char_like {
                 escaped = false;
+                literal_start = i;
+                literal_business = !skipping_test;
                 state = CHAR;
             }
             i += 1;
@@ -534,6 +734,19 @@ pub fn analyze(text: &str) -> Analysis {
             // `unwrap`/`expect` are only smells when they are the method being
             // called; a struct field that happens to share the name is not one.
             let call_like = bytes.get(end) == Some(&b'(') || bytes[end..].starts_with(b"::<");
+            let is_keyword = KEYWORDS.binary_search(&word).is_ok();
+            if !skipping_test {
+                if is_keyword {
+                    tokens.operator(word);
+                } else {
+                    tokens.operand(word);
+                }
+            }
+            if is_keyword {
+                tokens_all.operator(word);
+            } else {
+                tokens_all.operand(word);
+            }
             if COMPLEXITY_KEYWORDS
                 .iter()
                 .any(|keyword| keyword.as_bytes() == word)
@@ -577,6 +790,27 @@ pub fn analyze(text: &str) -> Analysis {
                     smells.unimplemented += 1;
                 }
             }
+            if COMPLEXITY_KEYWORDS
+                .iter()
+                .any(|keyword| keyword.as_bytes() == word)
+            {
+                let is_else_if = word == b"if" && after_else;
+                after_else = word == b"else";
+                if !is_else_if {
+                    metrics_all.cognitive += 1 + control_depth;
+                }
+                if !skipping_test {
+                    if !is_else_if {
+                        metrics.cognitive += 1 + control_depth;
+                        if let Some(open) = open_fns.last_mut() {
+                            open.cognitive += 1 + control_depth.saturating_sub(open.control_base);
+                        }
+                    }
+                    pending_control = true;
+                }
+            } else {
+                after_else = false;
+            }
             if word == b"fn" {
                 let is_test_fn = pending_attrs.iter().any(|attr| is_test_attr(attr));
                 if is_test_fn {
@@ -617,6 +851,20 @@ pub fn analyze(text: &str) -> Analysis {
             continue;
         }
 
+        if ch.is_ascii_digit() {
+            let end = number_end(bytes, i);
+            if line < total {
+                code[line] = true;
+            }
+            let number = &bytes[i..end];
+            if !skipping_test {
+                tokens.operand(number);
+            }
+            tokens_all.operand(number);
+            i = end;
+            continue;
+        }
+
         if let Some(operator) = COMPLEXITY_OPERATORS
             .iter()
             .find(|operator| bytes[i..].starts_with(operator))
@@ -630,7 +878,9 @@ pub fn analyze(text: &str) -> Analysis {
                 if let Some(open) = open_fns.last_mut() {
                     open.complexity += 1;
                 }
+                tokens.operator(operator);
             }
+            tokens_all.operator(operator);
             i += operator.len();
             continue;
         }
@@ -639,9 +889,18 @@ pub fn analyze(text: &str) -> Analysis {
             code[line] = true;
         }
 
+        // Everything left is punctuation or a single operator byte; counting
+        // a byte at a time is the documented Halstead approximation.
+        if !skipping_test {
+            tokens.operator(&bytes[i..i + 1]);
+        }
+        tokens_all.operator(&bytes[i..i + 1]);
+
         if skipping_test {
             if ch == b'{' {
                 test_depth += 1;
+                pending_control = false;
+                after_else = false;
             } else if ch == b'}' {
                 test_depth -= 1;
                 if test_depth == 0 {
@@ -731,9 +990,16 @@ pub fn analyze(text: &str) -> Analysis {
                     pending.angle = pending.angle.saturating_sub(1);
                 }
             }
-            b';' => pending_fn = None,
+            b';' => {
+                pending_fn = None;
+                pending_control = false;
+                after_else = false;
+            }
             b'{' => {
                 brace_depth += 1;
+                let control = pending_control;
+                pending_control = false;
+                after_else = false;
                 if let Some(pending) = pending_fn.take() {
                     open_fns.push(OpenFn {
                         name: pending.name,
@@ -745,6 +1011,8 @@ pub fn analyze(text: &str) -> Analysis {
                             0
                         },
                         complexity: 0,
+                        cognitive: 0,
+                        control_base: control_depth,
                         max_depth: 0,
                         test: pending.test,
                     });
@@ -753,6 +1021,10 @@ pub fn analyze(text: &str) -> Analysis {
                     let depth = brace_depth - open.body_depth + 1;
                     open.max_depth = open.max_depth.max(depth);
                 }
+                if control {
+                    control_depth += 1;
+                }
+                block_control.push(control);
             }
             b'}' => {
                 while open_fns
@@ -766,12 +1038,18 @@ pub fn analyze(text: &str) -> Analysis {
                         line: open.line as u32 + 1,
                         code: 0,
                         complexity: open.complexity,
+                        cognitive: open.cognitive,
                         params: open.params,
                         depth: open.max_depth,
                         test: open.test,
                     });
                 }
                 brace_depth = brace_depth.saturating_sub(1);
+                pending_control = false;
+                after_else = false;
+                if block_control.pop().unwrap_or(false) {
+                    control_depth = control_depth.saturating_sub(1);
+                }
             }
             _ => {}
         }
@@ -805,6 +1083,7 @@ pub fn analyze(text: &str) -> Analysis {
             line: open.line as u32 + 1,
             code: 0,
             complexity: open.complexity,
+            cognitive: open.cognitive,
             params: open.params,
             depth: open.max_depth,
             test: open.test,
@@ -825,6 +1104,9 @@ pub fn analyze(text: &str) -> Analysis {
         }
     }
 
+    metrics.halstead = tokens.finish();
+    metrics_all.halstead = tokens_all.finish();
+
     Analysis {
         total,
         code,
@@ -838,5 +1120,36 @@ pub fn analyze(text: &str) -> Analysis {
         smells,
         smells_all,
         functions,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_keyword_table_stays_sorted() {
+        for pair in KEYWORDS.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "{} should sort before {}",
+                String::from_utf8_lossy(pair[0]),
+                String::from_utf8_lossy(pair[1])
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_literals_come_back_whole() {
+        for (text, end) in [
+            ("1_000u32", 8usize),
+            ("0xff", 4),
+            ("1.5e-3", 6),
+            ("3.", 1),
+            ("1..2", 1),
+            ("0b1010_i8", 9),
+        ] {
+            assert_eq!(number_end(text.as_bytes(), 0), end, "{text}");
+        }
     }
 }

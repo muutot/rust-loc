@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::baseline;
 use crate::cocomo;
 use crate::git;
+use crate::metrics;
 use crate::options::{Format, Options};
 use crate::scan::{self, Entry, FileFacts, Progress, Totals};
 
@@ -24,6 +25,7 @@ pub struct FunctionRow {
     pub line: u32,
     pub code: u32,
     pub complexity: u32,
+    pub cognitive: u32,
     pub params: u32,
     pub depth: u32,
 }
@@ -48,6 +50,33 @@ pub struct HotspotRow {
 /// Rows in the hotspot ranking unless `--top` says otherwise.
 pub const DEFAULT_HOTSPOTS: usize = 15;
 
+/// The maintainability numbers for the business scope, built by `--metrics`.
+pub struct MetricsRow {
+    /// Code-line weighted mean of the per-file index, so a big file counts
+    /// more than a small one.
+    pub index: f64,
+    /// Sum of the per-file Halstead volumes.
+    pub volume: f64,
+    pub cognitive: u32,
+    pub sloc: u32,
+    pub operators: u32,
+    pub operands: u32,
+    /// `NOM`: functions in scope.
+    pub methods: usize,
+    /// `NARGS`: their parameters, added up.
+    pub arguments: u64,
+}
+
+impl MetricsRow {
+    pub fn tokens(&self) -> u32 {
+        self.operators + self.operands
+    }
+
+    pub fn band(&self) -> &'static str {
+        metrics::band(self.index)
+    }
+}
+
 pub struct Report {
     pub roots: Vec<PathBuf>,
     pub options: Options,
@@ -68,6 +97,8 @@ pub struct Report {
     pub diff: Option<baseline::Diff>,
     /// Files ranked by complexity and git churn, when asked for.
     pub hotspots: Vec<HotspotRow>,
+    /// Cognitive complexity, Halstead volume and the MI score, when asked for.
+    pub metrics: Option<MetricsRow>,
 }
 
 impl Report {
@@ -201,6 +232,7 @@ pub fn scan(
                     line: function.line,
                     code: function.code,
                     complexity: function.complexity,
+                    cognitive: function.cognitive,
                     params: function.params,
                     depth: function.depth,
                 });
@@ -229,6 +261,12 @@ pub fn scan(
         None
     };
 
+    let metrics_row = if options.metrics {
+        Some(metrics_row(&business_refs, &summary, options))
+    } else {
+        None
+    };
+
     // Ranked before the entries move into the report, because the ranking
     // borrows them through `business_refs`.
     let hotspots = if options.hotspots {
@@ -252,12 +290,74 @@ pub fn scan(
         cocomo: cocomo_row,
         diff: None,
         hotspots,
+        metrics: metrics_row,
     };
     report.diff = options
         .baseline
         .as_ref()
         .map(|snapshot| baseline::Diff::of(&report, snapshot, cwd));
     report
+}
+
+/// Reduce the business scope to one maintainability card. The index is the
+/// code-line weighted mean of the per-file scores, the way
+/// `rust-code-analysis` reports a project figure, while the volume and the
+/// token counts are plain sums (Halstead volume is additive, the distinct
+/// counts behind it are not, so they stay per-file).
+fn metrics_row(entries: &[&Entry], summary: &Totals, options: &Options) -> MetricsRow {
+    let mut weighted = 0.0f64;
+    let mut weight = 0u64;
+    let mut operators = 0u32;
+    let mut operands = 0u32;
+    let mut methods = 0usize;
+    let mut arguments = 0u64;
+    for entry in entries {
+        let stats = &entry.stats;
+        operators += stats.halstead.operators;
+        operands += stats.halstead.operands;
+        let volume = stats.halstead.volume();
+        let mut scored = 0u32;
+        for function in &entry.facts.functions {
+            if function.test && !options.include_tests {
+                continue;
+            }
+            methods += 1;
+            arguments += u64::from(function.params);
+            if function.code == 0 || stats.code == 0 {
+                continue;
+            }
+            // The formula is calibrated for units, not for thousand-line
+            // files, so score each function and let the code lines weigh
+            // them. Its Halstead volume is the file volume shared out by the
+            // function's share of the code.
+            let share = volume * f64::from(function.code) / f64::from(stats.code);
+            weighted += metrics::maintainability_index(share, function.complexity, function.code)
+                * f64::from(function.code);
+            weight += u64::from(function.code);
+            scored += function.code;
+        }
+        if scored == 0 && stats.code > 0 {
+            // A file with no functions to score falls back to its own totals.
+            weighted += metrics::maintainability_index(volume, stats.complexity, stats.code)
+                * f64::from(stats.code);
+            weight += u64::from(stats.code);
+        }
+    }
+    let index = if weight > 0 {
+        weighted / weight as f64
+    } else {
+        metrics::maintainability_index(summary.volume, summary.complexity, summary.code)
+    };
+    MetricsRow {
+        index,
+        volume: summary.volume,
+        cognitive: summary.cognitive,
+        sloc: summary.code,
+        operators,
+        operands,
+        methods,
+        arguments,
+    }
 }
 
 /// Rank files by complexity times git churn, the way `scc --hotspots` does.
@@ -338,6 +438,12 @@ fn file_label(entry: &Entry, options: &Options, cwd: &Path) -> String {
 }
 
 fn number(value: u32, width: usize) -> String {
+    format!("{:>width$}", group(value), width = width)
+}
+
+/// Same as [`number`] for the counters that outgrew `u32`, like a Halstead
+/// volume on a very large code base.
+fn wide_number(value: u64, width: usize) -> String {
     format!("{:>width$}", group(value), width = width)
 }
 
@@ -576,6 +682,11 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push(String::new());
     }
 
+    if let Some(row) = &report.metrics {
+        render_metrics_text(row, &mut out);
+        out.push(String::new());
+    }
+
     if let Some(row) = &report.cocomo {
         render_cocomo_text(row, &mut out);
         out.push(String::new());
@@ -617,7 +728,7 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
 
     if options.functions {
         out.push(String::new());
-        render_functions_text(report, &mut out);
+        render_functions_text(report, options.metrics, &mut out);
     }
     if options.hotspots {
         out.push(String::new());
@@ -655,8 +766,34 @@ fn column_width(values: &[String], title: &str, minimum: usize, maximum: usize) 
     width.min(maximum)
 }
 
+/// Cognitive complexity, Halstead volume and the maintainability index.
+fn render_metrics_text(row: &MetricsRow, out: &mut Vec<String>) {
+    out.push("Maintainability".to_string());
+    out.push(
+        pad("  MI score", 22) + &format!("{:>12}", format!("{:.1}", row.index)) + "  " + row.band(),
+    );
+    out.push(pad("  Halstead volume", 22) + &wide_number(row.volume.round() as u64, 12));
+    out.push(
+        pad("  Tokens", 22)
+            + &number(row.tokens(), 12)
+            + &format!(
+                "   ({} operators, {} operands)",
+                group(row.operators),
+                group(row.operands)
+            ),
+    );
+    out.push(pad("  Cognitive complexity", 22) + &number(row.cognitive, 12));
+    out.push(
+        pad("  Methods / arguments", 22)
+            + &format!(
+                "{:>12}",
+                format!("{} / {}", group(row.methods as u32), group(row.arguments))
+            ),
+    );
+}
+
 /// The worst functions by complexity, one row per function.
-fn render_functions_text(report: &Report, out: &mut Vec<String>) {
+fn render_functions_text(report: &Report, cog: bool, out: &mut Vec<String>) {
     let rows = &report.functions;
     out.push("Functions".to_string());
     let mut scope = format!(
@@ -680,12 +817,13 @@ fn render_functions_text(report: &Report, out: &mut Vec<String>) {
     let location_width = column_width(&locations, "Location", 24, 64);
     let mut head = pad("Function", name_width);
     head.push_str(&pad("Location", location_width));
-    head.push_str(&format!(
-        "{:>8}{:>8}{:>7}{:>7}",
-        "Code", "Cplx", "Args", "Depth"
-    ));
+    head.push_str(&format!("{:>8}{:>8}", "Code", "Cplx"));
+    if cog {
+        head.push_str(&format!("{:>7}", "Cog"));
+    }
+    head.push_str(&format!("{:>7}{:>7}", "Args", "Depth"));
     out.push(head);
-    out.push("-".repeat(name_width + location_width + 30));
+    out.push("-".repeat(name_width + location_width + if cog { 37 } else { 30 }));
     for (row, name) in rows.iter().zip(names.iter()) {
         let mut line = pad(&clip(name, name_width), name_width);
         line.push_str(&pad(
@@ -693,12 +831,14 @@ fn render_functions_text(report: &Report, out: &mut Vec<String>) {
             location_width,
         ));
         line.push_str(&format!(
-            "{:>8}{:>8}{:>7}{:>7}",
+            "{:>8}{:>8}",
             group(row.code),
-            group(row.complexity),
-            row.params,
-            row.depth
+            group(row.complexity)
         ));
+        if cog {
+            line.push_str(&format!("{:>7}", group(row.cognitive)));
+        }
+        line.push_str(&format!("{:>7}{:>7}", row.params, row.depth));
         out.push(line);
     }
 }
@@ -812,6 +952,28 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
         ));
         out.push(String::new());
     }
+    if let Some(row) = &report.metrics {
+        out.push("### Maintainability".to_string());
+        out.push(String::new());
+        out.push("| Metric | Value |".to_string());
+        out.push("| --- | ---: |".to_string());
+        out.push(format!("| MI score | {:.1} ({}) |", row.index, row.band()));
+        out.push(format!(
+            "| Halstead volume | {} |",
+            group(row.volume.round() as u64)
+        ));
+        out.push(format!("| Tokens | {} |", group(row.tokens())));
+        out.push(format!(
+            "| Cognitive complexity | {} |",
+            group(row.cognitive)
+        ));
+        out.push(format!(
+            "| Methods / arguments | {} / {} |",
+            group(row.methods as u32),
+            group(row.arguments)
+        ));
+        out.push(String::new());
+    }
     if let Some(row) = &report.cocomo {
         out.push(format!("### COCOMO estimate ({})", row.project));
         out.push(String::new());
@@ -894,11 +1056,22 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
             group(report.functions.len() as u32)
         ));
         out.push(String::new());
-        out.push("| Function | Location | Code | Cplx | Args | Depth |".to_string());
-        out.push("| --- | --- | ---: | ---: | ---: | ---: |".to_string());
+        let cog = if options.metrics { " Cog |" } else { "" };
+        let cog_rule = if options.metrics { " ---: |" } else { "" };
+        out.push(format!(
+            "| Function | Location | Code | Cplx |{cog} Args | Depth |"
+        ));
+        out.push(format!(
+            "| --- | --- | ---: | ---: |{cog_rule} ---: | ---: |"
+        ));
         for row in &report.functions {
+            let cog = if options.metrics {
+                format!(" {} |", row.cognitive)
+            } else {
+                String::new()
+            };
             out.push(format!(
-                "| `{}` | `{}:{}` | {} | {} | {} | {} |",
+                "| `{}` | `{}:{}` | {} | {} |{cog} {} | {} |",
                 row.name, row.path, row.line, row.code, row.complexity, row.params, row.depth
             ));
         }
@@ -938,6 +1111,9 @@ fn render_csv(report: &Report, options: &Options, cwd: &Path) -> String {
     let mut columns: Vec<&str> = vec!["lines", "blank", "comment", "doc", "code", "test"];
     if options.complexity {
         columns.push("complexity");
+    }
+    if options.metrics {
+        columns.push("cognitive");
     }
     columns.push("unsafe");
     columns.push("test_fns");
@@ -1130,6 +1306,22 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         }
     ));
     out.push_str("  },\n");
+    if let Some(row) = &report.metrics {
+        out.push_str("  \"maintainability\": {\n");
+        out.push_str(&format!("    \"mi\": {},\n", json_number(row.index)));
+        out.push_str(&format!("    \"band\": {},\n", json_string(row.band())));
+        out.push_str(&format!(
+            "    \"halstead_volume\": {},\n",
+            json_number(row.volume)
+        ));
+        out.push_str(&format!("    \"operators\": {},\n", row.operators));
+        out.push_str(&format!("    \"operands\": {},\n", row.operands));
+        out.push_str(&format!("    \"cognitive\": {},\n", row.cognitive));
+        out.push_str(&format!("    \"sloc\": {},\n", row.sloc));
+        out.push_str(&format!("    \"methods\": {},\n", row.methods));
+        out.push_str(&format!("    \"arguments\": {}\n", row.arguments));
+        out.push_str("  },\n");
+    }
     if let Some(row) = &report.cocomo {
         out.push_str("  \"cocomo\": {\n");
         out.push_str(&format!("    \"project\": {},\n", json_string(row.project)));
@@ -1178,12 +1370,13 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         let mut items: Vec<String> = Vec::with_capacity(report.functions.len());
         for row in &report.functions {
             items.push(format!(
-                "{{\"name\": {}, \"path\": {}, \"line\": {}, \"code\": {}, \"complexity\": {}, \"params\": {}, \"depth\": {}}}",
+                "{{\"name\": {}, \"path\": {}, \"line\": {}, \"code\": {}, \"complexity\": {}, \"cognitive\": {}, \"params\": {}, \"depth\": {}}}",
                 json_string(&row.name),
                 json_string(&row.path),
                 row.line,
                 row.code,
                 row.complexity,
+                row.cognitive,
                 row.params,
                 row.depth
             ));

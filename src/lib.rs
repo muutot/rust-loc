@@ -14,6 +14,7 @@ pub mod git;
 #[cfg(windows)]
 pub mod gui;
 pub mod lexer;
+pub mod metrics;
 pub mod options;
 pub mod report;
 pub mod scan;

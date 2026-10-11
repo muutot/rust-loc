@@ -60,6 +60,9 @@ pub struct Options {
     pub smells: bool,
     /// Rank files by complexity times how often git says they change.
     pub hotspots: bool,
+    /// Add cognitive complexity, Halstead volume and the maintainability
+    /// index to the report.
+    pub metrics: bool,
     /// `--fail-if` rules; any violation exits with code 1.
     pub fail_if: Vec<gate::Gate>,
     /// Print gate failures as GitHub annotations.
@@ -102,6 +105,7 @@ impl Default for Options {
             cocomo_params: cocomo::ORGANIC,
             smells: false,
             hotspots: false,
+            metrics: false,
             fail_if: Vec::new(),
             ci: false,
             format: Format::Text,
@@ -119,6 +123,9 @@ impl Options {
         if self.complexity {
             columns.push("complexity");
         }
+        if self.metrics {
+            columns.push("cognitive");
+        }
         if self.uloc {
             columns.push("uloc");
         }
@@ -132,6 +139,9 @@ impl Options {
         let mut titles = vec!["Lines", "Blank", "Comment", "Code", "Test"];
         if self.complexity {
             titles.push("Cplx");
+        }
+        if self.metrics {
+            titles.push("Cog");
         }
         if self.uloc {
             titles.push("ULOC");
@@ -156,7 +166,9 @@ impl Options {
     pub fn read_options(&self) -> scan::ReadOptions {
         scan::ReadOptions {
             uloc: self.uloc,
-            functions: self.functions,
+            // `--metrics` reports NOM and NARGS, so it needs the function list
+            // even when `--functions` did not ask for the table.
+            functions: self.functions || self.metrics,
             include_tests: self.include_tests,
             min_gen_line_length: self.min_gen_line_length,
         }

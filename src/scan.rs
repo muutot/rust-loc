@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::generated::{self, Generated};
-use crate::lexer::{self, Analysis, FunctionInfo, Metrics, Smells};
+use crate::lexer::{self, Analysis, FunctionInfo, Halstead, Metrics, Smells};
 use crate::options::Options;
 
 pub const DEFAULT_IGNORE_DIRS: [&str; 15] = [
@@ -371,8 +371,10 @@ pub struct Stats {
     pub test: u32,
     pub physical: u32,
     pub complexity: u32,
+    pub cognitive: u32,
     pub unsafe_kw: u32,
     pub test_fns: u32,
+    pub halstead: Halstead,
     pub smells: Smells,
     pub uloc: Option<u32>,
     pub forced_test: bool,
@@ -405,6 +407,7 @@ impl Entry {
             "test" => self.stats.test,
             "physical" => self.stats.physical,
             "complexity" => self.stats.complexity,
+            "cognitive" => self.stats.cognitive,
             "unsafe" => self.stats.unsafe_kw,
             "test_fns" => self.stats.test_fns,
             "unwrap" => self.stats.smells.unwrap,
@@ -610,8 +613,10 @@ pub fn summarize(facts: &FileFacts, siblings: &HashSet<PathBuf>, include_tests: 
         test: counts.test,
         physical: facts.physical,
         complexity: metrics.complexity,
+        cognitive: metrics.cognitive,
         unsafe_kw: metrics.unsafe_kw,
         test_fns: metrics.test_fns,
+        halstead: metrics.halstead,
         smells,
         // A test-only file contributes no business lines, so its ULOC set is
         // empty in the Python implementation even though the raw lines were
@@ -656,9 +661,13 @@ pub struct Totals {
     pub test: u32,
     pub physical: u32,
     pub complexity: u32,
+    pub cognitive: u32,
     pub unsafe_kw: u32,
     pub test_fns: u32,
     pub smells: Smells,
+    /// Sum of the per-file Halstead volumes. Volume is additive enough for a
+    /// project figure; the distinct-token counts behind it are not.
+    pub volume: f64,
     /// Distinct-line count for a module group; `None` mirrors how the Python
     /// `totals()` dict simply omits ULOC.
     pub uloc: Option<usize>,
@@ -675,6 +684,8 @@ impl Totals {
             "test" => self.test,
             "physical" => self.physical,
             "complexity" => self.complexity,
+            "cognitive" => self.cognitive,
+            "volume" => self.volume as u32,
             "unsafe" => self.unsafe_kw,
             "test_fns" => self.test_fns,
             "unwrap" => self.smells.unwrap,
@@ -702,6 +713,8 @@ pub fn totals(entries: &[&Entry]) -> Totals {
         total.test += stats.test;
         total.physical += stats.physical;
         total.complexity += stats.complexity;
+        total.cognitive += stats.cognitive;
+        total.volume += stats.halstead.volume();
         total.unsafe_kw += stats.unsafe_kw;
         total.test_fns += stats.test_fns;
         total.smells.unwrap += stats.smells.unwrap;
@@ -733,13 +746,14 @@ pub fn union_uloc(entries: &[&Entry]) -> Option<usize> {
     }
 }
 
-pub const SORT_KEYS: [&str; 17] = [
+pub const SORT_KEYS: [&str; 18] = [
     "code",
     "lines",
     "blank",
     "comment",
     "test",
     "complexity",
+    "cognitive",
     "unsafe",
     "test_fns",
     "smells",

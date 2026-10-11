@@ -229,6 +229,8 @@ mod tests {
             test: 4,
             physical: 200,
             complexity: 33,
+            cognitive: 44,
+            volume: 1234.5,
             unsafe_kw: 2,
             test_fns: 7,
             smells: Smells {

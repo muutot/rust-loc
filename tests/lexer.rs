@@ -368,3 +368,62 @@ fn an_unclosed_function_body_is_flushed_at_eof() {
     assert_eq!(function_names(&analysis), ["open"]);
     assert_eq!(analysis.functions[0].code, 2);
 }
+
+#[test]
+fn cognitive_complexity_adds_one_per_nesting_level() {
+    let text = "fn a() {\n    if x {\n        if y {\n        }\n    }\n}\n";
+    let analysis = analyze(text);
+    assert_eq!(analysis.metrics.cognitive, 3);
+    assert_eq!(analysis.functions[0].cognitive, 3);
+}
+
+#[test]
+fn else_if_is_one_branch_not_two() {
+    let text = "fn a() {\n    if x {\n    } else if y {\n    } else {\n    }\n}\n";
+    assert_eq!(analyze(text).metrics.cognitive, 3);
+}
+
+#[test]
+fn struct_and_macro_braces_do_not_nest_control_flow() {
+    let text = "fn a() {\n    struct S {\n        x: u32,\n    }\n    let v = vec![1, 2];\n    if x {}\n}\n";
+    assert_eq!(analyze(text).metrics.cognitive, 1);
+}
+
+#[test]
+fn test_bodies_do_not_leak_into_the_business_metrics() {
+    let text = concat!(
+        "fn a() {\n",
+        "    if x {}\n",
+        "}\n",
+        "#[cfg(test)]\n",
+        "mod tests {\n",
+        "    fn t() {\n",
+        "        if y {}\n",
+        "    }\n",
+        "}\n"
+    );
+    let analysis = analyze(text);
+    assert_eq!(analysis.metrics.cognitive, 1);
+    assert_eq!(analysis.metrics_all.cognitive, 2);
+}
+
+#[test]
+fn operators_and_operands_are_counted_separately() {
+    let analysis = analyze("fn a() {\n    let x = 1 + 2;\n}\n");
+    let halstead = analysis.metrics.halstead;
+    assert!(halstead.operators > 0, "{halstead:?}");
+    assert!(halstead.operands > 0, "{halstead:?}");
+    assert_eq!(halstead.length(), halstead.operators + halstead.operands);
+    assert!(halstead.volume() > 0.0);
+    // `fn`, `let` and `+` are operators; `a`, `x`, `1` and `2` operands.
+    assert!(halstead.distinct_operators >= 3, "{halstead:?}");
+    assert_eq!(halstead.distinct_operands, 4);
+}
+
+#[test]
+fn string_literals_are_single_operands() {
+    let analysis = analyze("fn a() {\n    let x = \"hi\";\n    let y = \"ho\";\n}\n");
+    let halstead = analysis.metrics.halstead;
+    // `a`, `x`, `y` and the two literals, each distinct.
+    assert_eq!(halstead.distinct_operands, 5, "{halstead:?}");
+}
