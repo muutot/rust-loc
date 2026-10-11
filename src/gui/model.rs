@@ -190,6 +190,26 @@ pub struct Column {
     pub width: i32,
 }
 
+impl Column {
+    /// Design-pixel width the column asks for in the active language. The
+    /// Chinese smell headers carry the code token plus a measure word, so they
+    /// need more room than the bare English tokens do.
+    pub fn pixels(self) -> i32 {
+        if i18n::lang() == i18n::Lang::En {
+            return self.width;
+        }
+        match self.key {
+            "unwrap" => 100,
+            "expect" => 96,
+            "panic" => 92,
+            "todo" => 88,
+            "unimplemented" => 92,
+            "allow" => 88,
+            _ => self.width,
+        }
+    }
+}
+
 /// Header title for a column key, in the active language.
 pub fn column_title(key: &str) -> &'static str {
     let t = i18n::t();
@@ -1938,6 +1958,48 @@ mod tests {
         let hint = table_hint(View::Smells, Some(&report), 1, 1, 6, true);
         assert!(hint.contains("1 smells"), "{hint}");
         assert!(hint.contains("sorted by Total ▼"), "{hint}");
+    }
+
+    /// The smell headers used to read the same in both languages, so a Chinese
+    /// window still showed English column names. They carry a measure word now,
+    /// and the wider text has to fit the column, so the width follows the
+    /// language too.
+    #[test]
+    fn smell_headers_translate_and_widen_for_chinese() {
+        let keys = [
+            "unwrap",
+            "expect",
+            "panic",
+            "todo",
+            "unimplemented",
+            "allow",
+        ];
+        let smell = |key: &str| {
+            view_columns(View::Smells, &Options::default(), false)
+                .into_iter()
+                .find(|column| column.key == key)
+                .unwrap_or_else(|| panic!("no {key} column"))
+        };
+        i18n::set_lang(i18n::Lang::En);
+        let english: Vec<(&str, i32)> = keys
+            .iter()
+            .map(|key| (column_title(key), smell(key).pixels()))
+            .collect();
+        i18n::set_lang(i18n::Lang::Zh);
+        for (index, key) in keys.iter().enumerate() {
+            let title = column_title(key);
+            assert_ne!(title, english[index].0, "{key} is still English");
+            assert!(title.contains(english[index].0), "{title} lost the token");
+            assert_ne!(
+                smell(key).pixels(),
+                smell(key).width,
+                "{key} keeps the English width in Chinese",
+            );
+            assert!(
+                smell(key).pixels() > english[index].1,
+                "{key} did not widen for the Chinese header",
+            );
+        }
     }
 
     #[test]

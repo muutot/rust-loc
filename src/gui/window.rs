@@ -1113,7 +1113,7 @@ fn set_columns(state: &app::AppState) {
         .columns
         .iter()
         .filter(|column| !model::is_text_column(column.key))
-        .map(|column| state.theme.px(column.width))
+        .map(|column| state.theme.px(column.pixels()))
         .sum();
     // A text column takes the slack instead of the name column, so the long
     // file path is the part that gets the room.
@@ -1139,9 +1139,9 @@ fn set_columns(state: &app::AppState) {
         };
         let text = model::is_text_column(column.key);
         let width = if text {
-            (slack - label_width).max(state.theme.px(column.width))
+            (slack - label_width).max(state.theme.px(column.pixels()))
         } else {
-            state.theme.px(column.width)
+            state.theme.px(column.pixels())
         };
         specs.push((title, !text, width));
     }
