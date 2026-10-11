@@ -286,6 +286,12 @@ escapes, worst first:
 
 ![rust-loc-gui, smells tab](docs/ui-smells.png)
 
+Every scan is compared with the one before it, so the KPI strip grows a
+*vs last scan* card and the Files tab a `Delta` column - no baseline file
+needed:
+
+![rust-loc-gui, delta column and vs-last-scan card](docs/ui-delta.png)
+
 While a scan runs, a veil and a progress bar cover the shell:
 
 ![rust-loc-gui, scan in progress](docs/ui-scan-overlay.png)
@@ -296,6 +302,7 @@ While a scan runs, a veil and a progress bar cover the shell:
 | Rendering | GDI double buffering; the shell, the KPI cards, the stacked composition bar, the module chart and the scan veil are custom child windows, so nothing flickers |
 | Reports | `SysListView32` with owner-drawn sort headers, zebra striping, a live path filter, Files / Modules / Functions / Smells / Excluded views - every tab opens on its natural sort - and a placeholder KPI strip before the first scan |
 | Smells tab | the files that carry `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`#[allow]`, one row per file, ranked by the total |
+| Since the last scan | each scan diffs itself against the previous one in the same window: a *vs last scan* card with the code change, the added and deleted counts, and a `Delta` column on the Files tab |
 | Report options | `REPORT OPTIONS` keeps generated / minified files out of the totals and adds the COCOMO estimate; the KPI strip grows a row to hold the cost, effort, staffing and schedule cards |
 | Chrome | owner-drawn accent buttons, `SHBrowseForFolderW` / `GetSaveFileNameW` dialogs (no COM, no extra crates), clipboard paste of folder paths, accelerators, a row context menu and chart tooltips |
 | Language | English and Chinese, chosen from the system UI language on first run and switchable at any time |

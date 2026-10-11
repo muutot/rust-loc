@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
+use crate::baseline;
 use crate::gui::sys::*;
 use crate::gui::{i18n, model, paint, scan, theme, window};
 use crate::options::{Format, Options};
@@ -82,6 +83,9 @@ pub struct AppState {
     pub options: Options,
     pub roots: Vec<String>,
     pub report: Option<Report>,
+    /// Business files of the previous scan, so the next one can show what
+    /// changed since.
+    pub previous: Option<baseline::Snapshot>,
     pub rows: Vec<model::Row>,
     pub visible: Vec<usize>,
     pub columns: Vec<model::Column>,
@@ -158,6 +162,7 @@ impl AppState {
             options,
             roots,
             report: None,
+            previous: None,
             rows: Vec::new(),
             visible: Vec::new(),
             columns: Vec::new(),
@@ -319,7 +324,16 @@ impl AppState {
                         self.progress_path = path;
                     }
                     Ok(scan::Msg::Done(report)) => {
-                        self.report = Some(*report);
+                        let mut report = *report;
+                        // Compare with the previous scan of this window,
+                        // then remember this one for the next scan.
+                        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                        report.diff = self
+                            .previous
+                            .as_ref()
+                            .map(|snapshot| baseline::Diff::of(&report, snapshot, &cwd));
+                        self.previous = Some(baseline::Snapshot::of(&report, &cwd));
+                        self.report = Some(report);
                         finished = true;
                         break;
                     }
@@ -353,7 +367,12 @@ impl AppState {
     /// Recompute columns, rows, cards, charts and the table hint.
     pub fn rebuild(&mut self) {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        self.columns = model::view_columns(self.view, &self.options);
+        let has_delta = self
+            .report
+            .as_ref()
+            .map(|report| report.diff.is_some())
+            .unwrap_or(false);
+        self.columns = model::view_columns(self.view, &self.options, has_delta);
         self.cards = model::summary_cards(self.report.as_ref(), &self.options);
         match &self.report {
             Some(report) => {

@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::baseline;
 use crate::options::{Format, Options};
 use crate::report::{FunctionRow, Report};
 use crate::scan;
@@ -105,6 +106,7 @@ pub fn column_title(key: &str) -> &'static str {
         "unimplemented" => t.col_unimplemented,
         "allow" => t.col_allow,
         "smells" => t.col_smells,
+        "delta" => t.col_delta,
         _ => "",
     }
 }
@@ -154,8 +156,8 @@ pub fn table_columns(options: &Options) -> Vec<Column> {
 
 /// Columns for one tab. The excluded list only ever shows a line count; the
 /// function list ranks by complexity and shows the per-function numbers.
-pub fn view_columns(view: View, options: &Options) -> Vec<Column> {
-    match view {
+pub fn view_columns(view: View, options: &Options, has_delta: bool) -> Vec<Column> {
+    let mut columns = match view {
         View::Excluded => vec![Column {
             key: "lines",
             width: 90,
@@ -209,7 +211,14 @@ pub fn view_columns(view: View, options: &Options) -> Vec<Column> {
             },
         ],
         _ => table_columns(options),
+    };
+    if has_delta && view == View::Files {
+        columns.push(Column {
+            key: "delta",
+            width: 76,
+        });
     }
+    columns
 }
 
 /// Column a tab sorts on until the user clicks a header: worst first for the
@@ -228,6 +237,8 @@ pub struct Row {
     pub values: Vec<u32>,
     /// File the row points at, when it is more precise than the label.
     pub target: Option<String>,
+    /// Change in code lines since the previous scan, when there was one.
+    pub delta: Option<i64>,
 }
 
 pub struct Card {
@@ -253,6 +264,7 @@ impl Card {
             "effort" => theme::COLOR_DOC,
             "people" => theme::COLOR_TEST_FNS,
             "schedule" => theme::COLOR_ULOC,
+            "delta" => theme::ACCENT,
             _ => theme::TEXT,
         }
     }
@@ -287,6 +299,18 @@ pub fn money(value: f64) -> String {
     format!("${}", human_int(value.max(0.0).round() as u64))
 }
 
+/// "+180", "-31" or "0", grouped like the other counters.
+pub fn delta_text(value: i64) -> String {
+    if value == 0 {
+        return "0".to_string();
+    }
+    format!(
+        "{}{}",
+        if value > 0 { "+" } else { "-" },
+        human_int(value.unsigned_abs())
+    )
+}
+
 /// Split pasted roots: Windows paths may contain commas, so only `;` and
 /// newlines separate them.
 pub fn parse_paths(text: &str) -> Vec<String> {
@@ -310,10 +334,15 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
     match view {
         View::Files => {
             for entry in report.business_entries() {
+                let delta = report
+                    .diff
+                    .as_ref()
+                    .and_then(|diff| diff.code_delta(&baseline::key(entry, &report.roots, cwd)));
                 rows.push(Row {
                     label: display_path(entry.path(), cwd),
-                    values: columns.iter().map(|c| entry.column(c.key)).collect(),
+                    values: counter_values(entry, columns),
                     target: None,
+                    delta,
                 });
             }
         }
@@ -323,6 +352,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                     label: shorten_module(&label),
                     values: columns.iter().map(|c| stats.column(c.key)).collect(),
                     target: None,
+                    delta: None,
                 });
             }
         }
@@ -335,6 +365,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                         .map(|column| function_column(function, column.key))
                         .collect(),
                     target: Some(function.path.clone()),
+                    delta: None,
                 });
             }
         }
@@ -346,8 +377,9 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                 }
                 rows.push(Row {
                     label: display_path(entry.path(), cwd),
-                    values: columns.iter().map(|c| entry.column(c.key)).collect(),
+                    values: counter_values(entry, columns),
                     target: None,
+                    delta: None,
                 });
             }
         }
@@ -364,6 +396,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                     label: path,
                     values: vec![lines],
                     target: None,
+                    delta: None,
                 });
             }
         }
@@ -372,6 +405,16 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
 }
 
 /// Drop the `./` that a root-level module inherits from the relative path.
+/// The counters of one file, in column order. The trailing delta column is
+/// not a counter: the shell draws the signed change from `Row::delta`.
+fn counter_values(entry: &scan::Entry, columns: &[Column]) -> Vec<u32> {
+    columns
+        .iter()
+        .filter(|column| column.key != "delta")
+        .map(|column| entry.column(column.key))
+        .collect()
+}
+
 fn shorten_module(label: &str) -> String {
     label.strip_prefix("./").unwrap_or(label).to_string()
 }
@@ -512,7 +555,7 @@ pub fn table_hint(
 /// " · sorted by Cplx ▼" for the tab in front of the user.
 fn sorted_clause(view: View, report: &Report, column: i32, descending: bool) -> String {
     let title = if column >= 0 {
-        match view_columns(view, &report.options).get(column as usize) {
+        match view_columns(view, &report.options, report.diff.is_some()).get(column as usize) {
             Some(entry) => column_title(entry.key),
             None => view.label_title(),
         }
@@ -552,14 +595,23 @@ pub fn sort_rows(rows: &mut [Row], column: i32, descending: bool) {
     let index = column as usize;
     rows.sort_by_key(|row| row.label.to_lowercase());
     rows.sort_by(|a, b| {
-        let left = a.values.get(index).copied().unwrap_or(0);
-        let right = b.values.get(index).copied().unwrap_or(0);
+        let left = sort_key(a, index);
+        let right = sort_key(b, index);
         if descending {
             right.cmp(&left)
         } else {
             left.cmp(&right)
         }
     });
+}
+
+/// Value a row sorts on for a column index; the trailing delta column reads
+/// the signed change instead of a counter.
+fn sort_key(row: &Row, index: usize) -> i64 {
+    match row.values.get(index) {
+        Some(value) => i64::from(*value),
+        None => row.delta.unwrap_or(0),
+    }
 }
 
 pub fn filter_rows(rows: &[Row], query: &str) -> Vec<usize> {
@@ -742,6 +794,20 @@ pub fn summary_cards(report: Option<&Report>, options: &Options) -> Vec<Card> {
             label: t.card_schedule,
             value: format!("{:.1}", row.estimate.schedule),
             hint: t.hint_schedule.to_string(),
+        });
+    }
+    if let Some(diff) = &report.diff {
+        cards.push(Card {
+            key: "delta",
+            label: t.card_delta,
+            value: delta_text(diff.new.code as i64 - diff.old.code as i64),
+            hint: fill(
+                t.hint_delta_files,
+                &[
+                    ("added", human_int(diff.added() as u64)),
+                    ("deleted", human_int(diff.deleted() as u64)),
+                ],
+            ),
         });
     }
     cards
@@ -1127,7 +1193,7 @@ mod tests {
             ..Options::default()
         };
         let report = scratch.scan(&options);
-        let columns = view_columns(View::Functions, &options);
+        let columns = view_columns(View::Functions, &options, false);
         assert_eq!(
             columns.iter().map(|column| column.key).collect::<Vec<_>>(),
             ["code", "complexity", "args", "depth"]
@@ -1228,7 +1294,7 @@ mod tests {
         scratch.write("src/clean.rs", "fn c() {}\n");
         let options = Options::default();
         let report = scratch.scan(&options);
-        let columns = view_columns(View::Smells, &options);
+        let columns = view_columns(View::Smells, &options, false);
         assert_eq!(
             columns.iter().map(|column| column.key).collect::<Vec<_>>(),
             [
@@ -1250,5 +1316,60 @@ mod tests {
         let hint = table_hint(View::Smells, Some(&report), 1, 1, 6, true);
         assert!(hint.contains("1 smells"), "{hint}");
         assert!(hint.contains("sorted by Total ▼"), "{hint}");
+    }
+
+    #[test]
+    fn a_second_scan_shows_what_changed() {
+        i18n::set_lang(i18n::Lang::En);
+        let scratch = Scratch::new("delta");
+        scratch.write("src/a.rs", "fn a() {\n    let x = 1;\n}\n");
+        let options = Options::default();
+        let mut report = scratch.scan(&options);
+
+        let mut files = std::collections::BTreeMap::new();
+        files.insert(
+            "src/a.rs".to_string(),
+            crate::baseline::Row {
+                lines: 1,
+                code: 1,
+                complexity: 0,
+                smells: 0,
+            },
+        );
+        files.insert(
+            "src/gone.rs".to_string(),
+            crate::baseline::Row {
+                lines: 1,
+                code: 1,
+                complexity: 0,
+                smells: 0,
+            },
+        );
+        let snapshot = crate::baseline::Snapshot {
+            path: PathBuf::from("last"),
+            files,
+        };
+        report.diff = Some(crate::baseline::Diff::of(&report, &snapshot, &scratch.path));
+
+        let columns = view_columns(View::Files, &options, true);
+        assert_eq!(columns.last().unwrap().key, "delta");
+        let rows = build_rows(&report, View::Files, &columns, &scratch.path);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "src/a.rs");
+        assert_eq!(
+            rows[0].values.len(),
+            columns.len() - 1,
+            "the delta column is drawn from Row::delta, not from values"
+        );
+        assert_eq!(rows[0].delta, Some(2));
+
+        let cards = summary_cards(Some(&report), &options);
+        let card = cards.iter().find(|card| card.key == "delta").unwrap();
+        assert_eq!(card.value, "+1");
+        assert_eq!(card.hint, "0 added, 1 deleted");
+
+        let mut sorted = rows;
+        sort_rows(&mut sorted, columns.len() as i32 - 1, true);
+        assert_eq!(sorted[0].delta, Some(2));
     }
 }

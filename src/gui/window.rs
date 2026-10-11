@@ -792,6 +792,18 @@ pub fn refresh_list(state: &mut app::AppState) {
                 &cell as *const LVITEMW as isize,
             );
         }
+        if let Some(delta) = row.delta {
+            let mut text = wide(&model::delta_text(delta));
+            let mut cell: LVITEMW = unsafe { std::mem::zeroed() };
+            cell.iSubItem = row.values.len() as i32 + 1;
+            cell.pszText = text.as_mut_ptr();
+            send(
+                list,
+                LVM_SETITEMTEXTW,
+                position,
+                &cell as *const LVITEMW as isize,
+            );
+        }
     }
     send(list, WM_SETREDRAW, 1, 0);
     invalidate(list);
