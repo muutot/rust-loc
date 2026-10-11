@@ -54,6 +54,8 @@ pub struct Options {
     pub cocomo: bool,
     pub cocomo_project: cocomo::ProjectType,
     pub cocomo_params: cocomo::Params,
+    /// Report panic-shaped calls and lint escapes (unwrap/expect/panic/allow).
+    pub smells: bool,
     /// `--fail-if` rules; any violation exits with code 1.
     pub fail_if: Vec<gate::Gate>,
     /// Print gate failures as GitHub annotations.
@@ -88,6 +90,7 @@ impl Default for Options {
             cocomo: false,
             cocomo_project: cocomo::ProjectType::Organic,
             cocomo_params: cocomo::ORGANIC,
+            smells: false,
             fail_if: Vec::new(),
             ci: false,
             format: Format::Text,
@@ -105,6 +108,9 @@ impl Options {
         if self.uloc {
             columns.push("uloc");
         }
+        if self.smells {
+            columns.push("smells");
+        }
         columns
     }
 
@@ -115,6 +121,9 @@ impl Options {
         }
         if self.uloc {
             titles.push("ULOC");
+        }
+        if self.smells {
+            titles.push("Smells");
         }
         titles
     }

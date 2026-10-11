@@ -531,6 +531,9 @@ pub fn analyze(text: &str) -> Analysis {
             }
             let word = &bytes[i..end];
             let macro_call = bytes.get(end) == Some(&b'!');
+            // `unwrap`/`expect` are only smells when they are the method being
+            // called; a struct field that happens to share the name is not one.
+            let call_like = bytes.get(end) == Some(&b'(') || bytes[end..].starts_with(b"::<");
             if COMPLEXITY_KEYWORDS
                 .iter()
                 .any(|keyword| keyword.as_bytes() == word)
@@ -548,12 +551,12 @@ pub fn analyze(text: &str) -> Analysis {
                     metrics.unsafe_kw += 1;
                 }
             }
-            if word == b"unwrap" {
+            if word == b"unwrap" && call_like {
                 smells_all.unwrap += 1;
                 if !skipping_test {
                     smells.unwrap += 1;
                 }
-            } else if word == b"expect" {
+            } else if word == b"expect" && call_like {
                 smells_all.expect += 1;
                 if !skipping_test {
                     smells.expect += 1;

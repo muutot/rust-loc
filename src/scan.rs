@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::generated::{self, Generated};
-use crate::lexer::{self, Analysis, FunctionInfo, Metrics};
+use crate::lexer::{self, Analysis, FunctionInfo, Metrics, Smells};
 use crate::options::Options;
 
 pub const DEFAULT_IGNORE_DIRS: [&str; 15] = [
@@ -333,6 +333,8 @@ pub struct FileFacts {
     pub test_only: Counts,
     pub metrics: Metrics,
     pub metrics_all: Metrics,
+    pub smells: Smells,
+    pub smells_all: Smells,
     pub unique: Option<HashSet<Box<str>>>,
     pub functions: Vec<FunctionInfo>,
     pub generated: Generated,
@@ -371,6 +373,7 @@ pub struct Stats {
     pub complexity: u32,
     pub unsafe_kw: u32,
     pub test_fns: u32,
+    pub smells: Smells,
     pub uloc: Option<u32>,
     pub forced_test: bool,
     pub generated: Generated,
@@ -404,6 +407,13 @@ impl Entry {
             "complexity" => self.stats.complexity,
             "unsafe" => self.stats.unsafe_kw,
             "test_fns" => self.stats.test_fns,
+            "unwrap" => self.stats.smells.unwrap,
+            "expect" => self.stats.smells.expect,
+            "panic" => self.stats.smells.panic,
+            "todo" => self.stats.smells.todo,
+            "unimplemented" => self.stats.smells.unimplemented,
+            "allow" => self.stats.smells.allow,
+            "smells" => self.stats.smells.total(),
             "uloc" => self.stats.uloc.unwrap_or(0),
             _ => 0,
         }
@@ -496,6 +506,8 @@ fn read_facts(path: &Path, root: &Path, read: ReadOptions) -> Option<FileFacts> 
         test_only,
         metrics: analysis.metrics,
         metrics_all: analysis.metrics_all,
+        smells: analysis.smells,
+        smells_all: analysis.smells_all,
         unique: if read.uloc { Some(unique) } else { None },
         functions: if read.functions {
             analysis.functions
@@ -582,6 +594,13 @@ pub fn summarize(facts: &FileFacts, siblings: &HashSet<PathBuf>, include_tests: 
     } else {
         facts.metrics
     };
+    let smells = if include_tests {
+        facts.smells_all
+    } else if forced_test {
+        Smells::default()
+    } else {
+        facts.smells
+    };
     Stats {
         lines: counts.blank + counts.comment + counts.code,
         blank: counts.blank,
@@ -593,6 +612,7 @@ pub fn summarize(facts: &FileFacts, siblings: &HashSet<PathBuf>, include_tests: 
         complexity: metrics.complexity,
         unsafe_kw: metrics.unsafe_kw,
         test_fns: metrics.test_fns,
+        smells,
         // A test-only file contributes no business lines, so its ULOC set is
         // empty in the Python implementation even though the raw lines were
         // read; zeroing it here keeps the per-file numbers identical.
@@ -638,6 +658,7 @@ pub struct Totals {
     pub complexity: u32,
     pub unsafe_kw: u32,
     pub test_fns: u32,
+    pub smells: Smells,
     /// Distinct-line count for a module group; `None` mirrors how the Python
     /// `totals()` dict simply omits ULOC.
     pub uloc: Option<usize>,
@@ -656,6 +677,13 @@ impl Totals {
             "complexity" => self.complexity,
             "unsafe" => self.unsafe_kw,
             "test_fns" => self.test_fns,
+            "unwrap" => self.smells.unwrap,
+            "expect" => self.smells.expect,
+            "panic" => self.smells.panic,
+            "todo" => self.smells.todo,
+            "unimplemented" => self.smells.unimplemented,
+            "allow" => self.smells.allow,
+            "smells" => self.smells.total(),
             "uloc" => self.uloc.unwrap_or(0) as u32,
             _ => 0,
         }
@@ -676,6 +704,12 @@ pub fn totals(entries: &[&Entry]) -> Totals {
         total.complexity += stats.complexity;
         total.unsafe_kw += stats.unsafe_kw;
         total.test_fns += stats.test_fns;
+        total.smells.unwrap += stats.smells.unwrap;
+        total.smells.expect += stats.smells.expect;
+        total.smells.panic += stats.smells.panic;
+        total.smells.todo += stats.smells.todo;
+        total.smells.unimplemented += stats.smells.unimplemented;
+        total.smells.allow += stats.smells.allow;
     }
     total
 }
@@ -699,7 +733,7 @@ pub fn union_uloc(entries: &[&Entry]) -> Option<usize> {
     }
 }
 
-pub const SORT_KEYS: [&str; 10] = [
+pub const SORT_KEYS: [&str; 17] = [
     "code",
     "lines",
     "blank",
@@ -708,6 +742,13 @@ pub const SORT_KEYS: [&str; 10] = [
     "complexity",
     "unsafe",
     "test_fns",
+    "smells",
+    "unwrap",
+    "expect",
+    "panic",
+    "todo",
+    "unimplemented",
+    "allow",
     "uloc",
     "path",
 ];

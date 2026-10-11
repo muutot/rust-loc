@@ -324,6 +324,68 @@ fn unsafe_and_test_function_counters() {
     assert_eq!(summary.get("test_fns").unwrap().integer(), 1);
 }
 
+const SMELLY: &str = "#[allow(dead_code)]\nfn a(x: Option<u32>) -> u32 {\n    if x.is_none() {\n        panic!(\"boom\");\n    }\n    let y: Result<u32, ()> = Ok(1);\n    y.expect(\"bad\") + x.unwrap()\n}\n";
+
+#[test]
+fn smells_count_panic_shaped_calls_and_lint_escapes() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", SMELLY);
+    let summary = workspace.summary(&["--smells"]);
+    let smells = summary.get("smells").unwrap();
+    assert_eq!(smells.get("unwrap").unwrap().integer(), 1);
+    assert_eq!(smells.get("expect").unwrap().integer(), 1);
+    assert_eq!(smells.get("panic").unwrap().integer(), 1);
+    assert_eq!(smells.get("allow").unwrap().integer(), 1);
+    assert_eq!(smells.get("todo").unwrap().integer(), 0);
+    assert_eq!(smells.get("total").unwrap().integer(), 4);
+    let file = workspace.find(&workspace.document(&["--smells"]), "src/lib.rs");
+    let file_smells = file.get("smells").unwrap();
+    assert_eq!(file_smells.get("unwrap").unwrap().integer(), 1);
+    assert_eq!(file_smells.get("total").unwrap().integer(), 4);
+}
+
+#[test]
+fn smells_stay_out_of_the_default_report() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", SMELLY);
+    assert!(workspace.summary(&[]).get("smells").is_none());
+    let text = workspace.run(&[]);
+    assert!(!text.contains("Rust smells"), "{}", text);
+    let shown = workspace.run(&["--smells"]);
+    assert!(shown.contains("Rust smells"), "{}", shown);
+    assert!(shown.contains("unimplemented!()"), "{}", shown);
+    assert!(shown.contains("#[allow(..)]"), "{}", shown);
+    let markdown = workspace.run(&["--format", "markdown", "--smells"]);
+    assert!(markdown.contains("| unwrap() | 1 |"), "{}", markdown);
+    assert!(markdown.contains("| Smells (total) | 4 |"), "{}", markdown);
+}
+
+#[test]
+fn smells_add_csv_columns() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", SMELLY);
+    let out = workspace.run(&["--format", "csv", "--smells"]);
+    let header = out.lines().next().unwrap();
+    assert!(
+        header.ends_with("unwrap,expect,panic,todo,unimplemented,allow,smells"),
+        "{}",
+        header
+    );
+    let total = out.lines().nth(1).unwrap();
+    assert!(total.ends_with(",1,1,1,0,0,1,4"), "{}", total);
+}
+
+#[test]
+fn smells_can_gate_the_build_without_the_report_switch() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", SMELLY);
+    let (out, status) = workspace.checked(&["--fail-if", "unwrap>0"]);
+    assert_eq!(status, 1);
+    assert!(out.contains("unwrap 1 > 0"), "{}", out);
+    assert_eq!(workspace.checked(&["--fail-if", "smells==4"]).1, 1);
+    assert_eq!(workspace.checked(&["--fail-if", "unwrap<1"]).1, 0);
+}
+
 #[test]
 fn uloc_counts_unique_non_blank_lines() {
     let workspace = Workspace::new();

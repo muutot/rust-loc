@@ -628,12 +628,13 @@ fn layout(hwnd: HWND) {
             paint::Ink::CaptionEnd,
         ));
 
-        let mut tab_rects = [RECT::default(); 4];
+        let mut tab_rects = [RECT::default(); 5];
         let mut tab_x = table.left + px(12);
         for (index, (_view, tab_width)) in [
             (model::View::Files, px(60)),
             (model::View::Modules, px(78)),
             (model::View::Functions, px(84)),
+            (model::View::Smells, px(72)),
             (model::View::Excluded, px(112)),
         ]
         .iter()
@@ -1257,10 +1258,10 @@ fn paste_roots(hwnd: HWND) {
     }
 }
 
-/// Step through the four report tabs from the keyboard.
+/// Step through the five report tabs from the keyboard.
 fn cycle_view(hwnd: HWND) {
     with_state(|state| {
-        let next = model::View::from_index((state.view.index() + 1) % 4);
+        let next = model::View::from_index((state.view.index() + 1) % 5);
         set_view(state, next);
     });
     invalidate(hwnd);
@@ -1982,6 +1983,7 @@ unsafe extern "system" fn main_proc(
                         model::View::Files,
                         model::View::Modules,
                         model::View::Functions,
+                        model::View::Smells,
                         model::View::Excluded,
                     ]
                     .iter()

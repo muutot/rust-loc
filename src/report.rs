@@ -412,6 +412,18 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
     }
     out.push(String::new());
 
+    if options.smells {
+        out.push("Rust smells".to_string());
+        out.push(pad("  unwrap()", 22) + &number(summary.smells.unwrap, 12));
+        out.push(pad("  expect()", 22) + &number(summary.smells.expect, 12));
+        out.push(pad("  panic!()", 22) + &number(summary.smells.panic, 12));
+        out.push(pad("  todo!()", 22) + &number(summary.smells.todo, 12));
+        out.push(pad("  unimplemented!()", 22) + &number(summary.smells.unimplemented, 12));
+        out.push(pad("  #[allow(..)]", 22) + &number(summary.smells.allow, 12));
+        out.push(pad("  Total", 22) + &number(summary.smells.total(), 12));
+        out.push(String::new());
+    }
+
     if let Some(row) = &report.cocomo {
         render_cocomo_text(row, &mut out);
         out.push(String::new());
@@ -570,6 +582,15 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
     if options.uloc {
         rows.push(("ULOC", report.uloc_total.unwrap_or(0) as u32));
     }
+    if options.smells {
+        rows.push(("unwrap()", summary.smells.unwrap));
+        rows.push(("expect()", summary.smells.expect));
+        rows.push(("panic!()", summary.smells.panic));
+        rows.push(("todo!()", summary.smells.todo));
+        rows.push(("unimplemented!()", summary.smells.unimplemented));
+        rows.push(("#[allow]", summary.smells.allow));
+        rows.push(("Smells (total)", summary.smells.total()));
+    }
     for (name, value) in rows {
         out.push(format!("| {} | {} |", name, group(value)));
     }
@@ -672,6 +693,15 @@ fn render_csv(report: &Report, options: &Options, cwd: &Path) -> String {
     columns.push("test_fns");
     if options.uloc {
         columns.push("uloc");
+    }
+    if options.smells {
+        columns.push("unwrap");
+        columns.push("expect");
+        columns.push("panic");
+        columns.push("todo");
+        columns.push("unimplemented");
+        columns.push("allow");
+        columns.push("smells");
     }
     let mut out: Vec<String> = Vec::new();
     let mut header: Vec<String> = vec!["path".to_string()];
@@ -802,6 +832,18 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
     out.push_str(&format!("    \"complexity\": {},\n", summary.complexity));
     out.push_str(&format!("    \"unsafe\": {},\n", summary.unsafe_kw));
     out.push_str(&format!("    \"test_fns\": {},\n", summary.test_fns));
+    if options.smells {
+        out.push_str(&format!(
+            "    \"smells\": {{\"unwrap\": {}, \"expect\": {}, \"panic\": {}, \"todo\": {}, \"unimplemented\": {}, \"allow\": {}, \"total\": {}}},\n",
+            summary.smells.unwrap,
+            summary.smells.expect,
+            summary.smells.panic,
+            summary.smells.todo,
+            summary.smells.unimplemented,
+            summary.smells.allow,
+            summary.smells.total()
+        ));
+    }
     out.push_str(&format!(
         "    \"uloc\": {},\n",
         optional_number(report.uloc_total)
@@ -900,6 +942,18 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         row.push_str(&format!("      \"complexity\": {},\n", stats.complexity));
         row.push_str(&format!("      \"unsafe\": {},\n", stats.unsafe_kw));
         row.push_str(&format!("      \"test_fns\": {},\n", stats.test_fns));
+        if options.smells {
+            row.push_str(&format!(
+                "      \"smells\": {{\"unwrap\": {}, \"expect\": {}, \"panic\": {}, \"todo\": {}, \"unimplemented\": {}, \"allow\": {}, \"total\": {}}},\n",
+                stats.smells.unwrap,
+                stats.smells.expect,
+                stats.smells.panic,
+                stats.smells.todo,
+                stats.smells.unimplemented,
+                stats.smells.allow,
+                stats.smells.total()
+            ));
+        }
         row.push_str(&format!(
             "      \"uloc\": {}\n",
             optional_number(stats.uloc)

@@ -314,6 +314,14 @@ fn todo_and_unimplemented_count_only_as_macros() {
 }
 
 #[test]
+fn unwrap_and_expect_count_only_as_calls() {
+    let text = "fn a() {\n    let x = smells.unwrap + 1;\n    let y = count.expect;\n    let z = value.unwrap();\n    let w = result.expect(\"bad\");\n    let v = tur.unwrap::<u32>();\n    x + y + z + w + v\n}\n";
+    let analysis = analyze(text);
+    assert_eq!(analysis.smells.unwrap, 2);
+    assert_eq!(analysis.smells.expect, 1);
+}
+
+#[test]
 fn test_attributed_functions_are_flagged_but_still_counted() {
     let text = "#[test]\nfn covers() {}\nfn business() {}\n";
     let analysis = analyze(text);

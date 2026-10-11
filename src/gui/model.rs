@@ -17,6 +17,7 @@ pub enum View {
     Files,
     Modules,
     Functions,
+    Smells,
     Excluded,
 }
 
@@ -27,6 +28,7 @@ impl View {
             View::Files => t.label_file,
             View::Modules => t.label_module,
             View::Functions => t.label_function,
+            View::Smells => t.label_file,
             View::Excluded => t.label_test_only_file,
         }
     }
@@ -38,6 +40,7 @@ impl View {
             View::Files => t.tab_files,
             View::Modules => t.tab_modules,
             View::Functions => t.tab_functions,
+            View::Smells => t.tab_smells,
             View::Excluded => t.tab_excluded,
         }
     }
@@ -49,6 +52,7 @@ impl View {
             View::Files => t.table_per_file,
             View::Modules => t.table_per_module,
             View::Functions => t.table_functions,
+            View::Smells => t.table_smells,
             View::Excluded => t.table_excluded,
         }
     }
@@ -57,7 +61,8 @@ impl View {
         match index {
             1 => View::Modules,
             2 => View::Functions,
-            3 => View::Excluded,
+            3 => View::Smells,
+            4 => View::Excluded,
             _ => View::Files,
         }
     }
@@ -67,7 +72,8 @@ impl View {
             View::Files => 0,
             View::Modules => 1,
             View::Functions => 2,
-            View::Excluded => 3,
+            View::Smells => 3,
+            View::Excluded => 4,
         }
     }
 }
@@ -92,6 +98,13 @@ pub fn column_title(key: &str) -> &'static str {
         "uloc" => t.col_uloc,
         "args" => t.col_fn_args,
         "depth" => t.col_fn_depth,
+        "unwrap" => t.col_unwrap,
+        "expect" => t.col_expect,
+        "panic" => t.col_panic,
+        "todo" => t.col_todo,
+        "unimplemented" => t.col_unimplemented,
+        "allow" => t.col_allow,
+        "smells" => t.col_smells,
         _ => "",
     }
 }
@@ -165,6 +178,36 @@ pub fn view_columns(view: View, options: &Options) -> Vec<Column> {
                 width: 64,
             },
         ],
+        View::Smells => vec![
+            Column {
+                key: "unwrap",
+                width: 72,
+            },
+            Column {
+                key: "expect",
+                width: 72,
+            },
+            Column {
+                key: "panic",
+                width: 64,
+            },
+            Column {
+                key: "todo",
+                width: 64,
+            },
+            Column {
+                key: "unimplemented",
+                width: 70,
+            },
+            Column {
+                key: "allow",
+                width: 64,
+            },
+            Column {
+                key: "smells",
+                width: 70,
+            },
+        ],
         _ => table_columns(options),
     }
 }
@@ -174,6 +217,7 @@ pub fn view_columns(view: View, options: &Options) -> Vec<Column> {
 pub fn default_sort(view: View) -> (i32, bool) {
     match view {
         View::Functions => (1, true),
+        View::Smells => (6, true),
         View::Excluded => (0, true),
         _ => (3, true),
     }
@@ -291,6 +335,19 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                         .map(|column| function_column(function, column.key))
                         .collect(),
                     target: Some(function.path.clone()),
+                });
+            }
+        }
+        View::Smells => {
+            for entry in report.business_entries() {
+                let total = entry.stats.smells.total();
+                if total == 0 {
+                    continue;
+                }
+                rows.push(Row {
+                    label: display_path(entry.path(), cwd),
+                    values: columns.iter().map(|c| entry.column(c.key)).collect(),
+                    target: None,
                 });
             }
         }
@@ -414,6 +471,19 @@ pub fn table_hint(
             &[
                 ("total", human_int(report.function_count as u64)),
                 ("shown", human_int(report.functions.len() as u64)),
+            ],
+        )
+    } else if view == View::Smells {
+        let total = report.summary.smells.total();
+        if total == 0 {
+            return t.hint_no_smells.to_string();
+        }
+        fill(
+            t.hint_smells,
+            &[
+                ("total", human_int(total as u64)),
+                ("shown", human_int(shown as u64)),
+                ("matched", human_int(matched as u64)),
             ],
         )
     } else {
@@ -767,6 +837,9 @@ pub fn cli_command(report: &Report, cwd: &Path) -> String {
     }
     if options.functions {
         parts.push("--functions".to_string());
+    }
+    if options.smells {
+        parts.push("--smells".to_string());
     }
     if options.cocomo {
         parts.push("--cocomo".to_string());
@@ -1130,7 +1203,52 @@ mod tests {
     #[test]
     fn every_tab_has_a_natural_sort_column() {
         assert_eq!(default_sort(View::Functions), (1, true));
+        assert_eq!(default_sort(View::Smells), (6, true));
         assert_eq!(default_sort(View::Files), (3, true));
         assert_eq!(default_sort(View::Modules), (3, true));
+    }
+
+    #[test]
+    fn view_indices_round_trip_with_the_tab_strip() {
+        for index in 0..5 {
+            assert_eq!(View::from_index(index).index(), index);
+        }
+        assert!(View::from_index(3) == View::Smells);
+        assert_eq!(View::Smells.tab_title(), i18n::t().tab_smells);
+    }
+
+    #[test]
+    fn smells_tab_keeps_only_files_with_escapes() {
+        i18n::set_lang(i18n::Lang::En);
+        let scratch = Scratch::new("smells");
+        scratch.write(
+            "src/lib.rs",
+            "fn a(x: Option<u32>) -> u32 {\n    x.unwrap()\n}\n\nfn b() {}\n",
+        );
+        scratch.write("src/clean.rs", "fn c() {}\n");
+        let options = Options::default();
+        let report = scratch.scan(&options);
+        let columns = view_columns(View::Smells, &options);
+        assert_eq!(
+            columns.iter().map(|column| column.key).collect::<Vec<_>>(),
+            [
+                "unwrap",
+                "expect",
+                "panic",
+                "todo",
+                "unimplemented",
+                "allow",
+                "smells"
+            ]
+        );
+        let rows = build_rows(&report, View::Smells, &columns, &scratch.path);
+        assert_eq!(rows.len(), 1, "{}", rows.len());
+        assert_eq!(rows[0].label, "src/lib.rs");
+        assert_eq!(rows[0].values[0], 1);
+        assert_eq!(rows[0].values[6], 1);
+        assert_eq!(column_title("smells"), i18n::t().col_smells);
+        let hint = table_hint(View::Smells, Some(&report), 1, 1, 6, true);
+        assert!(hint.contains("1 smells"), "{hint}");
+        assert!(hint.contains("sorted by Total ▼"), "{hint}");
     }
 }

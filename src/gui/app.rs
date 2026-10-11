@@ -110,7 +110,7 @@ pub struct AppState {
     pub table_rect: RECT,
     pub table_title_rect: RECT,
     pub table_hint_rect: RECT,
-    pub tab_rects: [RECT; 4],
+    pub tab_rects: [RECT; 5],
 }
 
 impl AppState {
@@ -129,6 +129,9 @@ impl AppState {
             uloc: settings.uloc,
             functions: true,
             top_functions: GUI_TOP_FUNCTIONS,
+            // The smells tab reads counters the lexer always produces, so the
+            // GUI keeps the report's smell data on for every scan and export.
+            smells: true,
             exclude_generated: settings.exclude_generated,
             cocomo: settings.cocomo,
             exclude: model::parse_list(&settings.exclude),
@@ -182,7 +185,7 @@ impl AppState {
             table_rect: RECT::default(),
             table_title_rect: RECT::default(),
             table_hint_rect: RECT::default(),
-            tab_rects: [RECT::default(); 4],
+            tab_rects: [RECT::default(); 5],
         }
     }
 

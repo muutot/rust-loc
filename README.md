@@ -34,6 +34,10 @@ matches the competitors on the core columns (`files`, `lines`, `blank`,
 | `complexity` | approximate cyclomatic complexity using scc's Rust branch tokens (`if else for while loop match && || == !=`) |
 | `unsafe` | `unsafe` keyword count (cargo-count style) |
 | `test_fns` | functions carrying `#[test]`, `#[tokio::test]`, `#[rstest]`, ... |
+| `smells` | `unwrap + expect + panic + todo + unimplemented + allow` |
+| `unwrap` / `expect` | calls to those `Option`/`Result` methods (a field sharing the name is not one) |
+| `panic` / `todo` / `unimplemented` | `panic!()`, `todo!()`, `unimplemented!()` macro calls |
+| `allow` | `#[allow(...)]` lint escapes |
 | `uloc` | unique non-blank lines, merged across files (`sort -u | wc -l`) |
 | `physical` | every physical line of every discovered file, tests included |
 
@@ -52,8 +56,19 @@ matching brace. Generic argument lists (`HashMap<u32, u32>`) are skipped when
 counting parameters, and `fn(u32) -> u32` function-pointer types are not
 mistaken for definitions. Nested functions are measured separately.
 
-`--functions` also counts review smells per function: `unwrap`, `expect`,
-`panic!`, `todo!`, `unimplemented!` and `#[allow(...)]` escapes.
+### Rust smells
+
+`--smells` adds a *Rust smells* block to the text report and the matching
+counters everywhere else: `unwrap()`, `expect()`, `panic!()`, `todo!()`,
+`unimplemented!()`, `#[allow(...)]`, plus the total. They are the cheap
+`cargo-geiger` / `clippy` style review signals: code that panics on the happy
+path, and lints that were silenced instead of fixed.
+
+The counters follow the same scope rules as every other metric (test code is
+excluded unless `--include-tests`) and are always computed, so
+`--fail-if unwrap>0` needs no extra switch. `--sort smells --by-file` ranks
+the files that carry them. A struct field named `unwrap` is not counted; only
+method calls are.
 
 ### What counts as test code
 
@@ -107,12 +122,14 @@ your own. The estimate is derived from business code only, so it moves with
 `--fail-if <metric><op><value>` turns the report into a build check; repeat it
 for as many budgets as you like. The metric is any counter the report shows
 (`files`, `lines`, `blank`, `comment`, `doc`, `code`, `test`,
-`physical`, `complexity`, `unsafe`, `test-fns`, `uloc`), the operator is one
-of `> >= < <= == !=`, and the rule fails when the comparison holds:
+`physical`, `complexity`, `unsafe`, `test-fns`, `smells`, `unwrap`,
+`expect`, `panic`, `todo`, `unimplemented`, `allow`, `uloc`), the operator
+is one of `> >= < <= == !=`, and the rule fails when the comparison holds:
 
 ```console
 > rust-loc --fail-if "code>100000" --fail-if "complexity>=5000"
 > rust-loc --fail-if "unsafe==0" --fail-if "test-fns<20"
+> rust-loc --fail-if "unwrap>0" --fail-if "smells>200"
 ```
 
 A failed rule prints *Quality gate failed* with the measured value and exits
@@ -133,7 +150,7 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--json` | alias for `--format json` |
 | `--by-file`, `--per-file` | per-file breakdown |
 | `--by-module` | per-module (top level component) breakdown |
-| `--sort <key>` | `code`, `lines`, `blank`, `comment`, `test`, `complexity`, `unsafe`, `test_fns`, `uloc`, `path` |
+| `--sort <key>` | `code`, `lines`, `blank`, `comment`, `test`, `complexity`, `unsafe`, `test_fns`, `smells`, `unwrap`, `expect`, `panic`, `todo`, `unimplemented`, `allow`, `uloc`, `path` |
 | `--top <n>` | limit listings to `n` rows |
 | `--show-excluded` | list the excluded test-only files |
 | `--include-tests` | count test code as well |
@@ -145,6 +162,7 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--no-complexity` | hide the complexity column |
 | `--functions` | list functions ranked by complexity |
 | `--top-functions <n>` | rows in the function list (default 20, `0` = all) |
+| `--smells` | add the panic-call / lint-escape counters to the report |
 | `--exclude-generated` | drop generated/minified files from the totals |
 | `--mark-generated` | tag listings with `(gen)`/`(min)` instead |
 | `--min-gen-line-length <n>` | minified line-length threshold (default 255) |
@@ -165,6 +183,7 @@ usage error.
 > rust-loc --format csv --by-file > loc.csv
 > rust-loc --format json --show-excluded --uloc .
 > rust-loc --functions --top-functions 10
+> rust-loc --smells --by-file --sort smells --top 20
 > rust-loc --exclude-generated --by-file --sort code --top 20
 > rust-loc --cocomo --cocomo-project-type embedded --format markdown
 > rust-loc --fail-if "code>100000" --fail-if "unsafe>0" --ci
@@ -183,6 +202,11 @@ UI never blocks.
 
 ![rust-loc-gui, per-file view](docs/ui-screenshot.png)
 
+The *Smells* tab ranks the files that carry panic-shaped calls and lint
+escapes, worst first:
+
+![rust-loc-gui, smells tab](docs/ui-smells.png)
+
 While a scan runs, a veil and a progress bar cover the shell:
 
 ![rust-loc-gui, scan in progress](docs/ui-scan-overlay.png)
@@ -191,7 +215,8 @@ While a scan runs, a veil and a progress bar cover the shell:
 | --- | --- |
 | Bindings | `windows-sys` (the `windows-rs` project), feature-gated to exactly the API surface used; still nothing beyond the system DLLs at run time |
 | Rendering | GDI double buffering; the shell, the KPI cards, the stacked composition bar, the module chart and the scan veil are custom child windows, so nothing flickers |
-| Reports | `SysListView32` with owner-drawn sort headers, zebra striping, a live path filter, Files / Modules / Functions / Excluded views - every tab opens on its natural sort - and a placeholder KPI strip before the first scan |
+| Reports | `SysListView32` with owner-drawn sort headers, zebra striping, a live path filter, Files / Modules / Functions / Smells / Excluded views - every tab opens on its natural sort - and a placeholder KPI strip before the first scan |
+| Smells tab | the files that carry `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`#[allow]`, one row per file, ranked by the total |
 | Report options | `REPORT OPTIONS` keeps generated / minified files out of the totals and adds the COCOMO estimate; the KPI strip grows a row to hold the cost, effort, staffing and schedule cards |
 | Chrome | owner-drawn accent buttons, `SHBrowseForFolderW` / `GetSaveFileNameW` dialogs (no COM, no extra crates), clipboard paste of folder paths, accelerators, a row context menu and chart tooltips |
 | Language | English and Chinese, chosen from the system UI language on first run and switchable at any time |

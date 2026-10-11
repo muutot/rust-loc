@@ -69,6 +69,13 @@ pub enum Metric {
     Unsafe,
     TestFns,
     Uloc,
+    Unwrap,
+    Expect,
+    Panic,
+    Todo,
+    Unimplemented,
+    Allow,
+    Smells,
 }
 
 impl Metric {
@@ -87,6 +94,13 @@ impl Metric {
             "unsafe" | "unsafe_kw" => Some(Metric::Unsafe),
             "test_fns" | "test_fn" => Some(Metric::TestFns),
             "uloc" => Some(Metric::Uloc),
+            "unwrap" => Some(Metric::Unwrap),
+            "expect" => Some(Metric::Expect),
+            "panic" => Some(Metric::Panic),
+            "todo" => Some(Metric::Todo),
+            "unimplemented" => Some(Metric::Unimplemented),
+            "allow" => Some(Metric::Allow),
+            "smells" | "smell" => Some(Metric::Smells),
             _ => None,
         }
     }
@@ -105,6 +119,13 @@ impl Metric {
             Metric::Unsafe => "unsafe",
             Metric::TestFns => "test_fns",
             Metric::Uloc => "uloc",
+            Metric::Unwrap => "unwrap",
+            Metric::Expect => "expect",
+            Metric::Panic => "panic",
+            Metric::Todo => "todo",
+            Metric::Unimplemented => "unimplemented",
+            Metric::Allow => "allow",
+            Metric::Smells => "smells",
         }
     }
 
@@ -196,6 +217,7 @@ fn format_number(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lexer::Smells;
 
     fn totals() -> Totals {
         Totals {
@@ -209,6 +231,14 @@ mod tests {
             complexity: 33,
             unsafe_kw: 2,
             test_fns: 7,
+            smells: Smells {
+                unwrap: 3,
+                expect: 1,
+                panic: 1,
+                todo: 0,
+                unimplemented: 0,
+                allow: 1,
+            },
             uloc: Some(55),
         }
     }
@@ -274,6 +304,27 @@ mod tests {
         assert_eq!(read("uloc>0"), 55.0);
         assert_eq!(read("complexity>0"), 33.0);
         assert_eq!(read("test_fns>0"), 7.0);
+    }
+
+    #[test]
+    fn smell_metrics_read_the_business_totals() {
+        let totals = totals();
+        let read = |spec: &str| {
+            let gate = Gate::parse(spec).unwrap();
+            gate.value(&totals, 3, Some(55)).unwrap()
+        };
+        assert_eq!(read("smells>0"), 6.0);
+        assert_eq!(read("unwrap>0"), 3.0);
+        assert_eq!(read("allow>=1"), 1.0);
+        assert_eq!(read("todo==0"), 0.0);
+        assert_eq!(
+            Gate::parse("unimplemented>0").map(|gate| gate.metric),
+            Some(Metric::Unimplemented)
+        );
+        assert_eq!(
+            Gate::parse("panic > 0").map(|gate| gate.message(2.0)),
+            Some("panic 2 > 0".to_string())
+        );
     }
 
     #[test]
