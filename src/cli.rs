@@ -36,6 +36,8 @@ OPTIONS:
     --no-gitignore           disable gitignore filtering
     --uloc                   compute ULOC and DRYness
     --no-complexity          hide the complexity estimate
+    --functions              list functions ranked by complexity
+    --top-functions <N>      rows in the function list [default: 20, 0 = all]
     --jobs <N>               analysis threads [default: all cores]
     -h, --help               print this help
     -V, --version            print the version
@@ -119,6 +121,15 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
             "--include-tests" => options.include_tests = true,
             "--uloc" => options.uloc = true,
             "--no-complexity" => options.complexity = false,
+            "--functions" => options.functions = true,
+            "--top-functions" => {
+                let value = take(arguments, &mut index, "--top-functions")?;
+                options.top_functions = value
+                    .parse::<i64>()
+                    .map_err(|_| format!("--top-functions needs a number, got {}", value))?
+                    .max(0) as usize;
+                options.functions = true;
+            }
             "--gitignore" => {
                 options.gitignore = true;
                 gitignore_given = true;
@@ -173,6 +184,14 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                     return Err(format!("unknown sort key: {}", value));
                 }
                 options.sort = value.to_string();
+            }
+            other if other.starts_with("--top-functions=") => {
+                let value = &other["--top-functions=".len()..];
+                options.top_functions = value
+                    .parse::<i64>()
+                    .map_err(|_| format!("--top-functions needs a number, got {}", value))?
+                    .max(0) as usize;
+                options.functions = true;
             }
             other if other.starts_with('-') && other != "-" => {
                 return Err(format!("unknown option: {}", other));
@@ -295,5 +314,21 @@ mod tests {
     fn help_and_version_short_circuit() {
         assert_eq!(parse_in(&["--help"]).unwrap().action, Action::Help);
         assert_eq!(parse_in(&["-V"]).unwrap().action, Action::Version);
+    }
+
+    #[test]
+    fn top_functions_implies_the_function_list() {
+        let invocation = parse_in(&["--top-functions", "7"]).unwrap();
+        assert!(invocation.options.functions);
+        assert_eq!(invocation.options.top_functions, 7);
+        assert!(parse_in(&["--functions"]).unwrap().options.functions);
+        assert!(!parse_in(&[]).unwrap().options.functions);
+        assert_eq!(
+            parse_in(&["--top-functions=3"])
+                .unwrap()
+                .options
+                .top_functions,
+            3
+        );
     }
 }

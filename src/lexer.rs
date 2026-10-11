@@ -13,6 +13,59 @@ pub struct Metrics {
     pub test_fns: u32,
 }
 
+/// One `fn` body with the cheap per-function metrics.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FunctionInfo {
+    pub name: String,
+    pub line: u32,
+    pub code: u32,
+    pub complexity: u32,
+    pub params: u32,
+    pub depth: u32,
+    pub test: bool,
+}
+
+/// Panic-shaped calls and lint escapes a reviewer usually wants counted.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Smells {
+    pub unwrap: u32,
+    pub expect: u32,
+    pub panic: u32,
+    pub todo: u32,
+    pub unimplemented: u32,
+    pub allow: u32,
+}
+
+impl Smells {
+    pub fn total(self) -> u32 {
+        self.unwrap + self.expect + self.panic + self.todo + self.unimplemented + self.allow
+    }
+}
+
+/// A `fn` signature being read; the body opens at the next `{`.
+#[derive(Debug, Default, Clone)]
+struct PendingFn {
+    name: String,
+    line: usize,
+    commas: u32,
+    paren: u32,
+    angle: u32,
+    seen_param: bool,
+    test: bool,
+}
+
+/// A `fn` body currently open on the brace stack.
+#[derive(Debug, Clone)]
+struct OpenFn {
+    name: String,
+    line: usize,
+    body_depth: u32,
+    params: u32,
+    complexity: u32,
+    max_depth: u32,
+    test: bool,
+}
+
 #[derive(Debug)]
 pub struct Analysis {
     pub total: usize,
@@ -24,6 +77,9 @@ pub struct Analysis {
     pub sibling_targets: Vec<String>,
     pub metrics: Metrics,
     pub metrics_all: Metrics,
+    pub smells: Smells,
+    pub smells_all: Smells,
+    pub functions: Vec<FunctionInfo>,
 }
 
 pub const COMPLEXITY_KEYWORDS: [&str; 6] = ["if", "else", "for", "while", "loop", "match"];
@@ -167,6 +223,15 @@ fn is_test_attr(attr: &str) -> bool {
     })
 }
 
+/// True for lint escapes such as #[allow(..)] and #![allow(..)].
+fn attr_is_allow(body: &str) -> bool {
+    let rest = match body.trim().strip_prefix("allow") {
+        Some(rest) => rest,
+        None => return false,
+    };
+    rest.is_empty() || rest.starts_with('(')
+}
+
 /// Detect a raw string opener starting exactly at i.
 ///
 /// Returns the opener length (prefix + `r` + hashes + quote) and the hash
@@ -233,6 +298,13 @@ pub fn analyze(text: &str) -> Analysis {
     let mut test_start = 0usize;
     let mut crate_test = false;
     let mut sibling_targets: Vec<String> = Vec::new();
+    let mut smells = Smells::default();
+    let mut smells_all = Smells::default();
+    let mut functions: Vec<FunctionInfo> = Vec::new();
+    let mut fn_spans: Vec<(usize, usize)> = Vec::new();
+    let mut open_fns: Vec<OpenFn> = Vec::new();
+    let mut pending_fn: Option<PendingFn> = None;
+    let mut brace_depth: u32 = 0;
 
     while i < n {
         let ch = bytes[i];
@@ -345,12 +417,19 @@ pub fn analyze(text: &str) -> Analysis {
 
         if ch == b'#' {
             if let Some((body, end)) = match_attr(bytes, i) {
+                if attr_is_allow(&body) {
+                    smells_all.allow += 1;
+                    if !skipping_test {
+                        smells.allow += 1;
+                    }
+                }
                 if !skipping_test {
                     if cfg_selects_test(&body) {
                         if bytes[i..].starts_with(b"#!") {
                             crate_test = true;
                         } else {
                             pending_test = Some(line);
+                            pending_fn = None;
                         }
                     } else if let Some(target) = path_attribute(&body) {
                         pending_path = Some(target.to_string());
@@ -451,6 +530,7 @@ pub fn analyze(text: &str) -> Analysis {
                 code[line] = true;
             }
             let word = &bytes[i..end];
+            let macro_call = bytes.get(end) == Some(&b'!');
             if COMPLEXITY_KEYWORDS
                 .iter()
                 .any(|keyword| keyword.as_bytes() == word)
@@ -458,6 +538,9 @@ pub fn analyze(text: &str) -> Analysis {
                 metrics_all.complexity += 1;
                 if !skipping_test {
                     metrics.complexity += 1;
+                    if let Some(open) = open_fns.last_mut() {
+                        open.complexity += 1;
+                    }
                 }
             } else if word == b"unsafe" {
                 metrics_all.unsafe_kw += 1;
@@ -465,14 +548,60 @@ pub fn analyze(text: &str) -> Analysis {
                     metrics.unsafe_kw += 1;
                 }
             }
+            if word == b"unwrap" {
+                smells_all.unwrap += 1;
+                if !skipping_test {
+                    smells.unwrap += 1;
+                }
+            } else if word == b"expect" {
+                smells_all.expect += 1;
+                if !skipping_test {
+                    smells.expect += 1;
+                }
+            } else if word == b"panic" && macro_call {
+                smells_all.panic += 1;
+                if !skipping_test {
+                    smells.panic += 1;
+                }
+            } else if word == b"todo" && macro_call {
+                smells_all.todo += 1;
+                if !skipping_test {
+                    smells.todo += 1;
+                }
+            } else if word == b"unimplemented" && macro_call {
+                smells_all.unimplemented += 1;
+                if !skipping_test {
+                    smells.unimplemented += 1;
+                }
+            }
             if word == b"fn" {
-                if pending_attrs.iter().any(|attr| is_test_attr(attr)) {
+                let is_test_fn = pending_attrs.iter().any(|attr| is_test_attr(attr));
+                if is_test_fn {
                     metrics_all.test_fns += 1;
                     if !skipping_test {
                         metrics.test_fns += 1;
                     }
                 }
                 pending_attrs.clear();
+                pending_fn = if skipping_test || pending_test.is_some() {
+                    None
+                } else {
+                    Some(PendingFn {
+                        name: String::new(),
+                        line,
+                        commas: 0,
+                        paren: 0,
+                        angle: 0,
+                        seen_param: false,
+                        test: is_test_fn,
+                    })
+                };
+            } else if let Some(pending) = pending_fn.as_mut() {
+                if pending.name.is_empty() {
+                    pending.name = String::from_utf8_lossy(word).into_owned();
+                } else if pending.paren >= 1 {
+                    pending.seen_param = true;
+                }
             } else if pending_test.is_some() {
                 if word == b"mod" {
                     pending_is_mod = true;
@@ -495,6 +624,9 @@ pub fn analyze(text: &str) -> Analysis {
             metrics_all.complexity += 1;
             if !skipping_test {
                 metrics.complexity += 1;
+                if let Some(open) = open_fns.last_mut() {
+                    open.complexity += 1;
+                }
             }
             i += operator.len();
             continue;
@@ -557,6 +689,90 @@ pub fn analyze(text: &str) -> Analysis {
             pending_attrs.clear();
         }
 
+        // Punctuation feeds the per-function metrics. Only code that survived
+        // the test skip above reaches here, so test bodies open no entry.
+        match ch {
+            b'(' => {
+                if pending_fn.as_ref().is_some_and(|item| item.name.is_empty()) {
+                    pending_fn = None;
+                } else if let Some(pending) = pending_fn.as_mut() {
+                    pending.paren += 1;
+                }
+            }
+            b')' => {
+                if let Some(pending) = pending_fn.as_mut() {
+                    if pending.paren <= 1 {
+                        pending.paren = 0;
+                        pending.angle = 0;
+                    } else {
+                        pending.paren -= 1;
+                    }
+                }
+            }
+            b',' => {
+                if let Some(pending) = pending_fn.as_mut() {
+                    if pending.paren >= 1 && pending.angle == 0 {
+                        pending.commas += 1;
+                    }
+                }
+            }
+            b'<' => {
+                if let Some(pending) = pending_fn.as_mut() {
+                    if pending.paren >= 1 {
+                        pending.angle += 1;
+                    }
+                }
+            }
+            b'>' => {
+                if let Some(pending) = pending_fn.as_mut() {
+                    pending.angle = pending.angle.saturating_sub(1);
+                }
+            }
+            b';' => pending_fn = None,
+            b'{' => {
+                brace_depth += 1;
+                if let Some(pending) = pending_fn.take() {
+                    open_fns.push(OpenFn {
+                        name: pending.name,
+                        line: pending.line,
+                        body_depth: brace_depth,
+                        params: if pending.seen_param {
+                            pending.commas + 1
+                        } else {
+                            0
+                        },
+                        complexity: 0,
+                        max_depth: 0,
+                        test: pending.test,
+                    });
+                }
+                for open in open_fns.iter_mut() {
+                    let depth = brace_depth - open.body_depth + 1;
+                    open.max_depth = open.max_depth.max(depth);
+                }
+            }
+            b'}' => {
+                while open_fns
+                    .last()
+                    .is_some_and(|open| open.body_depth == brace_depth)
+                {
+                    let open = open_fns.pop().expect("body_depth just matched");
+                    fn_spans.push((open.line, line));
+                    functions.push(FunctionInfo {
+                        name: open.name,
+                        line: open.line as u32 + 1,
+                        code: 0,
+                        complexity: open.complexity,
+                        params: open.params,
+                        depth: open.max_depth,
+                        test: open.test,
+                    });
+                }
+                brace_depth = brace_depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+
         i += 1;
     }
 
@@ -568,11 +784,40 @@ pub fn analyze(text: &str) -> Analysis {
 
     let mut is_test = vec![false; total];
     if total > 0 {
-        for (start, end) in spans {
+        for &(start, end) in &spans {
             let from = start.min(total - 1);
             let to = end.min(total - 1);
             for flag in is_test.iter_mut().take(to + 1).skip(from) {
                 *flag = true;
+            }
+        }
+    }
+
+    // A truncated file can leave function bodies open; close them at EOF.
+    let last_line = total.saturating_sub(1);
+    while let Some(open) = open_fns.pop() {
+        fn_spans.push((open.line, last_line));
+        functions.push(FunctionInfo {
+            name: open.name,
+            line: open.line as u32 + 1,
+            code: 0,
+            complexity: open.complexity,
+            params: open.params,
+            depth: open.max_depth,
+            test: open.test,
+        });
+    }
+
+    if total > 0 {
+        // Business code lines per function: code lines minus test-only lines.
+        for (index, &(start, end)) in fn_spans.iter().enumerate() {
+            let from = start.min(total - 1);
+            let to = end.min(total - 1);
+            functions[index].code = (from..=to)
+                .filter(|line_index| code[*line_index] && !is_test[*line_index])
+                .count() as u32;
+            if is_test[from..=to].iter().any(|flag| *flag) {
+                functions[index].test = true;
             }
         }
     }
@@ -587,5 +832,8 @@ pub fn analyze(text: &str) -> Analysis {
         sibling_targets,
         metrics,
         metrics_all,
+        smells,
+        smells_all,
+        functions,
     }
 }

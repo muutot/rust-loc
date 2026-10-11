@@ -12,6 +12,17 @@ pub struct Excluded {
     pub paths: Vec<(String, u32)>,
 }
 
+/// One function in the ranked list, flattened across every scanned file.
+pub struct FunctionRow {
+    pub path: String,
+    pub name: String,
+    pub line: u32,
+    pub code: u32,
+    pub complexity: u32,
+    pub params: u32,
+    pub depth: u32,
+}
+
 pub struct Report {
     pub roots: Vec<PathBuf>,
     pub options: Options,
@@ -22,6 +33,10 @@ pub struct Report {
     pub uloc_total: Option<usize>,
     pub all_lines: u32,
     pub excluded: Excluded,
+    /// Business functions ranked by complexity; empty unless requested.
+    pub functions: Vec<FunctionRow>,
+    /// Every business function found before the ranking was truncated.
+    pub function_count: usize,
 }
 
 impl Report {
@@ -70,6 +85,7 @@ pub fn scan(
             root,
             files,
             options.uloc,
+            options.functions,
             options.include_tests,
             options.worker_count(),
             forward.as_deref(),
@@ -126,6 +142,39 @@ pub fn scan(
         paths,
     };
 
+    let mut function_count = 0usize;
+    let mut functions: Vec<FunctionRow> = Vec::new();
+    if options.functions {
+        for entry in &business_refs {
+            for function in &entry.facts.functions {
+                if function.test && !options.include_tests {
+                    continue;
+                }
+                function_count += 1;
+                functions.push(FunctionRow {
+                    path: scan::relative(entry.path(), cwd),
+                    name: function.name.clone(),
+                    line: function.line,
+                    code: function.code,
+                    complexity: function.complexity,
+                    params: function.params,
+                    depth: function.depth,
+                });
+            }
+        }
+        functions.sort_by(|left, right| {
+            right
+                .complexity
+                .cmp(&left.complexity)
+                .then(right.code.cmp(&left.code))
+                .then(left.path.cmp(&right.path))
+                .then(left.line.cmp(&right.line))
+        });
+        if options.top_functions > 0 {
+            functions.truncate(options.top_functions);
+        }
+    }
+
     Report {
         roots: roots.to_vec(),
         options: options.clone(),
@@ -136,6 +185,8 @@ pub fn scan(
         uloc_total,
         all_lines,
         excluded,
+        functions,
+        function_count,
     }
 }
 
@@ -331,6 +382,11 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
             out.push(format!("  {} ({} lines)", path, group(*count)));
         }
     }
+
+    if options.functions {
+        out.push(String::new());
+        render_functions_text(report, &mut out);
+    }
     out.join("\n")
 }
 
@@ -340,6 +396,75 @@ fn label_width(labels: &[String], title: &str) -> usize {
         width = width.max(label.chars().count());
     }
     width
+}
+
+/// Cut a label to width characters, marking the loss with a trailing "..".
+fn clip(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    if width <= 2 {
+        return text.chars().take(width).collect();
+    }
+    let mut out: String = text.chars().take(width - 2).collect();
+    out.push_str("..");
+    out
+}
+
+fn column_width(values: &[String], title: &str, minimum: usize, maximum: usize) -> usize {
+    let mut width = minimum.max(title.chars().count());
+    for value in values {
+        width = width.max(value.chars().count());
+    }
+    width.min(maximum)
+}
+
+/// The worst functions by complexity, one row per function.
+fn render_functions_text(report: &Report, out: &mut Vec<String>) {
+    let rows = &report.functions;
+    out.push("Functions".to_string());
+    let mut scope = format!(
+        "  {} function(s) in scope, ranked by complexity",
+        group(report.function_count as u32)
+    );
+    if rows.len() < report.function_count {
+        scope.push_str(&format!(", showing {}", group(rows.len() as u32)));
+    }
+    out.push(scope);
+    if rows.is_empty() {
+        return;
+    }
+    out.push(String::new());
+    let names: Vec<String> = rows.iter().map(|row| row.name.clone()).collect();
+    let locations: Vec<String> = rows
+        .iter()
+        .map(|row| format!("{}:{}", row.path, row.line))
+        .collect();
+    let name_width = column_width(&names, "Function", 20, 40);
+    let location_width = column_width(&locations, "Location", 24, 64);
+    let mut head = pad("Function", name_width);
+    head.push_str(&pad("Location", location_width));
+    head.push_str(&format!(
+        "{:>8}{:>8}{:>7}{:>7}",
+        "Code", "Cplx", "Args", "Depth"
+    ));
+    out.push(head);
+    out.push("-".repeat(name_width + location_width + 30));
+    for (row, name) in rows.iter().zip(names.iter()) {
+        let mut line = pad(&clip(name, name_width), name_width);
+        line.push_str(&pad(
+            &clip(&format!("{}:{}", row.path, row.line), location_width),
+            location_width,
+        ));
+        line.push_str(&format!(
+            "{:>8}{:>8}{:>7}{:>7}",
+            group(row.code),
+            group(row.complexity),
+            row.params,
+            row.depth
+        ));
+        out.push(line);
+    }
 }
 
 fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
@@ -420,6 +545,25 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
         for (label, stats, _) in scan::module_groups(&business, cwd) {
             let values: Vec<String> = columns.iter().map(|key| group(stats.column(key))).collect();
             out.push(format!("| `{}` | {} |", label, values.join(" | ")));
+        }
+        out.push(String::new());
+    }
+    if options.functions {
+        out.push("### Worst functions by complexity".to_string());
+        out.push(String::new());
+        out.push(format!(
+            "{} function(s) in scope, showing {}",
+            group(report.function_count as u32),
+            group(report.functions.len() as u32)
+        ));
+        out.push(String::new());
+        out.push("| Function | Location | Code | Cplx | Args | Depth |".to_string());
+        out.push("| --- | --- | ---: | ---: | ---: | ---: |".to_string());
+        for row in &report.functions {
+            out.push(format!(
+                "| `{}` | `{}:{}` | {} | {} | {} | {} |",
+                row.name, row.path, row.line, row.code, row.complexity, row.params, row.depth
+            ));
         }
         out.push(String::new());
     }
@@ -595,6 +739,26 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         ));
     }
     out.push_str(&format!("  \"all_rust_lines\": {},\n", report.all_lines));
+    if options.functions {
+        out.push_str(&format!(
+            "  \"functions_total\": {},\n",
+            report.function_count
+        ));
+        let mut items: Vec<String> = Vec::with_capacity(report.functions.len());
+        for row in &report.functions {
+            items.push(format!(
+                "{{\"name\": {}, \"path\": {}, \"line\": {}, \"code\": {}, \"complexity\": {}, \"params\": {}, \"depth\": {}}}",
+                json_string(&row.name),
+                json_string(&row.path),
+                row.line,
+                row.code,
+                row.complexity,
+                row.params,
+                row.depth
+            ));
+        }
+        out.push_str(&format!("  \"functions\": {},\n", json_array(&items, 2)));
+    }
     let mut rows: Vec<String> = Vec::with_capacity(report.entries.len());
     for entry in &report.entries {
         let stats = &entry.stats;

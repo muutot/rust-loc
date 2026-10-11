@@ -541,3 +541,65 @@ fn missing_root_is_rejected() {
     let error = cli::run(&arguments, &workspace.path).unwrap_err();
     assert!(error.contains("does not exist"), "{}", error);
 }
+
+const BRANCHY: &str = "fn plain() {}\nfn branchy(a: u32, b: u32) -> u32 {\n    if a == 1 {\n        a\n    } else if b != 2 {\n        b\n    } else {\n        0\n    }\n}\n";
+
+#[test]
+fn functions_flag_lists_the_worst_first() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BRANCHY);
+    let text = workspace.run(&["--functions"]);
+    let start = text.find("Functions").expect("no Functions section");
+    let section = &text[start..];
+    assert!(section.contains("2 function(s) in scope"), "{}", section);
+    let big = section.find("branchy").expect("branchy missing");
+    let small = section.find("plain").expect("plain missing");
+    assert!(big < small, "{}", section);
+}
+
+#[test]
+fn functions_stay_hidden_without_the_flag() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BRANCHY);
+    assert!(!workspace.run(&[]).contains("Functions"));
+    assert!(!workspace.document(&[]).get("functions").is_some());
+}
+
+#[test]
+fn functions_json_reports_the_metrics() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BRANCHY);
+    let document = workspace.document(&["--functions"]);
+    assert_eq!(document.get("functions_total").unwrap().integer(), 2);
+    let functions = document.get("functions").unwrap().items();
+    assert_eq!(functions.len(), 2);
+    let top = &functions[0];
+    assert_eq!(top.get("name").unwrap().text(), "branchy");
+    assert_eq!(top.get("line").unwrap().integer(), 2);
+    assert_eq!(top.get("params").unwrap().integer(), 2);
+    assert_eq!(top.get("complexity").unwrap().integer(), 6);
+    assert_eq!(top.get("depth").unwrap().integer(), 2);
+    assert_eq!(top.get("code").unwrap().integer(), 9);
+    assert!(top.get("path").unwrap().text().ends_with("lib.rs"));
+}
+
+#[test]
+fn top_functions_limits_the_rows_but_keeps_the_total() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn a() {}\nfn b() {}\nfn c() {}\n");
+    let document = workspace.document(&["--top-functions", "2"]);
+    assert_eq!(document.get("functions_total").unwrap().integer(), 3);
+    assert_eq!(document.get("functions").unwrap().items().len(), 2);
+}
+
+#[test]
+fn disabled_test_functions_are_left_out_of_the_ranking() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn business() {}\n#[test]\nfn covers() {}\n");
+    let document = workspace.document(&["--functions"]);
+    let functions = document.get("functions").unwrap().items();
+    assert_eq!(functions.len(), 1);
+    assert_eq!(functions[0].get("name").unwrap().text(), "business");
+    let with_tests = workspace.document(&["--functions", "--include-tests"]);
+    assert_eq!(with_tests.get("functions").unwrap().items().len(), 2);
+}

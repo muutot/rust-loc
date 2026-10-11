@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use crate::lexer::{self, Analysis, Metrics};
+use crate::lexer::{self, Analysis, FunctionInfo, Metrics};
 use crate::options::Options;
 
 pub const DEFAULT_IGNORE_DIRS: [&str; 15] = [
@@ -333,6 +333,7 @@ pub struct FileFacts {
     pub metrics: Metrics,
     pub metrics_all: Metrics,
     pub unique: Option<HashSet<Box<str>>>,
+    pub functions: Vec<FunctionInfo>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -402,7 +403,13 @@ pub fn is_test_file(path: &Path) -> bool {
 }
 
 /// Read and analyse one file, reducing it to facts.
-fn read_facts(path: &Path, root: &Path, want_uloc: bool, include_tests: bool) -> Option<FileFacts> {
+fn read_facts(
+    path: &Path,
+    root: &Path,
+    want_uloc: bool,
+    want_functions: bool,
+    include_tests: bool,
+) -> Option<FileFacts> {
     let bytes = std::fs::read(path).ok()?;
     let bytes = match bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
         Some(rest) => rest,
@@ -471,6 +478,11 @@ fn read_facts(path: &Path, root: &Path, want_uloc: bool, include_tests: bool) ->
         metrics: analysis.metrics,
         metrics_all: analysis.metrics_all,
         unique: if want_uloc { Some(unique) } else { None },
+        functions: if want_functions {
+            analysis.functions
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -479,6 +491,7 @@ pub fn collect_files(
     root: &Path,
     files: &[PathBuf],
     want_uloc: bool,
+    want_functions: bool,
     include_tests: bool,
     jobs: usize,
     progress: Option<&Progress<'_>>,
@@ -491,7 +504,7 @@ pub fn collect_files(
     if worker_count <= 1 || total < 8 {
         let mut facts = Vec::with_capacity(total);
         for (index, path) in files.iter().enumerate() {
-            if let Some(item) = read_facts(path, root, want_uloc, include_tests) {
+            if let Some(item) = read_facts(path, root, want_uloc, want_functions, include_tests) {
                 facts.push(item);
             }
             if let Some(callback) = progress {
@@ -512,7 +525,9 @@ pub fn collect_files(
                     break;
                 }
                 let path = &files[index];
-                if let Some(facts) = read_facts(path, root, want_uloc, include_tests) {
+                if let Some(facts) =
+                    read_facts(path, root, want_uloc, want_functions, include_tests)
+                {
                     if let Ok(mut slot) = slots[index].lock() {
                         *slot = Some(facts);
                     }

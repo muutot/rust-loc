@@ -37,10 +37,17 @@ pub struct Options {
     pub gitignore: bool,
     pub uloc: bool,
     pub complexity: bool,
+    /// Collect per-function metrics and list them ranked by complexity.
+    pub functions: bool,
+    /// Rows kept in the ranked function list; 0 keeps every function.
+    pub top_functions: usize,
     pub format: Format,
     /// 0 means "use every available core".
     pub jobs: usize,
 }
+
+/// Rows in the ranked function list unless --top-functions says otherwise.
+pub const DEFAULT_TOP_FUNCTIONS: usize = 20;
 
 impl Default for Options {
     fn default() -> Self {
@@ -56,6 +63,8 @@ impl Default for Options {
             gitignore: true,
             uloc: false,
             complexity: true,
+            functions: false,
+            top_functions: DEFAULT_TOP_FUNCTIONS,
             format: Format::Text,
             jobs: 0,
         }

@@ -244,3 +244,119 @@ fn empty_files_are_blank() {
     assert_eq!(analysis.total, 0);
     assert_eq!(classes(""), Vec::<String>::new());
 }
+
+fn function_names(analysis: &Analysis) -> Vec<&str> {
+    analysis
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect()
+}
+
+#[test]
+fn functions_record_name_line_params_and_code() {
+    let text = "fn one() {}\nfn two(a: u32, b: &str) -> u32 {\n    a\n}\n";
+    let analysis = analyze(text);
+    assert_eq!(function_names(&analysis), ["one", "two"]);
+    assert_eq!(analysis.functions[0].line, 1);
+    assert_eq!(analysis.functions[0].params, 0);
+    assert_eq!(analysis.functions[0].code, 1);
+    assert_eq!(analysis.functions[1].line, 2);
+    assert_eq!(analysis.functions[1].params, 2);
+    assert_eq!(analysis.functions[1].code, 3);
+}
+
+#[test]
+fn generic_commas_and_return_types_do_not_inflate_parameters() {
+    let text = "fn f(a: HashMap<u32, u32>, b: Vec<Vec<u8>>, c: u8) -> Result<u8, ()> {}\n";
+    let analysis = analyze(text);
+    assert_eq!(analysis.functions[0].params, 3);
+}
+
+#[test]
+fn function_complexity_and_nesting_depth_are_per_body() {
+    let text =
+        "fn f(a: u32) -> u32 {\n    if a == 1 {\n        for _ in 0..2 {}\n    }\n    0\n}\n";
+    let analysis = analyze(text);
+    assert_eq!(analysis.functions[0].complexity, 3);
+    assert_eq!(analysis.functions[0].depth, 3);
+}
+
+#[test]
+fn nested_functions_are_measured_separately() {
+    let text = "fn outer() {\n    fn inner() {\n        if true {}\n    }\n    inner();\n}\n";
+    let analysis = analyze(text);
+    assert_eq!(function_names(&analysis), ["inner", "outer"]);
+    assert_eq!(analysis.functions[0].complexity, 1);
+    assert_eq!(analysis.functions[1].complexity, 0);
+}
+
+#[test]
+fn smells_count_panic_calls_and_lint_escapes() {
+    let text = "#[allow(dead_code)]\nfn a(maybe: Option<u32>) -> u32 {\n    if maybe.is_none() {\n        panic!(\"boom\");\n    }\n    let x = maybe.unwrap();\n    let y: Result<u32, ()> = Ok(x);\n    y.expect(\"bad\")\n}\n";
+    let analysis = analyze(text);
+    assert_eq!(analysis.smells.unwrap, 1);
+    assert_eq!(analysis.smells.expect, 1);
+    assert_eq!(analysis.smells.panic, 1);
+    assert_eq!(analysis.smells.allow, 1);
+    assert_eq!(analysis.smells.total(), 4);
+    assert_eq!(analysis.smells_all.total(), 4);
+}
+
+#[test]
+fn todo_and_unimplemented_count_only_as_macros() {
+    let text =
+        "fn a() {\n    todo!();\n    unimplemented!();\n    let todo = 1;\n    let _ = todo;\n}\n";
+    let analysis = analyze(text);
+    assert_eq!(analysis.smells.todo, 1);
+    assert_eq!(analysis.smells.unimplemented, 1);
+    assert_eq!(analysis.smells.total(), 2);
+}
+
+#[test]
+fn test_attributed_functions_are_flagged_but_still_counted() {
+    let text = "#[test]\nfn covers() {}\nfn business() {}\n";
+    let analysis = analyze(text);
+    assert_eq!(function_names(&analysis), ["covers", "business"]);
+    assert!(analysis.functions[0].test);
+    assert!(!analysis.functions[1].test);
+}
+
+#[test]
+fn functions_inside_cfg_test_modules_are_not_recorded() {
+    let text = "fn business() {}\n#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n";
+    let analysis = analyze(text);
+    assert_eq!(function_names(&analysis), ["business"]);
+}
+
+#[test]
+fn function_pointer_fields_do_not_register_as_functions() {
+    let text = "struct S {\n    f: fn(u32) -> u32,\n    g: Option<fn() -> u32>,\n}\nfn real() {}\n";
+    let analysis = analyze(text);
+    assert_eq!(function_names(&analysis), ["real"]);
+}
+
+#[test]
+fn trait_method_declarations_without_a_body_are_skipped() {
+    let text = "trait T {\n    fn value(&self) -> u32;\n    fn set(&mut self, value: u32);\n}\n";
+    let analysis = analyze(text);
+    assert!(analysis.functions.is_empty());
+}
+
+#[test]
+fn where_clauses_stay_part_of_the_signature() {
+    let text = "fn f<T>(x: T) -> T\nwhere\n    T: Clone,\n{\n    x\n}\n";
+    let analysis = analyze(text);
+    assert_eq!(analysis.functions.len(), 1);
+    assert_eq!(analysis.functions[0].name, "f");
+    assert_eq!(analysis.functions[0].params, 1);
+    assert_eq!(analysis.functions[0].code, 6);
+}
+
+#[test]
+fn an_unclosed_function_body_is_flushed_at_eof() {
+    let text = "fn open() {\n    let value = 1;\n";
+    let analysis = analyze(text);
+    assert_eq!(function_names(&analysis), ["open"]);
+    assert_eq!(analysis.functions[0].code, 2);
+}

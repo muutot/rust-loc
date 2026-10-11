@@ -37,6 +37,24 @@ matches the competitors on the core columns (`files`, `lines`, `blank`,
 | `uloc` | unique non-blank lines, merged across files (`sort -u | wc -l`) |
 | `physical` | every physical line of every discovered file, tests included |
 
+### Function metrics
+
+`--functions` adds a per-function table: physical start line, business code
+lines, approximate complexity, parameter count and the deepest brace nesting
+inside the body. Rows are ranked worst-first by complexity (then by size), so
+`--top-functions 10` is a ready-made refactoring shortlist. Functions behind
+`#[cfg(test)]` never appear; `#[test]` functions only appear with
+`--include-tests`.
+
+The lexer tracks function bodies without a parser: a `fn` signature is folded
+into the enclosing scope when the body brace opens, and the body closes on the
+matching brace. Generic argument lists (`HashMap<u32, u32>`) are skipped when
+counting parameters, and `fn(u32) -> u32` function-pointer types are not
+mistaken for definitions. Nested functions are measured separately.
+
+`--functions` also counts review smells per function: `unwrap`, `expect`,
+`panic!`, `todo!`, `unimplemented!` and `#[allow(...)]` escapes.
+
 ### What counts as test code
 
 * **test-only files** - anything under `tests/`, `benches/` or `test/`, files
@@ -71,6 +89,8 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--gitignore` / `--no-gitignore` | control `.gitignore` filtering (default on) |
 | `--uloc` | compute ULOC and DRYness |
 | `--no-complexity` | hide the complexity column |
+| `--functions` | list functions ranked by complexity |
+| `--top-functions <n>` | rows in the function list (default 20, `0` = all) |
 | `--jobs <n>` | analysis threads (default: every core) |
 
 Exit code is `0` on success and `2` for a usage error.
@@ -81,6 +101,7 @@ Exit code is `0` on success and `2` for a usage error.
 > rust-loc --format markdown --by-module --uloc
 > rust-loc --format csv --by-file > loc.csv
 > rust-loc --format json --show-excluded --uloc .
+> rust-loc --functions --top-functions 10
 ```
 
 ## Windows UI
@@ -227,7 +248,7 @@ by hand).
 
 1. generated-code detection (`#[rustfmt::skip]`-style markers, `@generated`,
    proto/tonic output) counted as a separate column;
-2. function-level metrics (largest functions, long-function counts);
+2. ~~function-level metrics~~ - shipped as `--functions`;
 3. COCOMO cost estimate on top of the business line count;
 4. a CI gate: fail when the test-to-code ratio or complexity budget regresses;
 5. baseline comparison (scan once, store JSON, diff two revisions);
