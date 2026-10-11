@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::options::{Format, Options};
-use crate::report::Report;
+use crate::report::{FunctionRow, Report};
 use crate::scan;
 
 use crate::gui::i18n::{self, fill};
@@ -16,6 +16,7 @@ use crate::gui::theme;
 pub enum View {
     Files,
     Modules,
+    Functions,
     Excluded,
 }
 
@@ -25,6 +26,7 @@ impl View {
         match self {
             View::Files => t.label_file,
             View::Modules => t.label_module,
+            View::Functions => t.label_function,
             View::Excluded => t.label_test_only_file,
         }
     }
@@ -35,6 +37,7 @@ impl View {
         match self {
             View::Files => t.tab_files,
             View::Modules => t.tab_modules,
+            View::Functions => t.tab_functions,
             View::Excluded => t.tab_excluded,
         }
     }
@@ -45,6 +48,7 @@ impl View {
         match self {
             View::Files => t.table_per_file,
             View::Modules => t.table_per_module,
+            View::Functions => t.table_functions,
             View::Excluded => t.table_excluded,
         }
     }
@@ -52,7 +56,8 @@ impl View {
     pub fn from_index(index: usize) -> View {
         match index {
             1 => View::Modules,
-            2 => View::Excluded,
+            2 => View::Functions,
+            3 => View::Excluded,
             _ => View::Files,
         }
     }
@@ -61,7 +66,8 @@ impl View {
         match self {
             View::Files => 0,
             View::Modules => 1,
-            View::Excluded => 2,
+            View::Functions => 2,
+            View::Excluded => 3,
         }
     }
 }
@@ -84,6 +90,8 @@ pub fn column_title(key: &str) -> &'static str {
         "test" => t.col_test,
         "complexity" => t.col_cplx,
         "uloc" => t.col_uloc,
+        "args" => t.col_fn_args,
+        "depth" => t.col_fn_depth,
         _ => "",
     }
 }
@@ -131,20 +139,51 @@ pub fn table_columns(options: &Options) -> Vec<Column> {
         .collect()
 }
 
-/// Columns for one tab: the excluded list only ever shows a line count.
+/// Columns for one tab. The excluded list only ever shows a line count; the
+/// function list ranks by complexity and shows the per-function numbers.
 pub fn view_columns(view: View, options: &Options) -> Vec<Column> {
     match view {
         View::Excluded => vec![Column {
             key: "lines",
             width: 90,
         }],
+        View::Functions => vec![
+            Column {
+                key: "code",
+                width: 74,
+            },
+            Column {
+                key: "complexity",
+                width: 68,
+            },
+            Column {
+                key: "args",
+                width: 64,
+            },
+            Column {
+                key: "depth",
+                width: 64,
+            },
+        ],
         _ => table_columns(options),
+    }
+}
+
+/// Column a tab sorts on until the user clicks a header: worst first for the
+/// function list, most code first for the file and module lists.
+pub fn default_sort(view: View) -> (i32, bool) {
+    match view {
+        View::Functions => (1, true),
+        View::Excluded => (0, true),
+        _ => (3, true),
     }
 }
 
 pub struct Row {
     pub label: String,
     pub values: Vec<u32>,
+    /// File the row points at, when it is more precise than the label.
+    pub target: Option<String>,
 }
 
 pub struct Card {
@@ -166,6 +205,10 @@ impl Card {
             "unsafe" => theme::COLOR_UNSAFE,
             "test_fns" => theme::COLOR_TEST_FNS,
             "uloc" => theme::COLOR_ULOC,
+            "cost" => theme::COLOR_TEST,
+            "effort" => theme::COLOR_DOC,
+            "people" => theme::COLOR_TEST_FNS,
+            "schedule" => theme::COLOR_ULOC,
             _ => theme::TEXT,
         }
     }
@@ -195,6 +238,11 @@ pub fn human_share(value: u64, base: u64) -> String {
     format!("{:.1}%", value as f64 / base as f64 * 100.0)
 }
 
+/// Whole US dollars, grouped like every other counter.
+pub fn money(value: f64) -> String {
+    format!("${}", human_int(value.max(0.0).round() as u64))
+}
+
 /// Split pasted roots: Windows paths may contain commas, so only `;` and
 /// newlines separate them.
 pub fn parse_paths(text: &str) -> Vec<String> {
@@ -221,6 +269,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                 rows.push(Row {
                     label: display_path(entry.path(), cwd),
                     values: columns.iter().map(|c| entry.column(c.key)).collect(),
+                    target: None,
                 });
             }
         }
@@ -229,6 +278,19 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                 rows.push(Row {
                     label: shorten_module(&label),
                     values: columns.iter().map(|c| stats.column(c.key)).collect(),
+                    target: None,
+                });
+            }
+        }
+        View::Functions => {
+            for function in &report.functions {
+                rows.push(Row {
+                    label: function_label(function),
+                    values: columns
+                        .iter()
+                        .map(|column| function_column(function, column.key))
+                        .collect(),
+                    target: Some(function.path.clone()),
                 });
             }
         }
@@ -244,6 +306,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                 rows.push(Row {
                     label: path,
                     values: vec![lines],
+                    target: None,
                 });
             }
         }
@@ -254,6 +317,21 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
 /// Drop the `./` that a root-level module inherits from the relative path.
 fn shorten_module(label: &str) -> String {
     label.strip_prefix("./").unwrap_or(label).to_string()
+}
+
+/// name + path:line, the label shown in the functions tab.
+fn function_label(function: &FunctionRow) -> String {
+    format!("{}  ·  {}:{}", function.name, function.path, function.line)
+}
+
+fn function_column(function: &FunctionRow, key: &str) -> u32 {
+    match key {
+        "code" => function.code,
+        "complexity" => function.complexity,
+        "args" => function.params,
+        "depth" => function.depth,
+        _ => 0,
+    }
 }
 
 /// Biggest modules by code, ready for the bar chart.
@@ -327,6 +405,42 @@ pub fn table_hint(
             ],
         );
     }
+    let mut hint = if view == View::Functions {
+        if report.function_count == 0 {
+            return t.hint_no_functions.to_string();
+        }
+        fill(
+            t.hint_functions,
+            &[
+                ("total", human_int(report.function_count as u64)),
+                ("shown", human_int(report.functions.len() as u64)),
+            ],
+        )
+    } else {
+        fill(
+            t.hint_showing,
+            &[
+                ("shown", human_int(shown as u64)),
+                ("matched", human_int(matched as u64)),
+            ],
+        )
+    };
+    hint.push_str(&sorted_clause(view, report, column, descending));
+    if report.options.exclude_generated && report.excluded.generated_files > 0 {
+        hint.push_str(" · ");
+        hint.push_str(&fill(
+            t.hint_generated_excluded,
+            &[
+                ("files", human_int(report.excluded.generated_files as u64)),
+                ("lines", human_int(report.excluded.generated_lines as u64)),
+            ],
+        ));
+    }
+    hint
+}
+
+/// " · sorted by Cplx ▼" for the tab in front of the user.
+fn sorted_clause(view: View, report: &Report, column: i32, descending: bool) -> String {
     let title = if column >= 0 {
         match view_columns(view, &report.options).get(column as usize) {
             Some(entry) => column_title(entry.key),
@@ -335,14 +449,15 @@ pub fn table_hint(
     } else {
         view.label_title()
     };
-    fill(
-        t.hint_showing,
-        &[
-            ("shown", human_int(shown as u64)),
-            ("matched", human_int(matched as u64)),
-            ("column", title.to_string()),
-            ("arrow", if descending { "▼" } else { "▲" }.to_string()),
-        ],
+    format!(
+        " · {}",
+        fill(
+            i18n::t().hint_sorted,
+            &[
+                ("column", title.to_string()),
+                ("arrow", if descending { "▼" } else { "▲" }.to_string()),
+            ],
+        )
     )
 }
 
@@ -533,6 +648,32 @@ pub fn summary_cards(report: Option<&Report>, options: &Options) -> Vec<Card> {
             hint: fill(t.hint_uloc, &[("share", human_share(total, lines))]),
         });
     }
+    if let Some(row) = &report.cocomo {
+        cards.push(Card {
+            key: "cost",
+            label: t.card_cost,
+            value: money(row.estimate.cost),
+            hint: fill(t.hint_cocomo_cost, &[("project", row.project.to_string())]),
+        });
+        cards.push(Card {
+            key: "effort",
+            label: t.card_effort,
+            value: format!("{:.1}", row.estimate.effort),
+            hint: t.hint_effort.to_string(),
+        });
+        cards.push(Card {
+            key: "people",
+            label: t.card_people,
+            value: format!("{:.2}", row.estimate.people),
+            hint: t.hint_people.to_string(),
+        });
+        cards.push(Card {
+            key: "schedule",
+            label: t.card_schedule,
+            value: format!("{:.1}", row.estimate.schedule),
+            hint: t.hint_schedule.to_string(),
+        });
+    }
     cards
 }
 
@@ -621,6 +762,19 @@ pub fn cli_command(report: &Report, cwd: &Path) -> String {
     if options.uloc {
         parts.push("--uloc".to_string());
     }
+    if options.exclude_generated {
+        parts.push("--exclude-generated".to_string());
+    }
+    if options.functions {
+        parts.push("--functions".to_string());
+    }
+    if options.cocomo {
+        parts.push("--cocomo".to_string());
+        if options.cocomo_project != crate::cocomo::ProjectType::Organic {
+            parts.push("--cocomo-project-type".to_string());
+            parts.push(options.cocomo_project.name().to_string());
+        }
+    }
     if !options.complexity {
         parts.push("--no-complexity".to_string());
     }
@@ -653,6 +807,8 @@ pub struct Settings {
     pub include_tests: bool,
     pub complexity: bool,
     pub uloc: bool,
+    pub exclude_generated: bool,
+    pub cocomo: bool,
     pub exclude: String,
     pub extra_dirs: String,
     pub view: usize,
@@ -674,6 +830,8 @@ impl Default for Settings {
             include_tests: false,
             complexity: true,
             uloc: false,
+            exclude_generated: false,
+            cocomo: false,
             exclude: String::new(),
             extra_dirs: String::new(),
             view: 0,
@@ -718,6 +876,8 @@ pub fn load_settings() -> Settings {
             "include_tests" => settings.include_tests = flag,
             "complexity" => settings.complexity = flag,
             "uloc" => settings.uloc = flag,
+            "exclude_generated" => settings.exclude_generated = flag,
+            "cocomo" => settings.cocomo = flag,
             "exclude" => settings.exclude = value.trim().to_string(),
             "extra_dirs" => settings.extra_dirs = value.trim().to_string(),
             "view" => settings.view = value.trim().parse().unwrap_or(0),
@@ -758,6 +918,11 @@ pub fn save_settings(settings: &Settings) {
     text.push_str(&format!("include_tests={}\n", flag(settings.include_tests)));
     text.push_str(&format!("complexity={}\n", flag(settings.complexity)));
     text.push_str(&format!("uloc={}\n", flag(settings.uloc)));
+    text.push_str(&format!(
+        "exclude_generated={}\n",
+        flag(settings.exclude_generated)
+    ));
+    text.push_str(&format!("cocomo={}\n", flag(settings.cocomo)));
     text.push_str(&format!("exclude={}\n", settings.exclude));
     text.push_str(&format!("extra_dirs={}\n", settings.extra_dirs));
     text.push_str(&format!("view={}\n", settings.view));
@@ -822,5 +987,150 @@ mod tests {
             assert_eq!(card.value, i18n::t().card_placeholder_value);
             assert!(!card.hint.is_empty());
         }
+    }
+
+    /// A scratch project that removes itself when the test ends.
+    struct Scratch {
+        path: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "rust-loc-gui-{}-{name}-{stamp}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Scratch { path }
+        }
+
+        fn write(&self, name: &str, text: &str) {
+            let path = self.path.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, text).unwrap();
+        }
+
+        fn scan(&self, options: &Options) -> Report {
+            crate::report::scan(std::slice::from_ref(&self.path), options, &self.path, None)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    const SOURCE: &str = concat!(
+        "fn simple() {\n",
+        "    let x = 1;\n",
+        "}\n",
+        "\n",
+        "fn branchy(a: u32, b: u32) -> u32 {\n",
+        "    if a > b && b > 0 {\n",
+        "        a\n",
+        "    } else if a == 0 {\n",
+        "        b\n",
+        "    } else {\n",
+        "        a + b\n",
+        "    }\n",
+        "}\n",
+    );
+
+    #[test]
+    fn functions_tab_ranks_by_complexity_and_keeps_the_file_it_came_from() {
+        let scratch = Scratch::new("functions");
+        scratch.write("src/lib.rs", SOURCE);
+        scratch.write("build.rs", "fn main() {}\n");
+        let options = Options {
+            functions: true,
+            ..Options::default()
+        };
+        let report = scratch.scan(&options);
+        let columns = view_columns(View::Functions, &options);
+        assert_eq!(
+            columns.iter().map(|column| column.key).collect::<Vec<_>>(),
+            ["code", "complexity", "args", "depth"]
+        );
+        let rows = build_rows(&report, View::Functions, &columns, &scratch.path);
+        assert!(rows.len() >= 3, "{}", rows.len());
+        let first = &rows[0];
+        assert!(first.label.starts_with("branchy"), "{}", first.label);
+        assert!(first.label.contains("src/lib.rs:5"), "{}", first.label);
+        assert_eq!(first.values[1], report.functions[0].complexity);
+        assert_eq!(first.target.as_deref(), Some("src/lib.rs"));
+        let files = build_rows(
+            &report,
+            View::Files,
+            &table_columns(&options),
+            &scratch.path,
+        );
+        assert!(files.iter().all(|row| row.target.is_none()));
+    }
+
+    #[test]
+    fn cocomo_cards_appear_only_when_the_estimate_was_asked_for() {
+        let scratch = Scratch::new("cocomo");
+        scratch.write("src/lib.rs", SOURCE);
+        let plain = Options {
+            functions: true,
+            ..Options::default()
+        };
+        let report = scratch.scan(&plain);
+        assert!(!keys(&summary_cards(Some(&report), &plain)).contains(&"cost"));
+
+        let priced = Options {
+            functions: true,
+            cocomo: true,
+            ..Options::default()
+        };
+        let report = scratch.scan(&priced);
+        let cards = summary_cards(Some(&report), &priced);
+        let keys = keys(&cards);
+        for key in ["cost", "effort", "people", "schedule"] {
+            assert!(keys.contains(&key), "{key} missing from {keys:?}");
+        }
+        let cost = cards.iter().find(|card| card.key == "cost").unwrap();
+        assert!(cost.value.starts_with('$'), "{}", cost.value);
+    }
+
+    #[test]
+    fn table_hints_report_the_function_and_generated_scope() {
+        i18n::set_lang(i18n::Lang::En);
+        let scratch = Scratch::new("hint");
+        scratch.write("src/lib.rs", SOURCE);
+        scratch.write(
+            "src/tables.rs",
+            "// @generated by build.rs\n// do not edit\nfn table() {}\n",
+        );
+        let options = Options {
+            functions: true,
+            exclude_generated: true,
+            ..Options::default()
+        };
+        let report = scratch.scan(&options);
+        let functions = table_hint(View::Functions, Some(&report), 0, 0, -1, true);
+        assert!(functions.contains("2 functions in scope"), "{functions}");
+        let files = table_hint(View::Files, Some(&report), 0, 0, 3, true);
+        assert!(files.contains("1 generated files"), "{files}");
+        assert!(files.contains("3 lines skipped"), "{files}");
+        assert!(files.contains("sorted by Code ▼"), "{files}");
+        // The hint has to follow the column the user sorted by, not the tab.
+        let sorted = table_hint(View::Functions, Some(&report), 0, 0, 3, true);
+        assert!(sorted.contains("sorted by Depth ▼"), "{sorted}");
+    }
+
+    #[test]
+    fn every_tab_has_a_natural_sort_column() {
+        assert_eq!(default_sort(View::Functions), (1, true));
+        assert_eq!(default_sort(View::Files), (3, true));
+        assert_eq!(default_sort(View::Modules), (3, true));
     }
 }

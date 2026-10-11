@@ -175,7 +175,8 @@ usage error.
 `rust-loc-gui.exe` is a native Win32 front end over the same library: one
 window, no web runtime, no UI toolkit. A scan-root sidebar owns the options,
 the results pane shows a line-composition bar, a top-module chart, the KPI
-cards and a tabbed per-file / per-module / excluded-file table. A scan runs on
+cards and a tabbed per-file / per-module / per-function / excluded-file table.
+A scan runs on
 a worker thread while a veil and a progress bar cover the shell; a fast scan
 finishes before the veil is shown, so no console window ever appears and the
 UI never blocks.
@@ -190,7 +191,8 @@ While a scan runs, a veil and a progress bar cover the shell:
 | --- | --- |
 | Bindings | `windows-sys` (the `windows-rs` project), feature-gated to exactly the API surface used; still nothing beyond the system DLLs at run time |
 | Rendering | GDI double buffering; the shell, the KPI cards, the stacked composition bar, the module chart and the scan veil are custom child windows, so nothing flickers |
-| Reports | `SysListView32` with owner-drawn sort headers, zebra striping, a live path filter, Files / Modules / Excluded views and a placeholder KPI strip before the first scan |
+| Reports | `SysListView32` with owner-drawn sort headers, zebra striping, a live path filter, Files / Modules / Functions / Excluded views - every tab opens on its natural sort - and a placeholder KPI strip before the first scan |
+| Report options | `REPORT OPTIONS` keeps generated / minified files out of the totals and adds the COCOMO estimate; the KPI strip grows a row to hold the cost, effort, staffing and schedule cards |
 | Chrome | owner-drawn accent buttons, `SHBrowseForFolderW` / `GetSaveFileNameW` dialogs (no COM, no extra crates), clipboard paste of folder paths, accelerators, a row context menu and chart tooltips |
 | Language | English and Chinese, chosen from the system UI language on first run and switchable at any time |
 | Settings | `%APPDATA%\rust-loc\ui.ini`, read at start-up and written on close |
@@ -219,7 +221,7 @@ follows the script - and the choice is stored in `ui.ini` as `lang=`.
 | `Ctrl+E` | open the export menu |
 | `Ctrl+F` | focus the filter box |
 | `Ctrl+Tab` | next report tab |
-| `Enter`, double-click | open the selected file (a folder for a module row) |
+| `Enter`, double-click | open the selected row (a folder for a module row, the defining file for a function row) |
 | right-click, `Menu`, `Shift+F10` | open / reveal in Explorer / copy path for the clicked or selected row |
 | `Esc` | clear the filter |
 | hover | tooltip on the composition bar and on the module chart |

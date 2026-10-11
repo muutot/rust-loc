@@ -32,6 +32,8 @@ pub const ID_BAR: i32 = 1019;
 pub const ID_MODULES: i32 = 1020;
 pub const ID_VEIL: i32 = 1021;
 pub const ID_LANG: i32 = 1022;
+pub const ID_EXCLUDE_GENERATED: i32 = 1023;
+pub const ID_COCOMO: i32 = 1024;
 
 /// Commands reachable from the keyboard, dispatched through an accelerator table.
 pub const ID_ACCEL_SCAN: i32 = 1100;
@@ -71,6 +73,8 @@ pub const FORMATS: [(&str, Format); 4] = [
 pub const CHART_ROWS: usize = 12;
 /// KPI cards per row in the strip.
 pub const CARD_COLUMNS: i32 = 5;
+/// Function rows the GUI keeps; the table filters and sorts them in place.
+pub const GUI_TOP_FUNCTIONS: usize = 200;
 
 pub struct AppState {
     pub theme: theme::Theme,
@@ -106,7 +110,7 @@ pub struct AppState {
     pub table_rect: RECT,
     pub table_title_rect: RECT,
     pub table_hint_rect: RECT,
-    pub tab_rects: [RECT; 3],
+    pub tab_rects: [RECT; 4],
 }
 
 impl AppState {
@@ -123,6 +127,10 @@ impl AppState {
             include_tests: settings.include_tests,
             complexity: settings.complexity,
             uloc: settings.uloc,
+            functions: true,
+            top_functions: GUI_TOP_FUNCTIONS,
+            exclude_generated: settings.exclude_generated,
+            cocomo: settings.cocomo,
             exclude: model::parse_list(&settings.exclude),
             ignore_dirs: configured_ignore_dirs(&settings),
             gitignore: settings.gitignore,
@@ -132,8 +140,14 @@ impl AppState {
         let theme = theme::Theme::new(hwnd);
         let card_brush = unsafe { CreateSolidBrush(theme::CARD_BG) };
         let view = model::View::from_index(settings.view);
-        let sort_column = settings.sort_column;
-        let sort_descending = settings.sort_descending;
+        // The saved column only means something on the file and module tabs;
+        // the others always come up in their natural order.
+        let (sort_column, sort_descending) = match view {
+            model::View::Files | model::View::Modules => {
+                (settings.sort_column, settings.sort_descending)
+            }
+            _ => model::default_sort(view),
+        };
         let table_title = view.table_title().to_string();
         AppState {
             theme,
@@ -168,7 +182,7 @@ impl AppState {
             table_rect: RECT::default(),
             table_title_rect: RECT::default(),
             table_hint_rect: RECT::default(),
-            tab_rects: [RECT::default(); 3],
+            tab_rects: [RECT::default(); 4],
         }
     }
 
@@ -189,6 +203,8 @@ impl AppState {
         self.options.include_tests = window::checked(self.control(ID_TESTS));
         self.options.complexity = window::checked(self.control(ID_COMPLEXITY));
         self.options.uloc = window::checked(self.control(ID_ULOC));
+        self.options.exclude_generated = window::checked(self.control(ID_EXCLUDE_GENERATED));
+        self.options.cocomo = window::checked(self.control(ID_COCOMO));
         self.options.gitignore = window::checked(self.control(ID_GITIGNORE));
         let defaults = window::checked(self.control(ID_DEFAULT_IGNORES));
         let extra = model::parse_list(&window::get_text(self.control(ID_EXTRA_DIRS)));
@@ -269,6 +285,8 @@ impl AppState {
         self.settings.include_tests = self.options.include_tests;
         self.settings.complexity = self.options.complexity;
         self.settings.uloc = self.options.uloc;
+        self.settings.exclude_generated = self.options.exclude_generated;
+        self.settings.cocomo = self.options.cocomo;
         self.settings.exclude = window::get_text(self.control(ID_EXCLUDE));
         self.settings.extra_dirs = window::get_text(self.control(ID_EXTRA_DIRS));
         self.settings.view = self.view.index();
@@ -346,7 +364,12 @@ impl AppState {
                 self.rows = Vec::new();
             }
         }
-        if self.view == model::View::Files {
+        if self.view != model::View::Excluded {
+            if self.sort_column >= self.columns.len() as i32 {
+                let (column, descending) = model::default_sort(self.view);
+                self.sort_column = column;
+                self.sort_descending = descending;
+            }
             model::sort_rows(&mut self.rows, self.sort_column, self.sort_descending);
         }
         let query = window::get_text(self.control(ID_FILTER));

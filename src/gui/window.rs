@@ -393,11 +393,14 @@ fn layout(hwnd: HWND) {
             panel_top + metrics.chart,
         );
         let cards_top = panel_top + metrics.chart + metrics.gap;
+        // The strip grows a row at a time: the COCOMO cards add a third one.
+        let card_rows =
+            ((state.cards.len() as i32 + app::CARD_COLUMNS - 1) / app::CARD_COLUMNS).max(2);
         let cards = rect(
             panel_left,
             cards_top,
             panel_right,
-            cards_top + metrics.card * 2 + metrics.gap,
+            cards_top + metrics.card * card_rows + metrics.gap * (card_rows - 1),
         );
         let table_top = cards.bottom + metrics.gap;
         let table = rect(panel_left, table_top, panel_right, panel_bottom);
@@ -485,6 +488,18 @@ fn layout(hwnd: HWND) {
             app::ID_COMPLEXITY,
             app::ID_ULOC,
         ] {
+            unsafe { MoveWindow(state.control(id), left, y, inner, metrics.check, 1) };
+            y += metrics.check;
+        }
+        y += px(2);
+
+        labels.push(label(
+            rect(left, y, left + inner, y + metrics.section),
+            i18n::t().section_report,
+            paint::Ink::Section,
+        ));
+        y += metrics.section;
+        for id in [app::ID_EXCLUDE_GENERATED, app::ID_COCOMO] {
             unsafe { MoveWindow(state.control(id), left, y, inner, metrics.check, 1) };
             y += metrics.check;
         }
@@ -613,11 +628,12 @@ fn layout(hwnd: HWND) {
             paint::Ink::CaptionEnd,
         ));
 
-        let mut tab_rects = [RECT::default(); 3];
+        let mut tab_rects = [RECT::default(); 4];
         let mut tab_x = table.left + px(12);
         for (index, (_view, tab_width)) in [
             (model::View::Files, px(60)),
             (model::View::Modules, px(78)),
+            (model::View::Functions, px(84)),
             (model::View::Excluded, px(112)),
         ]
         .iter()
@@ -810,6 +826,8 @@ pub fn set_busy(state: &app::AppState, busy: bool) {
         app::ID_TESTS,
         app::ID_COMPLEXITY,
         app::ID_ULOC,
+        app::ID_EXCLUDE_GENERATED,
+        app::ID_COCOMO,
         app::ID_EXCLUDE,
         app::ID_EXTRA_DIRS,
         app::ID_SCAN,
@@ -1023,6 +1041,30 @@ fn create_controls(parent: HWND) -> Vec<(i32, HWND)> {
         ),
     );
     add(
+        app::ID_EXCLUDE_GENERATED,
+        create_child(
+            parent,
+            "BUTTON",
+            i18n::t().opt_exclude_generated,
+            check,
+            0,
+            app::ID_EXCLUDE_GENERATED,
+            22,
+        ),
+    );
+    add(
+        app::ID_COCOMO,
+        create_child(
+            parent,
+            "BUTTON",
+            i18n::t().opt_cocomo,
+            check,
+            0,
+            app::ID_COCOMO,
+            22,
+        ),
+    );
+    add(
         app::ID_EXCLUDE,
         create_child(parent, "EDIT", "", edit | WS_BORDER, 0, app::ID_EXCLUDE, 24),
     );
@@ -1215,17 +1257,26 @@ fn paste_roots(hwnd: HWND) {
     }
 }
 
-/// Step through the three report tabs from the keyboard.
+/// Step through the four report tabs from the keyboard.
 fn cycle_view(hwnd: HWND) {
     with_state(|state| {
-        let next = model::View::from_index((state.view.index() + 1) % 3);
-        if state.view != next {
-            state.view = next;
-            state.rebuild();
-            reconfigure_list(state);
-        }
+        let next = model::View::from_index((state.view.index() + 1) % 4);
+        set_view(state, next);
     });
     invalidate(hwnd);
+}
+
+/// Switch tabs and give the new one its natural sort before anything is drawn.
+fn set_view(state: &mut app::AppState, view: model::View) {
+    if state.view == view {
+        return;
+    }
+    state.view = view;
+    let (column, descending) = model::default_sort(view);
+    state.sort_column = column;
+    state.sort_descending = descending;
+    state.rebuild();
+    reconfigure_list(state);
 }
 
 /// Absolute path of the row selected in the table, if any.
@@ -1242,7 +1293,13 @@ fn selected_row_path() -> Option<PathBuf> {
         }
         let row = state.rows.get(*state.visible.get(index as usize)?)?;
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let label = row.label.trim_start_matches("./").trim().to_string();
+        let label = row
+            .target
+            .as_deref()
+            .unwrap_or(&row.label)
+            .trim_start_matches("./")
+            .trim()
+            .to_string();
         Some(if label.is_empty() || label == "." {
             cwd
         } else {
@@ -1445,6 +1502,11 @@ fn apply_language(hwnd: HWND) {
         set_text(state.control(app::ID_TESTS), i18n::t().opt_include_tests);
         set_text(state.control(app::ID_COMPLEXITY), i18n::t().opt_complexity);
         set_text(state.control(app::ID_ULOC), i18n::t().opt_uloc);
+        set_text(
+            state.control(app::ID_EXCLUDE_GENERATED),
+            i18n::t().opt_exclude_generated,
+        );
+        set_text(state.control(app::ID_COCOMO), i18n::t().opt_cocomo);
         set_text(state.control(app::ID_SCAN), i18n::t().button_scan);
         set_text(state.control(app::ID_EXPORT), i18n::t().button_export);
         set_cue(state.control(app::ID_FILTER), i18n::t().filter_cue);
@@ -1494,6 +1556,11 @@ fn on_create(hwnd: HWND) {
         set_checked(state.control(app::ID_TESTS), settings.include_tests);
         set_checked(state.control(app::ID_COMPLEXITY), settings.complexity);
         set_checked(state.control(app::ID_ULOC), settings.uloc);
+        set_checked(
+            state.control(app::ID_EXCLUDE_GENERATED),
+            settings.exclude_generated,
+        );
+        set_checked(state.control(app::ID_COCOMO), settings.cocomo);
         set_text(state.control(app::ID_EXCLUDE), &settings.exclude);
         set_text(state.control(app::ID_EXTRA_DIRS), &settings.extra_dirs);
         set_text(state.control(app::ID_FILTER), &settings.filter);
@@ -1530,7 +1597,15 @@ fn refresh_roots(state: &mut app::AppState) {
     let cwd = std::env::current_dir().unwrap_or_default();
     send(list, LB_RESETCONTENT, 0, 0);
     for root in &state.roots {
-        let text = wide(&model::display_path(std::path::Path::new(root), &cwd));
+        // A root that *is* the working directory has no relative form, so the
+        // absolute path is the only readable label.
+        let relative = model::display_path(std::path::Path::new(root), &cwd);
+        let label = if relative == "." || relative.is_empty() {
+            root.clone()
+        } else {
+            relative
+        };
+        let text = wide(&label);
         send(list, LB_ADDSTRING, 0, text.as_ptr() as isize);
     }
 }
@@ -1607,7 +1682,7 @@ unsafe extern "system" fn main_proc(
             if !info.is_null() {
                 let scale = with_state(|state| state.theme.px(1)).unwrap_or(1);
                 (*info).ptMinTrackSize.x = 1180 * scale;
-                (*info).ptMinTrackSize.y = 680 * scale;
+                (*info).ptMinTrackSize.y = 744 * scale;
             }
             0
         }
@@ -1675,7 +1750,9 @@ unsafe extern "system" fn main_proc(
                 | app::ID_DEFAULT_IGNORES
                 | app::ID_TESTS
                 | app::ID_COMPLEXITY
-                | app::ID_ULOC => {
+                | app::ID_ULOC
+                | app::ID_EXCLUDE_GENERATED
+                | app::ID_COCOMO => {
                     if code == BN_CLICKED {
                         with_state(|state| {
                             state.sync_options();
@@ -1684,6 +1761,7 @@ unsafe extern "system" fn main_proc(
                             refresh_status(state);
                             repaint(state, hwnd);
                         });
+                        layout(hwnd);
                         schedule_rescan(hwnd);
                     }
                 }
@@ -1821,14 +1899,8 @@ unsafe extern "system" fn main_proc(
             let y = ((lparam as u32 >> 16) & 0xFFFF) as i16 as i32;
             let view = with_state(|state| tab_hit(state, x, y)).flatten();
             if let Some(view) = view {
-                with_state(|state| {
-                    if state.view != view {
-                        state.view = view;
-                        state.rebuild();
-                        reconfigure_list(state);
-                        invalidate(hwnd);
-                    }
-                });
+                with_state(|state| set_view(state, view));
+                invalidate(hwnd);
             }
             0
         }
@@ -1858,6 +1930,7 @@ unsafe extern "system" fn main_proc(
             match wparam {
                 app::TIMER_PROGRESS => {
                     with_state(|state| state.poll(hwnd));
+                    layout(hwnd);
                 }
                 app::TIMER_VEIL => {
                     stop_timer(hwnd, app::TIMER_VEIL);
@@ -1908,6 +1981,7 @@ unsafe extern "system" fn main_proc(
                     let tabs: Vec<(RECT, &str, bool)> = [
                         model::View::Files,
                         model::View::Modules,
+                        model::View::Functions,
                         model::View::Excluded,
                     ]
                     .iter()
@@ -1988,6 +2062,8 @@ fn persist(hwnd: HWND) {
         settings.include_tests = checked(state.control(app::ID_TESTS));
         settings.complexity = checked(state.control(app::ID_COMPLEXITY));
         settings.uloc = checked(state.control(app::ID_ULOC));
+        settings.exclude_generated = checked(state.control(app::ID_EXCLUDE_GENERATED));
+        settings.cocomo = checked(state.control(app::ID_COCOMO));
         settings.exclude = get_text(state.control(app::ID_EXCLUDE));
         settings.extra_dirs = get_text(state.control(app::ID_EXTRA_DIRS));
         settings.view = state.view.index();
