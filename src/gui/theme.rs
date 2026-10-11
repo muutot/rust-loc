@@ -13,7 +13,6 @@ pub const fn rgb(value: u32) -> u32 {
 
 pub const PANEL_BG: u32 = rgb(0xF1F3F9);
 pub const CARD_BG: u32 = rgb(0xFFFFFF);
-pub const GRID_BG: u32 = rgb(0xFAFBFD);
 pub const BORDER: u32 = rgb(0xE3E8F0);
 /// A hairline between table rows.
 pub const HAIRLINE: u32 = rgb(0xEEF1F7);
@@ -27,6 +26,16 @@ pub const ACCENT_DARK: u32 = rgb(0x1D4ED8);
 pub const ACCENT_SOFT: u32 = rgb(0xEDF3FF);
 pub const TRACK_BG: u32 = rgb(0xEDF1F7);
 pub const BAR_TRACK: u32 = rgb(0xF0F3F9);
+/// A text field, list or selector: white inside a rounded hairline.
+pub const FIELD_BG: u32 = rgb(0xFFFFFF);
+/// A touch darker than a card border, so an empty field still reads as one.
+pub const FIELD_BORDER: u32 = rgb(0xD7DEEA);
+/// The resting fill of a secondary button; it darkens under the pointer.
+pub const CHIP_BG: u32 = rgb(0xEEF1F8);
+pub const CHIP_HOVER: u32 = rgb(0xE3E8F3);
+pub const CHIP_PRESS: u32 = rgb(0xD6DEED);
+/// A lighter blue under the pointer, darker while pressed.
+pub const ACCENT_HOVER: u32 = rgb(0x3B78F0);
 
 pub const COLOR_CODE: u32 = rgb(0x2563EB);
 pub const COLOR_DOC: u32 = rgb(0x8B5CF6);

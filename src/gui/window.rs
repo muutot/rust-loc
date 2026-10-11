@@ -15,6 +15,7 @@ pub const CLASS_CARDS: &str = "RustLocCards";
 pub const CLASS_BAR: &str = "RustLocBar";
 pub const CLASS_MODULES: &str = "RustLocModules";
 pub const CLASS_VEIL: &str = "RustLocVeil";
+pub const CLASS_FIELD: &str = "RustLocField";
 
 thread_local! {
     static STATE: RefCell<Option<Box<app::AppState>>> = const { RefCell::new(None) };
@@ -164,6 +165,82 @@ unsafe extern "system" fn cards_proc(
             0
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
+    }
+}
+
+/// The rounded surface behind a text field, a list or a selector.
+///
+/// It is a window of its own sitting under the real control rather than an
+/// owner drawn replacement: the edit, the list and the combo keep their
+/// native keyboard behaviour, and the frame is free to round its corners.
+unsafe extern "system" fn field_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_ERASEBKGND => 1,
+        WM_PAINT => {
+            buffered(hwnd, |hdc, client| {
+                with_state(|state| {
+                    paint::fill(hdc, client, theme::CARD_BG);
+                    let control = state.frame_control(hwnd);
+                    let focused = !control.is_null() && unsafe { GetFocus() } == control;
+                    paint::field(hdc, client, state.theme.px(8), focused);
+                });
+            });
+            0
+        }
+        _ => DefWindowProcW(hwnd, message, wparam, lparam),
+    }
+}
+
+/// Arm hover tracking on an owner drawn button and repaint when it changes.
+///
+/// Owner drawn buttons paint themselves but never report the pointer, so the
+/// hot state lives in the app and the button is repainted by hand.
+unsafe extern "system" fn button_subclass(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    id: usize,
+) -> LRESULT {
+    match message {
+        WM_MOUSEMOVE => {
+            let entered = with_state(|state| {
+                if state.hot == id as i32 {
+                    false
+                } else {
+                    state.hot = id as i32;
+                    true
+                }
+            })
+            .unwrap_or(false);
+            track_leave(hwnd);
+            if entered {
+                invalidate(hwnd);
+            }
+        }
+        WM_MOUSELEAVE => {
+            with_state(|state| {
+                if state.hot == id as i32 {
+                    state.hot = 0;
+                }
+            });
+            invalidate(hwnd);
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, message, wparam, lparam)
+}
+
+/// Let an owner drawn button light up under the pointer.
+fn track_button(hwnd: HWND, id: i32) {
+    if !hwnd.is_null() {
+        unsafe { SetWindowSubclass(hwnd, Some(button_subclass), id as usize, id as usize) };
     }
 }
 
@@ -496,17 +573,24 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             + metrics.control
             + px(3)
             + px(14);
-        let roots_height = (language_top - px(16) - (y + below_roots)).clamp(px(72), px(168));
-        unsafe {
-            MoveWindow(
-                state.control(app::ID_ROOTS),
-                left,
-                y,
-                inner,
-                roots_height,
-                1,
-            )
-        };
+        // The list takes whatever the sections below it leave, so the
+        // sidebar has no dead space under the roots.
+        let roots_height = (language_top - px(16) - (y + below_roots)).max(px(72));
+        place_field(
+            state,
+            app::ID_ROOTS,
+            rect(left, y, left + inner, y + roots_height),
+            px(8),
+            false,
+        );
+        // The owner drawn rows need their height too, and a DPI change has to
+        // land before the next measurement.
+        send(
+            state.control(app::ID_ROOTS),
+            LB_SETITEMHEIGHT,
+            0,
+            px(24) as isize,
+        );
         y += roots_height + px(8);
         let small = (inner - px(6) * 2) / 3;
         for (index, id) in [app::ID_ADD_FOLDER, app::ID_ADD_PATH, app::ID_REMOVE]
@@ -562,16 +646,13 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             paint::Ink::Section,
         ));
         y += metrics.section;
-        unsafe {
-            MoveWindow(
-                state.control(app::ID_EXCLUDE),
-                left,
-                y,
-                inner,
-                metrics.control,
-                1,
-            )
-        };
+        place_field(
+            state,
+            app::ID_EXCLUDE,
+            rect(left, y, left + inner, y + metrics.control),
+            px(8),
+            true,
+        );
         y += metrics.control + px(3);
         labels.push(label(
             rect(left, y, left + inner, y + px(14)),
@@ -586,16 +667,13 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             paint::Ink::Section,
         ));
         y += metrics.section;
-        unsafe {
-            MoveWindow(
-                state.control(app::ID_EXTRA_DIRS),
-                left,
-                y,
-                inner,
-                metrics.control,
-                1,
-            )
-        };
+        place_field(
+            state,
+            app::ID_EXTRA_DIRS,
+            rect(left, y, left + inner, y + metrics.control),
+            px(8),
+            true,
+        );
         y += metrics.control + px(3);
         labels.push(label(
             rect(left, y, left + inner, y + px(14)),
@@ -613,15 +691,16 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             i18n::t().section_language,
             paint::Ink::Section,
         ));
+        place_combo(
+            state,
+            app::ID_LANG,
+            left,
+            language_top + metrics.section,
+            inner,
+            px(8),
+            px(200),
+        );
         unsafe {
-            MoveWindow(
-                state.control(app::ID_LANG),
-                left,
-                language_top + metrics.section,
-                inner,
-                px(200),
-                1,
-            );
             MoveWindow(
                 state.control(app::ID_EXPORT),
                 left,
@@ -644,28 +723,29 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
         let combo_width = px(88);
         let combo_left = table.right - px(14) - combo_width;
         let field_top = table.top + px(12);
-        unsafe {
-            MoveWindow(
-                state.control(app::ID_TOP),
-                combo_left,
-                field_top,
-                combo_width,
-                px(200),
-                1,
-            )
-        };
+        place_combo(
+            state,
+            app::ID_TOP,
+            combo_left,
+            field_top,
+            combo_width,
+            px(8),
+            px(200),
+        );
         let filter_right = combo_left - px(8);
         let filter_left = filter_right - px(200);
-        unsafe {
-            MoveWindow(
-                state.control(app::ID_FILTER),
+        place_field(
+            state,
+            app::ID_FILTER,
+            rect(
                 filter_left,
                 field_top,
-                px(200),
-                metrics.control,
-                1,
-            )
-        };
+                filter_left + px(200),
+                field_top + metrics.control,
+            ),
+            px(8),
+            true,
+        );
         labels.push(label(
             rect(
                 filter_left - px(52),
@@ -962,6 +1042,9 @@ pub fn repaint(state: &app::AppState, hwnd: HWND) {
     for id in [app::ID_CARDS, app::ID_BAR, app::ID_MODULES, app::ID_LIST] {
         invalidate(state.control(id));
     }
+    for field in &state.fields {
+        invalidate(field.frame);
+    }
 }
 
 /// Replace the headline status text without touching the scope part.
@@ -1009,8 +1092,133 @@ fn create_child(
     }
 }
 
-fn create_controls(parent: HWND) -> Vec<(i32, HWND)> {
+/// Create a rounded frame plus the control that sits inside it.
+///
+/// The frame is created first so the control lands on top of it, then pinned
+/// directly beneath it so the order survives whatever else the sidebar adds.
+fn create_field(
+    parent: HWND,
+    class: &str,
+    style: u32,
+    id: i32,
+    height: i32,
+    fields: &mut Vec<app::Field>,
+) -> HWND {
+    let frame = create_child(parent, CLASS_FIELD, "", WS_CHILD | WS_VISIBLE, 0, 0, 10);
+    let control = create_child(parent, class, "", style, 0, id, height);
+    if !frame.is_null() && !control.is_null() {
+        unsafe {
+            SetWindowPos(
+                frame,
+                control,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        fields.push(app::Field { frame, control });
+    }
+    control
+}
+
+/// Lay out a framed selector: the frame hugs the closed height of the combo
+/// while the control keeps the tall drop-down area.
+fn place_combo(
+    state: &app::AppState,
+    id: i32,
+    left: i32,
+    top: i32,
+    width: i32,
+    radius: i32,
+    drop: i32,
+) {
+    let control = state.control(id);
+    let frame = state.field_for(control);
+    if control.is_null() || frame.is_null() {
+        return;
+    }
+    // A combo sizes its own closed field; ask it rather than guess a height.
+    let closed = send(control, CB_GETITEMHEIGHT, usize::MAX, 0) as i32;
+    let closed = if closed <= 0 {
+        state.theme.px(24)
+    } else {
+        closed
+    };
+    // One pixel of shave drops the square border the combo paints itself,
+    // so only the frame's rounded hairline is left.
+    let shave = state.theme.px(1);
+    let mut current = RECT::default();
+    unsafe { GetWindowRect(control, &mut current) };
+    // The control keeps the drop-down height, so only the width tells us the
+    // region needs rebuilding.
+    let resized = current.right - current.left != width;
+    unsafe {
+        MoveWindow(frame, left, top, width, closed, 1);
+        MoveWindow(control, left, top, width, drop, 1);
+        if resized {
+            let region = paint::region(
+                &rect(shave, shave, width - shave, closed - shave),
+                radius - shave,
+            );
+            SetWindowRgn(control, region, 1);
+        }
+    }
+    invalidate(frame);
+}
+
+/// Lay a framed field out: the frame takes the whole area and the control
+/// sits one pixel inside it, clipped to a matching rounded region so the
+/// frame's corner arcs stay visible and only its rounded hairline shows.
+fn place_field(state: &app::AppState, id: i32, area: RECT, radius: i32, padded: bool) {
+    let control = state.control(id);
+    let frame = state.field_for(control);
+    if control.is_null() || frame.is_null() {
+        return;
+    }
+    let inset = state.theme.px(1);
+    let inner = rect(
+        area.left + inset,
+        area.top + inset,
+        area.right - inset,
+        area.bottom - inset,
+    );
+    let width = inner.right - inner.left;
+    let height = inner.bottom - inner.top;
+    let mut current = RECT::default();
+    unsafe { GetWindowRect(control, &mut current) };
+    let resized = current.right - current.left != width || current.bottom - current.top != height;
+    if padded {
+        let margin = state.theme.px(8) as usize;
+        send(
+            control,
+            EM_SETMARGINS,
+            (EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize,
+            ((margin & 0xFFFF) | ((margin & 0xFFFF) << 16)) as isize,
+        );
+    }
+    unsafe {
+        MoveWindow(
+            frame,
+            area.left,
+            area.top,
+            area.right - area.left,
+            area.bottom - area.top,
+            1,
+        );
+        MoveWindow(control, inner.left, inner.top, width, height, 1);
+        if resized {
+            let region = paint::region(&rect(0, 0, width, height), radius - inset);
+            SetWindowRgn(control, region, 1);
+        }
+    }
+    invalidate(frame);
+}
+
+fn create_controls(parent: HWND) -> (Vec<(i32, HWND)>, Vec<app::Field>) {
     let mut controls = Vec::new();
+    let mut fields: Vec<app::Field> = Vec::new();
     let edit = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32;
     let button = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32;
     let check = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32;
@@ -1022,20 +1230,22 @@ fn create_controls(parent: HWND) -> Vec<(i32, HWND)> {
     };
     add(
         app::ID_ROOTS,
-        create_child(
+        create_field(
             parent,
             "LISTBOX",
-            "",
             WS_CHILD
                 | WS_VISIBLE
                 | WS_TABSTOP
                 | WS_VSCROLL
                 | LBS_NOTIFY as u32
                 | LBS_NOINTEGRALHEIGHT as u32
-                | WS_BORDER,
-            0,
+                // Without HASSTRINGS an owner drawn list stores the
+                // pointer as item data instead of the text.
+                | LBS_HASSTRINGS as u32
+                | LBS_OWNERDRAWFIXED as u32,
             app::ID_ROOTS,
             104,
+            &mut fields,
         ),
     );
     add(
@@ -1160,19 +1370,11 @@ fn create_controls(parent: HWND) -> Vec<(i32, HWND)> {
     );
     add(
         app::ID_EXCLUDE,
-        create_child(parent, "EDIT", "", edit | WS_BORDER, 0, app::ID_EXCLUDE, 24),
+        create_field(parent, "EDIT", edit, app::ID_EXCLUDE, 24, &mut fields),
     );
     add(
         app::ID_EXTRA_DIRS,
-        create_child(
-            parent,
-            "EDIT",
-            "",
-            edit | WS_BORDER,
-            0,
-            app::ID_EXTRA_DIRS,
-            24,
-        ),
+        create_field(parent, "EDIT", edit, app::ID_EXTRA_DIRS, 24, &mut fields),
     );
     add(
         app::ID_SCAN,
@@ -1200,15 +1402,15 @@ fn create_controls(parent: HWND) -> Vec<(i32, HWND)> {
     );
     add(
         app::ID_LANG,
-        create_child(parent, "COMBOBOX", "", combo, 0, app::ID_LANG, 200),
+        create_field(parent, "COMBOBOX", combo, app::ID_LANG, 200, &mut fields),
     );
     add(
         app::ID_FILTER,
-        create_child(parent, "EDIT", "", edit | WS_BORDER, 0, app::ID_FILTER, 24),
+        create_field(parent, "EDIT", edit, app::ID_FILTER, 24, &mut fields),
     );
     add(
         app::ID_TOP,
-        create_child(parent, "COMBOBOX", "", combo, 0, app::ID_TOP, 200),
+        create_field(parent, "COMBOBOX", combo, app::ID_TOP, 200, &mut fields),
     );
     add(
         app::ID_LIST,
@@ -1280,7 +1482,15 @@ fn create_controls(parent: HWND) -> Vec<(i32, HWND)> {
         app::ID_VEIL,
         create_child(parent, CLASS_VEIL, "", WS_CHILD, 0, app::ID_VEIL, 100),
     );
-    controls
+    for (id, hwnd) in &controls {
+        if matches!(
+            *id,
+            app::ID_SCAN | app::ID_EXPORT | app::ID_ADD_FOLDER | app::ID_ADD_PATH | app::ID_REMOVE
+        ) {
+            track_button(*hwnd, *id);
+        }
+    }
+    (controls, fields)
 }
 
 fn apply_fonts(state: &app::AppState) {
@@ -1634,10 +1844,13 @@ fn on_create(hwnd: HWND) {
             *borrow = Some(Box::new(app::AppState::new(hwnd)));
         }
     });
-    let controls = create_controls(hwnd);
+    let (controls, fields) = create_controls(hwnd);
     with_state(|state| {
         for (id, control) in controls {
             state.remember(id, control);
+        }
+        for field in fields {
+            state.remember_field(field.frame, field.control);
         }
         apply_fonts(state);
         state.sync_options();
@@ -1851,6 +2064,19 @@ unsafe extern "system" fn main_proc(
         WM_COMMAND => {
             let id = (wparam & 0xFFFF) as i32;
             let code = ((wparam >> 16) & 0xFFFF) as u32;
+            // A framed field turns its hairline accent while its control
+            // holds the focus, so the frame repaints on every focus change.
+            // A combo reports focus with the same codes as a list box
+            // (`CBN_KILLFOCUS` is `LBN_SETFOCUS`), so these cover all three.
+            if matches!(
+                code,
+                EN_SETFOCUS | EN_KILLFOCUS | LBN_SETFOCUS | LBN_KILLFOCUS
+            ) {
+                with_state(|state| {
+                    let frame = state.field_for(state.control(id));
+                    invalidate(frame);
+                });
+            }
             match id {
                 app::ID_SCAN => {
                     if code == BN_CLICKED {
@@ -1994,6 +2220,10 @@ unsafe extern "system" fn main_proc(
             if item.is_null() {
                 return 0;
             }
+            if (*item).CtlType == ODT_LISTBOX {
+                with_state(|state| paint::list_item((*item).hDC, &*item, &state.theme));
+                return 1;
+            }
             with_state(|state| {
                 let style = match (*item).CtlID as i32 {
                     app::ID_SCAN => Some(paint::ButtonStyle::Accent),
@@ -2004,13 +2234,24 @@ unsafe extern "system" fn main_proc(
                 };
                 match style {
                     Some(style) => {
-                        paint::button((*item).hDC, &*item, style, &state.theme);
+                        let hot = state.hot == (*item).CtlID as i32;
+                        paint::button((*item).hDC, &*item, style, hot, &state.theme);
                         1
                     }
                     None => 0,
                 }
             })
             .unwrap_or(0)
+        }
+        WM_MEASUREITEM => {
+            // The scan-root list draws its own rows, so it asks for that
+            // height once and again after a DPI change.
+            let measure = lparam as *mut MEASUREITEMSTRUCT;
+            if !measure.is_null() && (*measure).CtlType == ODT_LISTBOX {
+                with_state(|state| (*measure).itemHeight = state.theme.px(24) as u32);
+                return 1;
+            }
+            DefWindowProcW(hwnd, message, wparam, lparam)
         }
         WM_NOTIFY => {
             let header = lparam as *const NMHDR;
@@ -2207,7 +2448,7 @@ unsafe extern "system" fn main_proc(
         }
         WM_CTLCOLORLISTBOX => {
             let hdc = wparam as HDC;
-            SetBkColor(hdc, theme::GRID_BG);
+            SetBkColor(hdc, theme::FIELD_BG);
             SetTextColor(hdc, theme::TEXT);
             with_state(|state| state.card_brush as isize).unwrap_or(0)
         }
@@ -2506,6 +2747,7 @@ pub fn run() -> i32 {
         register_class(CLASS_BAR, Some(bar_proc), instance);
         register_class(CLASS_MODULES, Some(modules_proc), instance);
         register_class(CLASS_VEIL, Some(veil_proc), instance);
+        register_class(CLASS_FIELD, Some(field_proc), instance);
         let keys = [
             ACCEL {
                 fVirt: FVIRTKEY,

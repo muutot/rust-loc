@@ -81,6 +81,15 @@ pub const CARD_COLUMNS: i32 = 5;
 /// Function rows the GUI keeps; the table filters and sorts them in place.
 pub const GUI_TOP_FUNCTIONS: usize = 200;
 
+/// A framed input: `frame` paints the rounded surface and `control` sits
+/// inset above it, so the field keeps the native behaviour of whatever
+/// widget it wraps (an edit, a list, a selector).
+#[derive(Clone, Copy)]
+pub struct Field {
+    pub frame: HWND,
+    pub control: HWND,
+}
+
 pub struct AppState {
     pub theme: theme::Theme,
     pub settings: model::Settings,
@@ -131,6 +140,11 @@ pub struct AppState {
     pub table_title_rect: RECT,
     pub table_hint_rect: RECT,
     pub tab_rects: [RECT; 5],
+    /// Every framed input, in the order the sidebar lays them out.
+    pub fields: Vec<Field>,
+    /// The control the pointer rests on; owner drawn buttons read it to
+    /// light up, since they get no hover state of their own.
+    pub hot: i32,
 }
 
 impl AppState {
@@ -220,6 +234,8 @@ impl AppState {
             table_title_rect: RECT::default(),
             table_hint_rect: RECT::default(),
             tab_rects: [RECT::default(); 5],
+            fields: Vec::new(),
+            hot: 0,
         }
     }
 
@@ -233,6 +249,30 @@ impl AppState {
 
     pub fn remember(&mut self, id: i32, hwnd: HWND) {
         self.controls.push((id, hwnd));
+    }
+
+    /// Pair a rounded frame with the control it wraps.
+    pub fn remember_field(&mut self, frame: HWND, control: HWND) {
+        self.fields.push(Field { frame, control });
+    }
+
+    /// The frame that wraps a control, when it has one.
+    pub fn field_for(&self, control: HWND) -> HWND {
+        self.fields
+            .iter()
+            .find(|field| field.control == control)
+            .map(|field| field.frame)
+            .unwrap_or(std::ptr::null_mut())
+    }
+
+    /// The control a frame wraps, so a frame can paint itself in the right
+    /// focus state.
+    pub fn frame_control(&self, frame: HWND) -> HWND {
+        self.fields
+            .iter()
+            .find(|field| field.frame == frame)
+            .map(|field| field.control)
+            .unwrap_or(std::ptr::null_mut())
     }
 
     /// Read every scope widget back into the scan options.

@@ -94,6 +94,18 @@ pub fn raised(hdc: HDC, area: &RECT, radius: i32, fill_color: u32, border: Optio
     card(hdc, area, radius, fill_color, border);
 }
 
+/// The rounded surface behind a text field, a scan-root list or a selector:
+/// white inside a hairline that turns accent while the control holds the
+/// focus. The frame window paints it, the control sits inset above it.
+pub fn field(hdc: HDC, area: &RECT, radius: i32, focused: bool) {
+    let border = if focused {
+        theme::ACCENT
+    } else {
+        theme::FIELD_BORDER
+    };
+    card(hdc, area, radius, theme::FIELD_BG, Some(border));
+}
+
 /// A one pixel hairline.
 fn rule(hdc: HDC, area: &RECT, color: u32) {
     fill(hdc, area, color);
@@ -969,8 +981,16 @@ pub enum ButtonStyle {
     Ghost,
 }
 
-/// Paint an owner drawn button from its `WM_DRAWITEM` payload.
-pub fn button(hdc: HDC, item: &DRAWITEMSTRUCT, style: ButtonStyle, theme: &theme::Theme) {
+/// Paint an owner drawn button from its `WM_DRAWITEM` payload. `hot` is the
+/// pointer resting on it, which owner drawn buttons do not report by
+/// themselves.
+pub fn button(
+    hdc: HDC,
+    item: &DRAWITEMSTRUCT,
+    style: ButtonStyle,
+    hot: bool,
+    theme: &theme::Theme,
+) {
     let bounds = item.rcItem;
     let pressed = item.itemState & ODS_SELECTED != 0;
     let disabled = item.itemState & ODS_DISABLED != 0;
@@ -980,6 +1000,8 @@ pub fn button(hdc: HDC, item: &DRAWITEMSTRUCT, style: ButtonStyle, theme: &theme
                 theme::TRACK_BG
             } else if pressed {
                 theme::ACCENT_DARK
+            } else if hot {
+                theme::ACCENT_HOVER
             } else {
                 theme::ACCENT
             };
@@ -993,15 +1015,19 @@ pub fn button(hdc: HDC, item: &DRAWITEMSTRUCT, style: ButtonStyle, theme: &theme
                 },
             )
         }
+        // A secondary action is a filled chip rather than an outlined box:
+        // no border to read as a Window 95 button.
         ButtonStyle::Ghost => {
             let fill = if disabled {
                 theme::PANEL_BG
             } else if pressed {
-                theme::TRACK_BG
+                theme::CHIP_PRESS
+            } else if hot {
+                theme::CHIP_HOVER
             } else {
-                theme::CARD_BG
+                theme::CHIP_BG
             };
-            (fill, Some(theme::BORDER), theme::TEXT)
+            (fill, None, theme::TEXT)
         }
     };
     card(hdc, &bounds, theme.px(8), background, border);
@@ -1022,6 +1048,60 @@ pub fn button(hdc: HDC, item: &DRAWITEMSTRUCT, style: ButtonStyle, theme: &theme
         ink,
         theme.fonts.base,
         DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+    );
+}
+
+/// Paint one row of the owner drawn scan-root list: the selected row gets a
+/// washed accent pill, every row a little breathing room.
+pub fn list_item(hdc: HDC, item: &DRAWITEMSTRUCT, theme: &theme::Theme) {
+    let bounds = item.rcItem;
+    fill(hdc, &bounds, theme::FIELD_BG);
+    let index = item.itemID as i32;
+    if index < 0 || item.hwndItem.is_null() {
+        return;
+    }
+    let mut buffer = vec![0u16; 1024];
+    let length = unsafe {
+        SendMessageW(
+            item.hwndItem,
+            LB_GETTEXT,
+            index as usize,
+            buffer.as_mut_ptr() as isize,
+        )
+    };
+    if length <= 0 {
+        return;
+    }
+    let value = String::from_utf16_lossy(&buffer[..length as usize]);
+    let selected = item.itemState & ODS_SELECTED != 0;
+    let pad = theme.px(5);
+    let pill = rect(
+        bounds.left + pad,
+        bounds.top + theme.px(2),
+        bounds.right - pad,
+        bounds.bottom - theme.px(2),
+    );
+    if selected {
+        card(hdc, &pill, theme.px(6), theme::ACCENT_SOFT, None);
+    }
+    let colour = if selected {
+        theme::ACCENT_DARK
+    } else {
+        theme::TEXT
+    };
+    let mut area = rect(
+        pill.left + theme.px(8),
+        bounds.top,
+        pill.right - theme.px(6),
+        bounds.bottom,
+    );
+    text(
+        hdc,
+        &value,
+        &mut area,
+        colour,
+        theme.fonts.base,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
     );
 }
 
