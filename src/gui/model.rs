@@ -398,8 +398,56 @@ pub fn display_path(path: &Path, cwd: &Path) -> String {
     scan::relative(path, cwd)
 }
 
+/// Where the table measures paths from: the scan root itself when the run has
+/// one, so a report reads from the tree the user picked instead of the drive
+/// letter wherever the window was started from. A run with several roots keeps
+/// the working directory, because that is what tells the roots apart.
+pub fn label_base(report: &Report, cwd: &Path) -> PathBuf {
+    match report.roots.as_slice() {
+        [root] => root.clone(),
+        _ => cwd.to_path_buf(),
+    }
+}
+
+/// Path text a row prints: below the base when it can be, and the path itself
+/// when the two have nothing in common. The report may have printed the path
+/// against the working directory, so a relative one is resolved there first.
+fn label_text(text: &str, base: &Path, cwd: &Path) -> String {
+    let path = Path::new(text);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    scan::relative(&absolute, base)
+}
+
+/// Absolute path a row points at: the path it carries when it has one, and
+/// otherwise its label read as a path below the scan root the table is drawn
+/// from. The label and this agree by construction, so opening a row reaches
+/// the file the row names.
+pub fn row_path(row: &Row, report: Option<&Report>, cwd: &Path) -> PathBuf {
+    if let Some(target) = row.target.as_deref() {
+        return cwd.join(target);
+    }
+    let base = report
+        .map(|report| label_base(report, cwd))
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let label = row.label.trim_start_matches("./").trim();
+    if label.is_empty() || label == "." {
+        base
+    } else {
+        base.join(label)
+    }
+}
+
 /// Build the visible rows for the current view, before filter and limit.
+///
+/// Labels are drawn from the scan root, so the same tree reads the same way no
+/// matter which directory the window was started from.
 pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -> Vec<Row> {
+    let base = label_base(report, cwd);
+    let base = base.as_path();
     let mut rows = Vec::new();
     match view {
         View::Files => {
@@ -409,7 +457,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                     .as_ref()
                     .and_then(|diff| diff.code_delta(&baseline::key(entry, &report.roots, cwd)));
                 rows.push(Row {
-                    label: display_path(entry.path(), cwd),
+                    label: scan::relative(entry.path(), base),
                     cells: counter_cells(entry, columns),
                     target: None,
                     delta,
@@ -417,7 +465,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
             }
         }
         View::Modules => {
-            for (label, stats, _) in scan::module_groups(&report.business_entries(), cwd) {
+            for (label, stats, _) in scan::module_groups(&report.business_entries(), base) {
                 rows.push(Row {
                     label: shorten_module(&label),
                     cells: columns
@@ -432,7 +480,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
         View::Authors => {
             if let Some(authors) = &report.authors {
                 for file in &authors.files {
-                    let label = display_path(&file.path, cwd);
+                    let label = scan::relative(&file.path, base);
                     for share in &file.authors {
                         if share.lines.business() == 0 {
                             continue;
@@ -455,11 +503,12 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
         }
         View::Functions => {
             for function in &report.functions {
+                let location = label_text(&function.path, base, cwd);
                 rows.push(Row {
                     label: function.name.clone(),
                     cells: columns
                         .iter()
-                        .map(|column| function_cell(function, column.key))
+                        .map(|column| function_cell(function, &location, column.key))
                         .collect(),
                     target: Some(function.path.clone()),
                     delta: None,
@@ -473,7 +522,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                     continue;
                 }
                 rows.push(Row {
-                    label: display_path(entry.path(), cwd),
+                    label: scan::relative(entry.path(), base),
                     cells: counter_cells(entry, columns),
                     target: None,
                     delta: None,
@@ -490,7 +539,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
             pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             for (path, lines) in pairs {
                 rows.push(Row {
-                    label: path,
+                    label: label_text(&path, base, cwd),
                     cells: vec![Cell::Number(lines)],
                     target: None,
                     delta: None,
@@ -518,9 +567,9 @@ fn shorten_module(label: &str) -> String {
 
 /// One cell of the functions tab: the name is the row label, the file and line
 /// is the text column, the counters follow.
-fn function_cell(function: &FunctionRow, key: &str) -> Cell {
+fn function_cell(function: &FunctionRow, location: &str, key: &str) -> Cell {
     match key {
-        "location" => Cell::Text(format!("{}:{}", function.path, function.line)),
+        "location" => Cell::Text(format!("{}:{}", location, function.line)),
         "code" => Cell::Number(function.code),
         "complexity" => Cell::Number(function.complexity),
         "args" => Cell::Number(function.params),
@@ -531,10 +580,13 @@ fn function_cell(function: &FunctionRow, key: &str) -> Cell {
 
 /// Biggest modules by code, ready for the bar chart.
 pub fn top_modules(report: &Report, cwd: &Path, limit: usize) -> Vec<(String, u32)> {
-    let rows: Vec<(String, u32)> = scan::module_groups(&report.business_entries(), cwd)
+    let base = label_base(report, cwd);
+    let rows: Vec<(String, u32)> = scan::module_groups(&report.business_entries(), &base)
         .iter()
         .take(limit)
-        .map(|(label, stats, _)| (label.clone(), stats.code))
+        // The chart and the table name a module the same way, so the label
+        // shortening below only ever drops a prefix both really share.
+        .map(|(label, stats, _)| (shorten_module(label), stats.code))
         .collect();
     shorten_labels(rows)
 }
@@ -1436,6 +1488,49 @@ mod tests {
             &scratch.path,
         );
         assert!(files.iter().all(|row| row.target.is_none()));
+    }
+
+    #[test]
+    fn labels_start_at_the_scan_root_not_the_drive_letter() {
+        i18n::set_lang(i18n::Lang::En);
+        let scratch = Scratch::new("label-base");
+        scratch.write("src/lib.rs", SOURCE);
+        let options = Options {
+            functions: true,
+            ..Options::default()
+        };
+        // A window started from a shortcut runs somewhere else entirely, so the
+        // scan is asked for its paths from there and the table still names the
+        // files from the tree that was scanned.
+        let elsewhere = Path::new("C:/elsewhere");
+        let report = crate::report::scan(
+            std::slice::from_ref(&scratch.path),
+            &options,
+            elsewhere,
+            None,
+        );
+
+        let columns = view_columns(View::Files, &options, false);
+        let rows = build_rows(&report, View::Files, &columns, elsewhere);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "src/lib.rs");
+        assert_eq!(
+            row_path(&rows[0], Some(&report), elsewhere),
+            scratch.path.join("src/lib.rs"),
+            "opening a row has to reach the file the row names"
+        );
+
+        let columns = view_columns(View::Modules, &options, false);
+        let rows = build_rows(&report, View::Modules, &columns, elsewhere);
+        assert_eq!(rows[0].label, "src");
+
+        let columns = view_columns(View::Functions, &options, false);
+        let rows = build_rows(&report, View::Functions, &columns, elsewhere);
+        assert!(!rows.is_empty());
+        for row in &rows {
+            let location = row.cells[0].text().to_string();
+            assert!(location.starts_with("src/lib.rs:"), "{location}");
+        }
     }
 
     #[test]

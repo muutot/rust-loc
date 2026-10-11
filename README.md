@@ -624,6 +624,9 @@ window, no web runtime, no UI toolkit. A scan-root sidebar owns the options
 (including the *Sources* selector that picks Rust, Python or both),
 the results pane shows a line-composition bar, a top-module chart, the KPI
 cards and a tabbed per-file / per-module / per-function / excluded-file table.
+Every row names its file from the scan root down, so the tables read the same
+whether the window was started on the tree itself or from a shortcut
+somewhere else.
 A scan runs on
 a worker thread while a veil and a progress bar cover the shell; a fast scan
 finishes before the veil is shown, so no console window ever appears and the

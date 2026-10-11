@@ -1711,18 +1711,7 @@ fn selected_row_path() -> Option<PathBuf> {
         }
         let row = state.rows.get(*state.visible.get(index as usize)?)?;
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let label = row
-            .target
-            .as_deref()
-            .unwrap_or(&row.label)
-            .trim_start_matches("./")
-            .trim()
-            .to_string();
-        Some(if label.is_empty() || label == "." {
-            cwd
-        } else {
-            cwd.join(label)
-        })
+        Some(model::row_path(row, state.report.as_ref(), &cwd))
     })
     .flatten()
 }
