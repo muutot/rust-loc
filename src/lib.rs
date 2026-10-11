@@ -1,0 +1,15 @@
+//! rust-loc: count Rust source lines with test code excluded.
+//!
+//! The library exposes the same pipeline the CLI uses: parse the command line,
+//! discover Rust files, analyse them in parallel, reduce them to business-code
+//! counters and render the result as text, JSON, CSV or Markdown.
+
+pub mod cli;
+#[cfg(windows)]
+pub mod gui;
+pub mod lexer;
+pub mod options;
+pub mod report;
+pub mod scan;
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

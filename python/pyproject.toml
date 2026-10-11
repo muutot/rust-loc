@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rust-loc"
+dynamic = ["version"]
+description = "Count Rust source lines (code / comments / blanks) with test code excluded, plus ULOC, complexity and unsafe metrics."
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = ["rust", "loc", "cloc", "tokei", "scc", "lines-of-code", "code-metrics", "tkinter"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Rust",
+  "Topic :: Software Development :: Quality Assurance",
+  "Topic :: Software Development :: User Interfaces",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+rust-loc = "rust_loc.cli:main"
+
+[project.gui-scripts]
+rust-loc-ui = "rust_loc.ui:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "rust_loc.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

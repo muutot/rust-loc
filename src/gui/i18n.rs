@@ -1,0 +1,269 @@
+//! UI language catalog: English and Chinese, Chinese by default.
+//!
+//! Every user visible string lives here, once per language, so the shell can
+//! switch language at run time without any resource file or dependency.
+
+use std::cell::Cell;
+
+use crate::gui::sys::GetUserDefaultUILanguage;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lang {
+    En,
+    Zh,
+}
+
+/// Languages in the order the selector offers them.
+pub const LANGS: [Lang; 2] = [Lang::Zh, Lang::En];
+
+impl Lang {
+    #[cfg(test)]
+    pub fn from_code(value: &str) -> Lang {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "en" | "en-us" | "en-gb" | "english" => Lang::En,
+            _ => Lang::Zh,
+        }
+    }
+
+    pub fn from_index(index: usize) -> Lang {
+        *LANGS.get(index).unwrap_or(&Lang::Zh)
+    }
+
+    pub fn index(self) -> usize {
+        LANGS.iter().position(|lang| *lang == self).unwrap_or(0)
+    }
+
+    /// Name of the language in that language, for the selector.
+    pub fn native(self) -> &'static str {
+        match self {
+            Lang::En => "English",
+            Lang::Zh => "中文",
+        }
+    }
+}
+
+thread_local! {
+    static CURRENT: Cell<Lang> = const { Cell::new(Lang::Zh) };
+}
+
+pub fn set_lang(lang: Lang) {
+    CURRENT.with(|cell| cell.set(lang));
+}
+
+pub fn lang() -> Lang {
+    CURRENT.with(|cell| cell.get())
+}
+
+/// The catalog for the active language.
+pub fn t() -> &'static Strings {
+    match lang() {
+        Lang::En => &EN,
+        Lang::Zh => &ZH,
+    }
+}
+
+/// Declare one field per string, with the English and Chinese text together so
+/// the two languages cannot drift apart.
+macro_rules! catalog {
+    ($( $name:ident => ($en:expr, $zh:expr) ),* $(,)?) => {
+        #[allow(dead_code)]
+        pub struct Strings {
+            $( pub $name: &'static str, )*
+        }
+        pub const EN: Strings = Strings { $( $name: $en, )* };
+        pub const ZH: Strings = Strings { $( $name: $zh, )* };
+    };
+}
+
+/// Replace `{name}` placeholders; unknown braces are left alone.
+pub fn fill(template: &str, parts: &[(&str, String)]) -> String {
+    let mut out = template.to_string();
+    for (key, value) in parts {
+        out = out.replace(&format!("{{{key}}}"), value);
+    }
+    out
+}
+
+impl Strings {
+    /// Root count with the plural forms English needs.
+    pub fn roots(&self, n: usize) -> String {
+        let template = if n == 1 {
+            self.scope_root_one
+        } else {
+            self.scope_root_many
+        };
+        fill(template, &[("n", n.to_string())])
+    }
+
+    pub fn added_roots(&self, n: usize) -> String {
+        let template = if n == 1 {
+            self.status_added_one
+        } else {
+            self.status_added_many
+        };
+        fill(template, &[("n", n.to_string())])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_replaces_placeholders() {
+        let text = fill("a {x} b {x}", &[("x", "1".to_string())]);
+        assert_eq!(text, "a 1 b 1");
+    }
+
+    #[test]
+    fn language_round_trips() {
+        assert_eq!(Lang::from_code("EN"), Lang::En);
+        assert_eq!(Lang::from_code("zh"), Lang::Zh);
+        assert_eq!(Lang::from_code("nonsense"), Lang::Zh);
+        assert_eq!(Lang::from_index(1), Lang::En);
+        assert_eq!(Lang::En.index(), 1);
+    }
+
+    #[test]
+    fn catalog_lookup_switches_language() {
+        set_lang(Lang::En);
+        assert_eq!(t().button_scan, "Scan  (F5)");
+        set_lang(Lang::Zh);
+        assert_eq!(t().section_language, "界面语言");
+    }
+}
+
+/// Language of the current Windows user; anything Chinese counts as Chinese,
+/// every other UI language falls back to English.
+pub fn system_lang() -> Lang {
+    let id = unsafe { GetUserDefaultUILanguage() } as u32;
+    // The primary language id lives in the low ten bits: LANG_CHINESE == 4.
+    if id & 0x3FF == 4 {
+        Lang::Zh
+    } else {
+        Lang::En
+    }
+}
+
+catalog! {
+    // -- shell -------------------------------------------------------------
+    window_title => ("rust-loc — Rust code statistics", "rust-loc — Rust 代码统计"),
+    subtitle => ("Rust business code statistics · test code excluded", "Rust 业务代码统计 · 已排除测试代码"),
+    no_scan_yet => ("no scan yet", "尚未扫描"),
+    header_code => ("code", "代码"),
+    header_comment => ("comment", "注释"),
+    header_blank => ("blank", "空行"),
+    // -- sidebar -----------------------------------------------------------
+    section_roots => ("SCAN ROOTS", "扫描根目录"),
+    add_folder => ("Add folder…", "添加文件夹…"),
+    paste_path => ("Paste path…", "粘贴路径…"),
+    remove => ("Remove", "移除"),
+    section_scope => ("SCOPE", "统计范围"),
+    opt_gitignore => ("Respect .gitignore", "遵循 .gitignore"),
+    opt_default_ignores => ("Skip default ignored dirs", "跳过默认忽略目录"),
+    opt_include_tests => ("Include test code", "包含测试代码"),
+    opt_complexity => ("Complexity estimate", "复杂度估算"),
+    opt_uloc => ("ULOC / DRYness", "ULOC / 重复率"),
+    section_exclude => ("EXCLUDE GLOBS", "排除通配符"),
+    hint_exclude => ("e.g. */generated/*, src/legacy", "例如 */generated/*, src/legacy"),
+    section_extra_dirs => ("EXTRA IGNORED DIRS", "额外忽略目录"),
+    hint_extra_dirs => ("directory names skipped anywhere", "任意层级中同名的目录都会被跳过"),
+    section_language => ("LANGUAGE", "界面语言"),
+    button_scan => ("Scan  (F5)", "开始扫描  (F5)"),
+    button_export => ("Export…", "导出…"),
+    // -- charts ------------------------------------------------------------
+    chart_composition => ("Line composition", "行构成"),
+    chart_modules => ("Top modules by code", "代码量最大的模块"),
+    chart_empty_composition => ("Run a scan to see the line mix", "运行扫描后显示行构成"),
+    chart_empty_modules => ("No data yet", "暂无数据"),
+    seg_code => ("Code", "代码"),
+    seg_doc => ("Doc comments", "文档注释"),
+    seg_comment => ("Comments", "注释"),
+    seg_blank => ("Blank", "空行"),
+    hover_segment => ("{name} · {value} · {share}", "{name} · {value} · {share}"),
+    hover_module => ("{name} · {value} code", "{name} · {value} 行代码"),
+    // -- KPI cards ---------------------------------------------------------
+    card_files => ("Files", "文件"),
+    card_lines => ("Lines", "行数"),
+    card_code => ("Code", "代码"),
+    card_comment => ("Comment", "注释"),
+    card_blank => ("Blank", "空行"),
+    card_test => ("Test lines", "测试行"),
+    card_complexity => ("Complexity", "复杂度"),
+    card_test_fns => ("Test fns", "测试函数"),
+    card_unsafe => ("Unsafe", "Unsafe"),
+    card_uloc => ("ULOC", "ULOC"),
+    card_placeholder_value => ("—", "—"),
+    hint_placeholder => ("run a scan", "运行扫描后显示"),
+    hint_files_scanned => ("{n} .rs files scanned", "已扫描 {n} 个 .rs 文件"),
+    hint_business_only => ("business code only", "仅统计业务代码"),
+    hint_tests_included => ("test code included", "已包含测试代码"),
+    hint_of_lines => ("{share} of lines", "占全部行数 {share}"),
+    hint_comment_doc => ("{share} · doc {n}", "{share} · 文档 {n}"),
+    hint_excluded_totals => ("excluded from totals", "未计入总计"),
+    hint_included_totals => ("included in totals", "已计入总计"),
+    hint_complexity => ("estimated branch points", "估算分支点"),
+    hint_unsafe => ("unsafe keywords", "unsafe 关键字"),
+    hint_test_fns => ("#[test] functions", "#[test] 函数"),
+    hint_uloc => ("DRYness {share}", "重复率 {share}"),
+    // -- table -------------------------------------------------------------
+    table_per_file => ("Per-file breakdown", "按文件统计"),
+    table_per_module => ("Per-module breakdown", "按模块统计"),
+    table_excluded => ("Test-only files kept out of the totals", "未计入总计的纯测试文件"),
+    tab_files => ("Files", "文件"),
+    tab_modules => ("Modules", "模块"),
+    tab_excluded => ("Excluded tests", "排除的测试"),
+    label_file => ("File", "文件"),
+    label_module => ("Module", "模块"),
+    label_test_only_file => ("Test-only file", "纯测试文件"),
+    col_lines => ("Lines", "行数"),
+    col_blank => ("Blank", "空行"),
+    col_comment => ("Comment", "注释"),
+    col_code => ("Code", "代码"),
+    col_test => ("Test", "测试"),
+    col_cplx => ("Cplx", "复杂度"),
+    col_uloc => ("ULOC", "ULOC"),
+    filter_label => ("Filter", "筛选"),
+    filter_cue => ("Filter paths…", "按路径筛选…"),
+    top_label => ("Top", "上限"),
+    top_all => ("All", "全部"),
+    hint_showing => ("showing {shown} of {matched} rows · sorted by {column} {arrow}", "显示 {shown} / {matched} 行 · 按 {column} 排序 {arrow}"),
+    hint_no_test_files => ("no test-only files were detected", "未发现纯测试文件"),
+    hint_excluded => ("{files} test-only files · {lines} lines · plus {inner} lines inside #[cfg(test)] items", "{files} 个纯测试文件 · {lines} 行 · 另有 {inner} 行位于 #[cfg(test)] 项内"),
+    table_empty => ("no rows yet — run a scan", "暂无数据 — 请先运行扫描"),
+    // -- status bar --------------------------------------------------------
+    scope_root_one => ("{n} root", "{n} 个根目录"),
+    scope_root_many => ("{n} roots", "{n} 个根目录"),
+    scope_gitignore_on => ("gitignore-aware", "遵循 gitignore"),
+    scope_gitignore_off => ("gitignore ignored", "不读取 gitignore"),
+    scope_ignored_dirs => ("{n} ignored dir names", "{n} 个忽略目录名"),
+    scope_excludes => ("{n} exclude glob(s)", "{n} 个排除通配符"),
+    scope_tests_included => ("tests included", "已包含测试"),
+    status_scanned => ("Scanned {files} files in {seconds} s · {test} test lines kept out", "已扫描 {files} 个文件，用时 {seconds} s · 排除 {test} 行测试代码"),
+    status_ready => ("Ready", "就绪"),
+    status_scanning => ("Scanning…", "正在扫描…"),
+    status_no_root => ("No root selected", "未选择根目录"),
+    status_not_folder => ("Not a folder: {paths}", "不是文件夹：{paths}"),
+    status_folder_listed => ("Folder already listed", "该文件夹已在列表中"),
+    status_added_one => ("Added {n} root", "已添加 {n} 个根目录"),
+    status_added_many => ("Added {n} roots", "已添加 {n} 个根目录"),
+    status_no_clipboard_folder => ("Clipboard has no folder path", "剪贴板中没有文件夹路径"),
+    status_copied_command => ("Copied the equivalent CLI command", "已复制等效命令行"),
+    status_copied_path => ("Copied the file path", "已复制文件路径"),
+    status_no_row => ("Select a row first", "请先选择一行"),
+    status_clipboard_failed => ("Could not open the clipboard", "无法打开剪贴板"),
+    status_nothing_to_copy => ("Nothing to copy yet - run a scan first", "暂无可复制内容 — 请先运行扫描"),
+    status_nothing_to_export => ("Nothing to export yet - run a scan first", "暂无可导出内容 — 请先运行扫描"),
+    status_exported => ("Exported to {path}", "已导出到 {path}"),
+    status_export_failed => ("Export failed: {error}", "导出失败：{error}"),
+    // -- scan overlay ------------------------------------------------------
+    overlay_title => ("Scanning Rust sources", "正在扫描 Rust 源码"),
+    overlay_files => ("{done} / {total} files", "{done} / {total} 个文件"),
+    overlay_discovering => ("Discovering files", "正在发现文件"),
+    // -- menus -------------------------------------------------------------
+    menu_export_as => ("Export table as {format}", "导出表格为 {format}"),
+    menu_copy_command => ("Copy equivalent CLI command", "复制等效命令行"),
+    ctx_open => ("Open file\tEnter", "打开文件\tEnter"),
+    ctx_reveal => ("Reveal in Explorer", "在资源管理器中显示"),
+    ctx_copy_path => ("Copy path", "复制路径"),
+}

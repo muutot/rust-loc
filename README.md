@@ -1,0 +1,235 @@
+# rust-loc
+
+Count Rust source lines with **test code excluded**, plus the metrics the other
+counters skip: ULOC/DRYness, an scc-compatible complexity estimate, `unsafe` use
+and test-function totals.
+
+`rust-loc` is a single-binary Rust tool. `python/` holds the original Python
+implementation, kept as the **reference implementation**: the Rust CLI is
+verified to emit byte-identical reports for text, JSON, CSV and Markdown, and
+`scripts/check-parity.ps1` re-runs that comparison on demand.
+
+## Why another line counter
+
+tokei, scc, cloc and cargo-count all answer "how many lines are in this repo?".
+None of them answers the question a Rust team actually asks: *how much of that is
+code we ship?* `#[cfg(test)]` modules, `mod tests;` siblings, `tests/`,
+`benches/` and crate-level `#![cfg(test)]` are all counted as if they were
+product code by every one of them.
+
+`rust-loc` classifies every physical line as code, comment (optionally doc) or
+blank, then subtracts test code so the numbers describe the shipped logic. It
+matches the competitors on the core columns (`files`, `lines`, `blank`,
+`comment`, `code`) so it can be dropped into an existing dashboard.
+
+## Metrics
+
+| Metric | Meaning |
+| --- | --- |
+| `files` | analysed `.rs` files after test-only files are removed |
+| `lines` | `blank + comment + code` for the business scope |
+| `blank` / `comment` / `code` | per-line classification, excluding test lines |
+| `doc` | subset of `comment`: `///`, `//!`, `/** */`, `/*! */` |
+| `test` | lines inside test-only files or `#[cfg(test)]` items |
+| `complexity` | approximate cyclomatic complexity using scc's Rust branch tokens (`if else for while loop match && || == !=`) |
+| `unsafe` | `unsafe` keyword count (cargo-count style) |
+| `test_fns` | functions carrying `#[test]`, `#[tokio::test]`, `#[rstest]`, ... |
+| `uloc` | unique non-blank lines, merged across files (`sort -u | wc -l`) |
+| `physical` | every physical line of every discovered file, tests included |
+
+### What counts as test code
+
+* **test-only files** - anything under `tests/`, `benches/` or `test/`, files
+  named `tests.rs`, `test.rs`, `*_tests.rs`, `*_test.rs`, files reached by
+  `#[cfg(test)] mod x;` (honouring `#[path = "..." ]`), and files with a
+  crate-level `#![cfg(test)]`;
+* **test-only items** - the balanced item after `#[cfg(test)]` or
+  `#[cfg(all(test, ...))]`. `#[cfg(any(test, ...))]` and `#[cfg(not(test))]`
+  stay, because they also build outside tests;
+* strings, comments and raw strings are tokenised, so a `"#[cfg(test)]"` inside
+  a literal or a `//` comment is never mistaken for a test module.
+
+## Usage
+
+```text
+rust-loc [OPTIONS] [ROOTS]...
+```
+
+| Option | Effect |
+| --- | --- |
+| `--format <text\|json\|csv\|markdown>` | output format (default `text`) |
+| `--json` | alias for `--format json` |
+| `--by-file`, `--per-file` | per-file breakdown |
+| `--by-module` | per-module (top level component) breakdown |
+| `--sort <key>` | `code`, `lines`, `blank`, `comment`, `test`, `complexity`, `unsafe`, `test_fns`, `uloc`, `path` |
+| `--top <n>` | limit listings to `n` rows |
+| `--show-excluded` | list the excluded test-only files |
+| `--include-tests` | count test code as well |
+| `--exclude <glob>` | skip matching paths (repeatable) |
+| `--ignore-dir <name>` | skip a directory name (repeatable) |
+| `--no-ignore-dirs` | do not skip the built-in directory list |
+| `--gitignore` / `--no-gitignore` | control `.gitignore` filtering (default on) |
+| `--uloc` | compute ULOC and DRYness |
+| `--no-complexity` | hide the complexity column |
+| `--jobs <n>` | analysis threads (default: every core) |
+
+Exit code is `0` on success and `2` for a usage error.
+
+```console
+> rust-loc src-tauri/src src-tauri/crates
+> rust-loc --by-file --sort complexity --top 15
+> rust-loc --format markdown --by-module --uloc
+> rust-loc --format csv --by-file > loc.csv
+> rust-loc --format json --show-excluded --uloc .
+```
+
+## Windows UI
+
+`rust-loc-gui.exe` is a native Win32 front end over the same library: one
+window, no web runtime, no UI toolkit. A scan-root sidebar owns the options,
+the results pane shows a line-composition bar, a top-module chart, the KPI
+cards and a tabbed per-file / per-module / excluded-file table. A scan runs on
+a worker thread while a veil and a progress bar cover the shell; a fast scan
+finishes before the veil is shown, so no console window ever appears and the
+UI never blocks.
+
+![rust-loc-gui, per-file view](docs/ui-screenshot.png)
+
+While a scan runs, a veil and a progress bar cover the shell:
+
+![rust-loc-gui, scan in progress](docs/ui-scan-overlay.png)
+
+| Piece | Detail |
+| --- | --- |
+| Bindings | `windows-sys` (the `windows-rs` project), feature-gated to exactly the API surface used; still nothing beyond the system DLLs at run time |
+| Rendering | GDI double buffering; the shell, the KPI cards, the stacked composition bar, the module chart and the scan veil are custom child windows, so nothing flickers |
+| Reports | `SysListView32` with owner-drawn sort headers, zebra striping, a live path filter, Files / Modules / Excluded views and a placeholder KPI strip before the first scan |
+| Chrome | owner-drawn accent buttons, `SHBrowseForFolderW` / `GetSaveFileNameW` dialogs (no COM, no extra crates), clipboard paste of folder paths, accelerators, a row context menu and chart tooltips |
+| Language | English and Chinese, chosen from the system UI language on first run and switchable at any time |
+| Settings | `%APPDATA%\rust-loc\ui.ini`, read at start-up and written on close |
+| Footprint | after a scan, 3 MB private bytes / 14 MB working set on this repo and 6 MB / 17 MB on the 228k-line tree, with handles and threads flat across repeated scans (measured with `Get-Process`) |
+
+```console
+> cargo build --release --bin rust-loc-gui
+> target/release/rust-loc-gui.exe
+```
+
+### Language
+
+The interface ships English and Chinese. On first run the language follows the
+Windows UI language: `GetUserDefaultUILanguage()` decides, every Chinese variant
+(`zh-CN`, `zh-TW`, `zh-HK`) selects Chinese, and anything else falls back to
+English. The `LANGUAGE` selector in the sidebar switches instantly - every
+label, chart, column header and status line is re-rendered in place, the UI font
+follows the script - and the choice is stored in `ui.ini` as `lang=`.
+
+### Keyboard and mouse
+
+| Input | Action |
+| --- | --- |
+| `F5` | scan |
+| `Ctrl+O` | add a folder |
+| `Ctrl+E` | open the export menu |
+| `Ctrl+F` | focus the filter box |
+| `Ctrl+Tab` | next report tab |
+| `Enter`, double-click | open the selected file (a folder for a module row) |
+| right-click, `Menu`, `Shift+F10` | open / reveal in Explorer / copy path for the clicked or selected row |
+| `Esc` | clear the filter |
+| hover | tooltip on the composition bar and on the module chart |
+
+## Performance
+
+Measured on this machine (28 logical cores, warm cache), against the Python
+reference implementation on the same trees:
+
+| Tree | Files / lines | Python | rust-loc | Speed-up |
+| --- | --- | ---: | ---: | ---: |
+| `Clipboard/src-tauri` | 227 / 52k | 1.18 s | 0.10 s | 11.5x |
+| `Clipboard/src-tauri/src + crates` | 234 / 53k | 0.80 s | 0.18 s | 4.4x |
+| `B:\Program\Project\Open` (all repos) | 790 / 228k | 4.71 s | 0.21 s | 20.8x |
+
+File analysis runs on a work-stealing pool (`--jobs`, default all cores); on the
+228k line tree that is 336 ms on one thread versus 207 ms on all cores, with the
+rest being directory walking and the `git ls-files` call for `.gitignore`.
+
+## Layout
+
+| Path | Contents |
+| --- | --- |
+| `src/lexer.rs` | single-pass tokeniser: line classes, metrics, `#[cfg(test)]` spans |
+| `src/scan.rs` | discovery, glob/gitignore filtering, parallel analysis, aggregation |
+| `src/report.rs` | text, JSON, CSV and Markdown renderers |
+| `src/options.rs` | scan options shared by every renderer |
+| `src/cli.rs` | argument parsing and execution (also used by tests) |
+| `src/main.rs` | thin binary entry point |
+| `src/bin/rust-loc-gui.rs` | native Win32 front end entry point |
+| `src/gui/` | the Win32 shell: window classes, layout, GDI painting, dialogs |
+| `gui/rust-loc-gui.manifest` | Common Controls v6 + per-monitor DPI manifest embedded by `build.rs` |
+| `tests/` | integration tests: CLI behaviour and tokeniser edge cases |
+| `python/` | the original Python implementation, kept as the parity reference |
+| `docs/` | reference screenshots of the native UI |
+
+## Building and testing
+
+```console
+> cargo build --release      # target/release/rust-loc.exe
+> cargo build --release --bin rust-loc-gui   # target/release/rust-loc-gui.exe
+> cargo test                 # 69 tests
+> cargo clippy --all-targets -- -D warnings
+> cargo fmt --all
+```
+
+The release profile uses fat LTO, `opt-level = 3`, `codegen-units = 1`,
+`panic = "abort"` and `strip`, so the executables carry no runtime baggage.
+The only crate the project depends on is Microsoft's `windows-sys`, the raw
+Win32 binding layer of the `windows-rs` project; it is pulled in for
+`cfg(windows)` only, feature-gated to the API surface the UI actually uses, and
+compiles in about a second.
+
+## Verifying parity with the Python reference
+
+```console
+> ./scripts/check-parity.ps1                       # scans the default tree
+> ./scripts/check-parity.ps1 -Target C:\some\repo
+> ./scripts/check-parity.ps1 -SkipBuild            # reuse the last build
+```
+
+The script builds the Rust binary, then runs both CLIs over a fixed set of
+argument combinations and compares stdout, stderr and exit codes after
+normalising line endings and path separators. It fails loudly on any difference,
+and the comparison is intentionally byte-exact: the Python implementation is the
+specification for the report formats.
+
+Both CLIs are started through `System.Diagnostics.Process` with
+`CreateNoWindow` and explicit pipes, so no console window ever flashes. A
+progress bar redraws in place while the cases run (`-NoProgress` switches to one
+line per case), and each failure prints the first differing line:
+
+```text
+[########################]  16/16  root:src_tauri_crates
+parity: 16 passed, 0 failed, 16 cases
+```
+
+| Parameter | Purpose |
+| --- | --- |
+| `-Target <dir>` | tree the roots are relative to (default: the sibling `Clipboard` repo) |
+| `-Roots <a,b>` | roots handed to every case |
+| `-ExtraTrees <a,b>` | absolute trees scanned as whole-repository cases |
+| `-Profile debug\|release` | profile to build and test (default `release`) |
+| `-SkipBuild` | reuse the existing binary |
+| `-NoProgress` | one line per case instead of a progress bar |
+
+Set `PARITY_PYTHON` when `python.exe` is not on `PATH` (Windows PowerShell 5.1
+skips `PATH` entries that end with a backslash, so the script also searches them
+by hand).
+
+## Roadmap
+
+1. generated-code detection (`#[rustfmt::skip]`-style markers, `@generated`,
+   proto/tonic output) counted as a separate column;
+2. function-level metrics (largest functions, long-function counts);
+3. COCOMO cost estimate on top of the business line count;
+4. a CI gate: fail when the test-to-code ratio or complexity budget regresses;
+5. baseline comparison (scan once, store JSON, diff two revisions);
+6. git hotspots: churn times complexity per file;
+7. ~~a native Windows UI (Win32, no web runtime)~~ - shipped as `rust-loc-gui`.
