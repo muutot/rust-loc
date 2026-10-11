@@ -621,9 +621,13 @@ usage error.
 
 `rust-loc-gui.exe` is a native Win32 front end over the same library: one
 window, no web runtime, no UI toolkit. A scan-root sidebar owns the options
-(including the *Sources* selector that picks Rust, Python or both),
-the results pane shows a line-composition bar, a top-module chart, the KPI
-cards and a tabbed per-file / per-module / per-function / excluded-file table.
+(including the *Sources* selector that picks Rust, Python or both), and the
+right side is three panes. *Overview* holds the line-composition bar, the
+top-module chart, the KPI cards and the scan history; *Authors* holds the
+`git blame` tables; *Code* holds the per-file / per-module / per-function /
+smell / excluded-test tables behind a second strip. Only the pane in front is
+built, so a table pane takes the whole content area instead of sharing it with
+the charts, and each pane comes back on the tab it was left on.
 Every row names its file from the scan root down, so the tables read the same
 whether the window was started on the tree itself or from a shortcut
 somewhere else.
@@ -634,6 +638,18 @@ UI never blocks. The roots are watched too: a file added, edited or removed
 on disk triggers a debounced rescan on its own.
 
 ![rust-loc-gui, per-file view](docs/ui-screenshot.png)
+
+The *Overview* pane is the whole dashboard, with nothing else competing for the
+space:
+
+![rust-loc-gui, overview pane](docs/ui-overview.png)
+
+The *Authors* pane carries the `git blame` tables: *Per file* lists every author
+whose lines still live in a file, and *Per author* folds the same blame into one
+row per person - files, lines, code, comment and blank, largest first. Both need
+*Author blame* turned on, and neither needs a second tool:
+
+![rust-loc-gui, authors pane](docs/ui-authors.png)
 
 The *Smells* tab ranks the files that carry panic-shaped calls and lint
 escapes, worst first:
@@ -647,7 +663,7 @@ column each instead of one crowded cell:
 
 ![rust-loc-gui, functions tab](docs/ui-functions.png)
 
-Every scan is compared with the one before it, so the KPI strip grows a
+Every scan is compared with the one before it, so the Overview pane grows a
 *vs last scan* card and the Files tab a `Delta` column - no baseline file
 needed:
 
@@ -666,8 +682,8 @@ While a scan runs, a veil and a progress bar cover the shell:
 | Piece | Detail |
 | --- | --- |
 | Bindings | `windows-sys` (the `windows-rs` project), feature-gated to exactly the API surface used; still nothing beyond the system DLLs at run time |
-| Rendering | GDI double buffering; the shell, the KPI cards, the stacked composition bar, the module chart and the scan veil are custom child windows, so nothing flickers. Cards, pills and bars are rounded through a clipped region, and the active tab is a pill rather than an underline. Text fields, the scan-root list and the selectors each sit in a rounded frame window of their own whose hairline turns accent while the control holds the focus, and the check boxes and the rows a selector drops are hand-drawn from the same palette rather than left to the system theme |
-| Reports | `SysListView32` with owner-drawn sort headers, 28px rows ruled by hairlines, a soft accent selection, a live path filter, Files / Modules / Functions / Smells / Excluded views - every tab opens on its natural sort - and a placeholder KPI strip before the first scan |
+| Rendering | GDI double buffering; the shell, the KPI cards, the stacked composition bar, the module chart and the scan veil are custom child windows, so nothing flickers. Cards, pills and bars are rounded through a clipped region; the tab inside a pane is a pill and the pane captions above it are underlined, so the two levels cannot be read as one. Text fields, the scan-root list and the selectors each sit in a rounded frame window of their own whose hairline turns accent while the control holds the focus, and the check boxes and the rows a selector drops are hand-drawn from the same palette rather than left to the system theme |
+| Reports | `SysListView32` with owner-drawn sort headers, 28px rows ruled by hairlines, a soft accent selection, a live path filter, Files / Modules / Functions / Smells / Excluded tables on the code pane and Per file / Per author on the authors pane - every tab opens on its natural sort, the strip is as wide as the captions the device measures, and the KPI strip shows placeholders before the first scan |
 | Smells tab | the files that carry `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`#[allow]`, one row per file, ranked by the total |
 | Since the last scan | each scan diffs itself against the previous one in the same window: a *vs last scan* card with the code change, the added and deleted counts, and a `Delta` column on the Files tab |
 | Report options | `REPORT OPTIONS` keeps generated / minified files out of the totals and adds the COCOMO estimate; the KPI strip grows a row to hold the cost, effort, staffing and schedule cards |
@@ -699,7 +715,7 @@ follows the script - and the choice is stored in `ui.ini` as `lang=`.
 | `Ctrl+O` | add a folder |
 | `Ctrl+E` | open the export menu |
 | `Ctrl+F` | focus the filter box |
-| `Ctrl+Tab` | next report tab |
+| `Ctrl+Tab` | next tab in the pane in front |
 | `Enter`, double-click | open the selected row (a folder for a module row, the defining file for a function row) |
 | right-click, `Menu`, `Shift+F10` | open / reveal in Explorer / copy path for the clicked or selected row |
 | `Esc` | clear the filter |

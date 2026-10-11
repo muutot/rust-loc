@@ -97,6 +97,45 @@ pub fn stop_timer(hwnd: HWND, id: usize) {
     unsafe { KillTimer(hwnd, id) };
 }
 
+/// Show or hide one control, by id.
+///
+/// The z-order is left alone on purpose: a framed field is a window of its own
+/// sitting under its control, and raising the frame would cover the control it
+/// wraps.
+fn set_visible(state: &app::AppState, id: i32, visible: bool) {
+    let control = state.control(id);
+    if control.is_null() {
+        return;
+    }
+    let flags = SWP_NOMOVE
+        | SWP_NOSIZE
+        | SWP_NOZORDER
+        | SWP_NOACTIVATE
+        | if visible {
+            SWP_SHOWWINDOW
+        } else {
+            SWP_HIDEWINDOW
+        };
+    unsafe { SetWindowPos(control, std::ptr::null_mut(), 0, 0, 0, 0, flags) };
+}
+
+/// Show or hide a framed input, its painted frame included.
+fn show_field(state: &app::AppState, id: i32, visible: bool) {
+    let control = state.control(id);
+    let frame = state.field_for(control);
+    set_visible(state, id, visible);
+    if !frame.is_null() {
+        unsafe { ShowWindow(frame, if visible { SW_SHOW } else { SW_HIDE }) };
+    }
+}
+
+/// Width one strip tab needs: its caption as the device measures it, plus the
+/// padding around it. A Chinese caption is about twice as wide as its Latin
+/// translation, so a guessed width would clip one of the two languages.
+fn tab_extent(hdc: HDC, title: &str, font: HFONT, px: impl Fn(i32) -> i32) -> i32 {
+    (paint::measure(hdc, title, font) + px(30)).max(px(72))
+}
+
 fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
     RECT {
         left,
@@ -514,11 +553,11 @@ pub fn layout_state(hwnd: HWND, state: &mut app::AppState) {
     unsafe { GetClientRect(hwnd, &mut client) };
     let width = client.right;
     let height = client.bottom;
-    layout_rects(state, width, height);
+    layout_rects(hwnd, state, width, height);
 }
 
 /// Place every control for a client of `width` x `height`.
-fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
+fn layout_rects(hwnd: HWND, state: &mut app::AppState, width: i32, height: i32) {
     {
         let px = |value: i32| state.theme.px(value);
         let metrics = Metrics::new(px);
@@ -529,43 +568,75 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
         let panel_top = metrics.header + metrics.margin;
         let panel_bottom = (height - metrics.status - metrics.margin).max(panel_top);
 
+        // The pane strip runs the full width of the panel and everything below
+        // it belongs to the pane in front, so the charts and the tables never
+        // fight over the same rows of pixels.
+        let panes = rect(panel_left, panel_top, panel_right, panel_top + metrics.tab);
+        let content_top = panes.bottom + metrics.gap;
+        let overview = state.group == model::Group::Overview;
+        // One DC for the whole pass: a strip tab is exactly as wide as its
+        // caption, and only the device can say how wide that is.
+        let screen = unsafe { GetWindowDC(hwnd) };
+
         let chart_width = ((panel_right - panel_left - metrics.gap) / 2).max(px(120));
         let bar = rect(
             panel_left,
-            panel_top,
+            content_top,
             panel_left + chart_width,
-            panel_top + metrics.chart,
+            content_top + metrics.chart,
         );
         let modules = rect(
             panel_left + chart_width + metrics.gap,
-            panel_top,
+            content_top,
             panel_right,
-            panel_top + metrics.chart,
+            content_top + metrics.chart,
         );
-        let cards_top = panel_top + metrics.chart + metrics.gap;
         // The strip grows a row at a time: the COCOMO cards add a third one.
         let card_rows =
             ((state.cards.len() as i32 + app::CARD_COLUMNS - 1) / app::CARD_COLUMNS).max(2);
-        let cards = rect(
-            panel_left,
-            cards_top,
-            panel_right,
-            cards_top + metrics.card * card_rows + metrics.gap * (card_rows - 1),
-        );
-        // The history card only exists once two scans can be compared; until
-        // then the table keeps the space.
-        let mut table_top = cards.bottom + metrics.gap;
-        let mut spark = rect(0, 0, 0, 0);
-        if state.spark.is_some() {
-            spark = rect(
+        let cards_height = metrics.card * card_rows + metrics.gap * (card_rows - 1);
+        // The history card only exists once two scans can be compared, and it
+        // belongs to the overview pane, under the KPI strip.
+        let trend = if overview && state.spark.is_some() {
+            metrics.spark + metrics.gap
+        } else {
+            0
+        };
+        // The overview pane has the room a table would have taken. Its bands
+        // keep the height their own content needs and the stack is centred in
+        // what is left, so the pane reads as a page rather than as a page with
+        // a hole under it.
+        let slack = if overview {
+            (panel_bottom - (content_top + metrics.chart + metrics.gap + cards_height + trend))
+                .max(0)
+                / 2
+        } else {
+            0
+        };
+        let cards_top = content_top + metrics.chart + metrics.gap + slack;
+        let cards = rect(panel_left, cards_top, panel_right, cards_top + cards_height);
+        let spark = if trend > 0 {
+            let spark_top = cards.bottom + metrics.gap;
+            rect(
                 panel_left,
-                table_top,
+                spark_top,
                 panel_right,
-                table_top + metrics.spark,
-            );
-            table_top = spark.bottom + metrics.gap;
+                spark_top + metrics.spark,
+            )
+        } else {
+            rect(0, 0, 0, 0)
+        };
+        // A table pane takes the whole content area: nothing sits above it.
+        let table = rect(panel_left, content_top, panel_right, panel_bottom);
+
+        // The pane captions, left to right, each as wide as it needs to be.
+        let mut group_rects = [RECT::default(); model::Group::ALL.len()];
+        let mut group_x = panes.left;
+        for (index, group) in model::Group::ALL.iter().enumerate() {
+            let width = tab_extent(screen, group.tab_title(), state.theme.fonts.small_bold, px);
+            group_rects[index] = rect(group_x, panes.top, group_x + width, panes.bottom);
+            group_x += width;
         }
-        let table = rect(panel_left, table_top, panel_right, panel_bottom);
 
         unsafe {
             MoveWindow(
@@ -802,93 +873,113 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
         }
 
         // ---- table card -------------------------------------------------
-        let combo_width = px(88);
-        let combo_left = table.right - px(14) - combo_width;
-        let field_top = table.top + px(12);
-        place_combo(
-            state,
-            app::ID_TOP,
-            combo_left,
-            field_top,
-            combo_width,
-            px(theme::R_CONTROL),
-            px(200),
-        );
-        let filter_right = combo_left - px(8);
-        let filter_left = filter_right - px(200);
-        place_field(
-            state,
-            app::ID_FILTER,
-            rect(
-                filter_left,
+        let mut tab_rects = [RECT::default(); model::View::MAX_STRIP];
+        let mut table_title_rect = RECT::default();
+        let mut table_hint_rect = RECT::default();
+        if !overview {
+            let combo_width = px(88);
+            let combo_left = table.right - px(14) - combo_width;
+            let field_top = table.top + px(12);
+            place_combo(
+                state,
+                app::ID_TOP,
+                combo_left,
                 field_top,
-                filter_left + px(200),
-                field_top + metrics.control,
-            ),
-            px(theme::R_CONTROL),
-            true,
-        );
-        labels.push(label(
-            rect(
-                filter_left - px(52),
-                field_top,
-                filter_left - px(8),
-                field_top + metrics.control,
-            ),
-            i18n::t().filter_label,
-            paint::Ink::CaptionEnd,
-        ));
-        labels.push(label(
-            rect(
-                combo_left - px(44),
-                field_top,
-                combo_left - px(8),
-                field_top + metrics.control,
-            ),
-            i18n::t().top_label,
-            paint::Ink::CaptionEnd,
-        ));
+                combo_width,
+                px(theme::R_CONTROL),
+                px(200),
+            );
+            let filter_right = combo_left - px(8);
+            let filter_left = filter_right - px(200);
+            place_field(
+                state,
+                app::ID_FILTER,
+                rect(
+                    filter_left,
+                    field_top,
+                    filter_left + px(200),
+                    field_top + metrics.control,
+                ),
+                px(theme::R_CONTROL),
+                true,
+            );
+            labels.push(label(
+                rect(
+                    filter_left - px(52),
+                    field_top,
+                    filter_left - px(8),
+                    field_top + metrics.control,
+                ),
+                i18n::t().filter_label,
+                paint::Ink::CaptionEnd,
+            ));
+            labels.push(label(
+                rect(
+                    combo_left - px(44),
+                    field_top,
+                    combo_left - px(8),
+                    field_top + metrics.control,
+                ),
+                i18n::t().top_label,
+                paint::Ink::CaptionEnd,
+            ));
 
-        let mut tab_rects = [RECT::default(); model::View::ALL.len()];
-        let mut tab_x = table.left + px(14);
-        let tabs_top = field_top + metrics.control + px(8);
-        for (index, tab_width) in [px(64), px(86), px(96), px(94), px(76), px(120)]
-            .iter()
-            .enumerate()
-        {
-            tab_rects[index] = rect(tab_x, tabs_top, tab_x + tab_width, tabs_top + metrics.tab);
-            tab_x += tab_width;
+            // The strip is measured rather than guessed: a Chinese caption is
+            // about twice as wide as its Latin translation and both have to fit.
+            let mut tab_x = table.left + px(14);
+            let tabs_top = field_top + metrics.control + px(8);
+            for (index, view) in model::View::strip(state.group).iter().enumerate() {
+                let width = tab_extent(screen, view.tab_title(), state.theme.fonts.small, px);
+                tab_rects[index] = rect(tab_x, tabs_top, tab_x + width, tabs_top + metrics.tab);
+                tab_x += width + px(4);
+            }
+            let list_top = tabs_top + metrics.tab + px(4);
+            let list_bottom = table.bottom - px(28);
+            let list_width = (table.right - table.left - px(20)).max(px(120));
+            unsafe {
+                MoveWindow(
+                    state.control(app::ID_LIST),
+                    table.left + px(10),
+                    list_top,
+                    list_width,
+                    (list_bottom - list_top).max(px(60)),
+                    1,
+                )
+            };
+            table_title_rect = rect(
+                table.left + px(14),
+                table.top + px(12),
+                table.left + px(360),
+                table.top + px(34),
+            );
+            table_hint_rect = rect(
+                table.left + px(12),
+                table.bottom - px(24),
+                table.right - px(12),
+                table.bottom - px(8),
+            );
         }
-        let list_top = tabs_top + metrics.tab + px(4);
-        let list_bottom = table.bottom - px(28);
-        let list_width = (table.right - table.left - px(20)).max(px(120));
-        unsafe {
-            MoveWindow(
-                state.control(app::ID_LIST),
-                table.left + px(10),
-                list_top,
-                list_width,
-                (list_bottom - list_top).max(px(60)),
-                1,
-            )
-        };
+        // Only the pane in front keeps its chrome: a table hides the charts,
+        // and the overview hides the table. Both are placed before this runs,
+        // so a pane that comes back is shown after it has been moved.
+        if state.overview_shown != Some(overview) {
+            state.overview_shown = Some(overview);
+            set_visible(state, app::ID_BAR, overview);
+            set_visible(state, app::ID_MODULES, overview);
+            set_visible(state, app::ID_CARDS, overview);
+            set_visible(state, app::ID_LIST, !overview);
+            show_field(state, app::ID_FILTER, !overview);
+            show_field(state, app::ID_TOP, !overview);
+        }
+        unsafe { ReleaseDC(hwnd, screen) };
         state.header_rect = header;
         state.sidebar_rect = sidebar;
         state.table_rect = table;
         state.spark_rect = spark;
         state.tab_rects = tab_rects;
-        state.table_title_rect = rect(
-            table.left + px(14),
-            table.top + px(12),
-            table.left + px(360),
-            table.top + px(34),
-        );
-        state.table_hint_rect = rect(
-            table.left + px(12),
-            table.bottom - px(24),
-            table.right - px(12),
-            table.bottom - px(8),
-        );
+        state.group_rects = group_rects;
+        state.table_title_rect = table_title_rect;
+        state.table_hint_rect = table_hint_rect;
         state.labels = labels;
 
         let status = state.control(app::ID_STATUS);
@@ -1675,24 +1766,49 @@ fn paste_roots(hwnd: HWND) {
     }
 }
 
-/// Step through the five report tabs from the keyboard.
+/// Step through the tabs of the pane in front from the keyboard.
 fn cycle_view(hwnd: HWND) {
     with_state(|state| {
-        let next = model::View::from_index((state.view.index() + 1) % model::View::ALL.len());
+        let strip = model::View::strip(state.group);
+        let next = match strip.iter().position(|view| *view == state.view) {
+            Some(index) => model::View::from_strip(state.group, (index + 1) % strip.len()),
+            // The overview pane has no tabs, so the keyboard lands on the
+            // first table of the code pane instead of nowhere.
+            None => model::View::from_strip(model::Group::Code, 0),
+        };
         set_view(state, next);
     });
     invalidate(hwnd);
 }
 
-/// Switch tabs and give the new one its natural sort before anything is drawn.
+/// Switch to a table tab and give it its natural sort before anything is drawn.
 fn set_view(state: &mut app::AppState, view: model::View) {
-    if state.view == view {
+    if state.view == view && state.group == view.group() {
         return;
     }
     state.view = view;
+    state.group = view.group();
+    state.group_views[state.group.index()] = view;
     let (column, descending) = model::default_sort(view);
     state.sort_column = column;
     state.sort_descending = descending;
+    state.rebuild();
+    reconfigure_list(state);
+}
+
+/// Switch panes. A table pane comes back on the tab it was left on.
+fn set_group(state: &mut app::AppState, group: model::Group) {
+    if state.group == group {
+        return;
+    }
+    state.group = group;
+    if group != model::Group::Overview {
+        let view = state.group_views[group.index()];
+        state.view = view;
+        let (column, descending) = model::default_sort(view);
+        state.sort_column = column;
+        state.sort_descending = descending;
+    }
     state.rebuild();
     reconfigure_list(state);
 }
@@ -1707,6 +1823,10 @@ fn selected_row_path() -> Option<PathBuf> {
             LVNI_SELECTED as isize,
         );
         if index < 0 {
+            return None;
+        }
+        // The author tally has one row per person: there is no file to open.
+        if !state.view.opens_files() {
             return None;
         }
         let row = state.rows.get(*state.visible.get(index as usize)?)?;
@@ -2121,14 +2241,38 @@ unsafe fn header_rule(info: *const NMLVCUSTOMDRAW) {
     paint::fill((*info).nmcd.hdc, &line, theme::HAIRLINE);
 }
 
-/// A click on the painted tab strip.
-fn tab_hit(state: &app::AppState, x: i32, y: i32) -> Option<model::View> {
+/// What one click on a painted strip selected.
+enum TabHit {
+    /// A pane caption: the whole content area switches.
+    Group(model::Group),
+    /// A table tab inside the pane in front.
+    View(model::View),
+}
+
+/// A click on one of the two painted strips: the pane captions above the
+/// content, or the tabs of the table inside it.
+fn tab_hit(state: &app::AppState, x: i32, y: i32) -> Option<TabHit> {
+    for (index, bounds) in state.group_rects.iter().enumerate() {
+        if inside(bounds, x, y) {
+            return Some(TabHit::Group(model::Group::from_index(index)));
+        }
+    }
     for (index, bounds) in state.tab_rects.iter().enumerate() {
-        if x >= bounds.left && x < bounds.right && y >= bounds.top && y < bounds.bottom {
-            return Some(model::View::from_index(index));
+        if inside(bounds, x, y) {
+            return Some(TabHit::View(model::View::from_strip(state.group, index)));
         }
     }
     None
+}
+
+/// Whether a point falls inside a strip rectangle. A slot the pane in front
+/// does not use is empty, so a stale one can never be hit.
+fn inside(bounds: &RECT, x: i32, y: i32) -> bool {
+    bounds.right > bounds.left
+        && x >= bounds.left
+        && x < bounds.right
+        && y >= bounds.top
+        && y < bounds.bottom
 }
 
 fn schedule_rescan(hwnd: HWND) {
@@ -2481,19 +2625,25 @@ unsafe extern "system" fn main_proc(
         WM_LBUTTONDOWN => {
             let x = (lparam as u32 & 0xFFFF) as i16 as i32;
             let y = ((lparam as u32 >> 16) & 0xFFFF) as i16 as i32;
-            let view = with_state(|state| tab_hit(state, x, y)).flatten();
-            if let Some(view) = view {
-                with_state(|state| set_view(state, view));
-                invalidate(hwnd);
+            match with_state(|state| tab_hit(state, x, y)).flatten() {
+                Some(TabHit::Group(group)) => {
+                    with_state(|state| set_group(state, group));
+                    // Each pane brings its own controls with it, so the layout
+                    // has to run before the repaint looks for them.
+                    layout(hwnd);
+                    invalidate(hwnd);
+                }
+                Some(TabHit::View(view)) => {
+                    with_state(|state| set_view(state, view));
+                    invalidate(hwnd);
+                }
+                None => {}
             }
             0
         }
         WM_SETCURSOR => {
             let hit = (lparam & 0xFFFF) as u32;
             let over_tab = with_state(|state| {
-                if state.tab_rects[0].right == 0 {
-                    return false;
-                }
                 let mut point = POINT { x: 0, y: 0 };
                 unsafe {
                     if GetCursorPos(&mut point) == 0 {
@@ -2554,38 +2704,58 @@ unsafe extern "system" fn main_proc(
                 GetClientRect(hwnd, &mut client);
                 with_state(|state| {
                     let mut labels = state.labels.clone();
-                    let title_rect = state.table_title_rect;
-                    labels.push(paint::Label {
-                        area: title_rect,
-                        text: state.table_title.clone(),
-                        ink: paint::Ink::Title,
-                    });
-                    let hint_rect = state.table_hint_rect;
-                    labels.push(paint::Label {
-                        area: hint_rect,
-                        text: state.table_hint.clone(),
-                        ink: paint::Ink::Hint,
-                    });
-                    let tabs: Vec<(RECT, &str, bool)> = model::View::ALL
+                    // The overview pane has no table, so a title and a row
+                    // count would have nothing to describe.
+                    if state.group != model::Group::Overview {
+                        let title_rect = state.table_title_rect;
+                        labels.push(paint::Label {
+                            area: title_rect,
+                            text: state.table_title.clone(),
+                            ink: paint::Ink::Title,
+                        });
+                        let hint_rect = state.table_hint_rect;
+                        labels.push(paint::Label {
+                            area: hint_rect,
+                            text: state.table_hint.clone(),
+                            ink: paint::Ink::Hint,
+                        });
+                    }
+                    let tabs: Vec<(RECT, &str, bool)> = model::View::strip(state.group)
                         .iter()
-                        .enumerate()
-                        .map(|(index, view)| {
+                        .map(|view| {
                             (
-                                state.tab_rects[index],
+                                state.tab_rects[view.strip_index()],
                                 view.tab_title(),
                                 *view == state.view,
                             )
                         })
                         .collect();
+                    let panes: Vec<(RECT, &str, bool)> = model::Group::ALL
+                        .iter()
+                        .enumerate()
+                        .map(|(index, group)| {
+                            (
+                                state.group_rects[index],
+                                group.tab_title(),
+                                *group == state.group,
+                            )
+                        })
+                        .collect();
                     let summary = model::header_summary(state.report.as_ref());
-                    let spark = state.spark.as_ref().map(|data| paint::Spark {
-                        area: state.spark_rect,
-                        title: &data.title,
-                        latest: &data.latest,
-                        delta: &data.delta,
-                        tone: theme::COLOR_CODE,
-                        values: &data.values,
-                    });
+                    // The trend card belongs to the overview pane: a table
+                    // pane spends its rows on the table instead.
+                    let spark = state
+                        .spark
+                        .as_ref()
+                        .filter(|_| state.group == model::Group::Overview)
+                        .map(|data| paint::Spark {
+                            area: state.spark_rect,
+                            title: &data.title,
+                            latest: &data.latest,
+                            delta: &data.delta,
+                            tone: theme::COLOR_CODE,
+                            values: &data.values,
+                        });
                     let version = format!("v{}", crate::VERSION);
                     let spec = paint::Shell {
                         brand: "rust-loc",
@@ -2596,7 +2766,11 @@ unsafe extern "system" fn main_proc(
                         sidebar: state.sidebar_rect,
                         labels: &labels,
                         spark,
-                        table: state.table_rect,
+                        table: match state.group {
+                            model::Group::Overview => None,
+                            _ => Some(state.table_rect),
+                        },
+                        panes: &panes,
                         tabs: &tabs,
                     };
                     paint::shell(hdc, &client, &spec, &state.theme);
@@ -2664,6 +2838,7 @@ fn persist(hwnd: HWND) {
         settings.exclude = get_text(state.control(app::ID_EXCLUDE));
         settings.extra_dirs = get_text(state.control(app::ID_EXTRA_DIRS));
         settings.view = state.view.index();
+        settings.group = state.group.index();
         settings.top = combo_selection(state.control(app::ID_TOP));
         settings.filter = get_text(state.control(app::ID_FILTER));
         settings.sort_column = state.sort_column;

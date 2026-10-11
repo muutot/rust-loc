@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::authors::AuthorRow;
 use crate::baseline;
 use crate::history;
 use crate::options::{Format, Options};
@@ -14,36 +15,145 @@ use crate::scan;
 use crate::gui::i18n::{self, fill};
 use crate::gui::theme;
 
+/// The three panes the right side switches between.
+///
+/// Each pane owns the whole content area, so the charts and the tables never
+/// share a column of pixels: picking a pane is picking what the window shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Group {
+    /// Who still owns the lines: the `git blame` tables.
+    Authors,
+    /// Line composition, the module chart and the KPI cards.
+    Overview,
+    /// The line counters: per file, module, function and smell.
+    Code,
+}
+
+impl Group {
+    /// Every pane, in the order its strip shows them.
+    pub const ALL: [Group; 3] = [Group::Overview, Group::Authors, Group::Code];
+
+    /// Caption of one pane in the strip above the content.
+    pub fn tab_title(self) -> &'static str {
+        let t = i18n::t();
+        match self {
+            Group::Authors => t.tab_authors,
+            Group::Overview => t.group_overview,
+            Group::Code => t.group_code,
+        }
+    }
+
+    pub fn from_index(index: usize) -> Group {
+        *Group::ALL.get(index).unwrap_or(&Group::Code)
+    }
+
+    pub fn index(self) -> usize {
+        Group::ALL
+            .iter()
+            .position(|group| *group == self)
+            .unwrap_or(2)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
     Files,
     Modules,
     Authors,
+    AuthorTotals,
     Functions,
     Smells,
     Excluded,
 }
 
 impl View {
+    /// The author pane's strip: the whole-scan tally, then the file breakdown
+    /// it is folded from.
+    pub const AUTHOR_STRIP: [View; 2] = [View::AuthorTotals, View::Authors];
+    /// The code pane's strip, in the order the tables appear.
+    pub const CODE_STRIP: [View; 5] = [
+        View::Files,
+        View::Modules,
+        View::Functions,
+        View::Smells,
+        View::Excluded,
+    ];
+    /// Longest strip, so the strip rectangles can be a fixed size array.
+    pub const MAX_STRIP: usize = 5;
+    /// Every view, in the order the settings file records them.
+    ///
+    /// The six tables an older `view=` could already name come first, so a
+    /// file written by an older build still selects the table it always did.
+    pub const ALL: [View; 7] = [
+        View::Files,
+        View::Modules,
+        View::Authors,
+        View::Functions,
+        View::Smells,
+        View::Excluded,
+        View::AuthorTotals,
+    ];
+
+    /// The tables one pane can show, in strip order. The overview pane has
+    /// none: its charts are not tables.
+    pub fn strip(group: Group) -> &'static [View] {
+        match group {
+            Group::Authors => &View::AUTHOR_STRIP,
+            Group::Code => &View::CODE_STRIP,
+            Group::Overview => &[],
+        }
+    }
+
+    pub fn from_strip(group: Group, index: usize) -> View {
+        let strip = View::strip(group);
+        *strip
+            .get(index)
+            .unwrap_or_else(|| strip.first().unwrap_or(&View::Files))
+    }
+
+    /// Where this view sits in its own pane's strip.
+    pub fn strip_index(self) -> usize {
+        View::strip(self.group())
+            .iter()
+            .position(|view| *view == self)
+            .unwrap_or(0)
+    }
+
+    /// The pane this view is shown in.
+    pub fn group(self) -> Group {
+        match self {
+            View::Authors | View::AuthorTotals => Group::Authors,
+            _ => Group::Code,
+        }
+    }
+
+    /// Whether a row of this view points at something the shell can open: the
+    /// author tally has one row per person, so there is no file behind it.
+    pub fn opens_files(self) -> bool {
+        self != View::AuthorTotals
+    }
+
     pub fn label_title(self) -> &'static str {
         let t = i18n::t();
         match self {
             View::Files => t.label_file,
             View::Modules => t.label_module,
             View::Authors => t.label_file,
+            View::AuthorTotals => t.label_author,
             View::Functions => t.label_function,
             View::Smells => t.label_file,
             View::Excluded => t.label_test_only_file,
         }
     }
 
-    /// Tab caption in the segmented strip.
+    /// Tab caption in the pane's segmented strip.
     pub fn tab_title(self) -> &'static str {
         let t = i18n::t();
         match self {
             View::Files => t.tab_files,
             View::Modules => t.tab_modules,
-            View::Authors => t.tab_authors,
+            View::Authors => t.tab_author_files,
+            View::AuthorTotals => t.tab_author_totals,
             View::Functions => t.tab_functions,
             View::Smells => t.tab_smells,
             View::Excluded => t.tab_excluded,
@@ -57,21 +167,12 @@ impl View {
             View::Files => t.table_per_file,
             View::Modules => t.table_per_module,
             View::Authors => t.table_authors,
+            View::AuthorTotals => t.table_author_totals,
             View::Functions => t.table_functions,
             View::Smells => t.table_smells,
             View::Excluded => t.table_excluded,
         }
     }
-
-    /// Every tab, in the order the segmented strip shows them.
-    pub const ALL: [View; 6] = [
-        View::Files,
-        View::Modules,
-        View::Authors,
-        View::Functions,
-        View::Smells,
-        View::Excluded,
-    ];
 
     pub fn from_index(index: usize) -> View {
         *View::ALL.get(index).unwrap_or(&View::Files)
@@ -110,6 +211,7 @@ pub fn column_title(key: &str) -> &'static str {
         "unimplemented" => t.col_unimplemented,
         "allow" => t.col_allow,
         "smells" => t.col_smells,
+        "files" => t.col_files,
         "author" => t.col_author,
         "delta" => t.col_delta,
         _ => "",
@@ -167,6 +269,28 @@ pub fn view_columns(view: View, options: &Options, has_delta: bool) -> Vec<Colum
             key: "lines",
             width: 90,
         }],
+        View::AuthorTotals => vec![
+            Column {
+                key: "files",
+                width: 64,
+            },
+            Column {
+                key: "lines",
+                width: 74,
+            },
+            Column {
+                key: "code",
+                width: 74,
+            },
+            Column {
+                key: "comment",
+                width: 78,
+            },
+            Column {
+                key: "blank",
+                width: 70,
+            },
+        ],
         View::Authors => vec![
             Column {
                 key: "author",
@@ -269,6 +393,7 @@ pub fn header_item_column(item: i32) -> i32 {
 pub fn default_sort(view: View) -> (i32, bool) {
     match view {
         View::Authors => (-1, false),
+        View::AuthorTotals => (1, true),
         View::Functions => (2, true),
         View::Smells => (6, true),
         View::Excluded => (0, true),
@@ -501,6 +626,21 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                 }
             }
         }
+        View::AuthorTotals => {
+            if let Some(authors) = &report.authors {
+                for author in &authors.rows {
+                    rows.push(Row {
+                        label: author.name.clone(),
+                        cells: columns
+                            .iter()
+                            .map(|column| author_cell(author, column.key))
+                            .collect(),
+                        target: None,
+                        delta: None,
+                    });
+                }
+            }
+        }
         View::Functions => {
             for function in &report.functions {
                 let location = label_text(&function.path, base, cwd);
@@ -574,6 +714,18 @@ fn function_cell(function: &FunctionRow, location: &str, key: &str) -> Cell {
         "complexity" => Cell::Number(function.complexity),
         "args" => Cell::Number(function.params),
         "depth" => Cell::Number(function.depth),
+        _ => Cell::Number(0),
+    }
+}
+
+/// One cell of the author tally: what one person still holds, by line class.
+fn author_cell(author: &AuthorRow, key: &str) -> Cell {
+    match key {
+        "files" => Cell::Number(author.files as u32),
+        "lines" => Cell::Number(author.lines.business()),
+        "code" => Cell::Number(author.lines.code),
+        "comment" => Cell::Number(author.lines.comment),
+        "blank" => Cell::Number(author.lines.blank),
         _ => Cell::Number(0),
     }
 }
@@ -663,7 +815,7 @@ pub fn table_hint(
                 ("shown", human_int(report.functions.len() as u64)),
             ],
         )
-    } else if view == View::Authors {
+    } else if matches!(view, View::Authors | View::AuthorTotals) {
         let files = report
             .authors
             .as_ref()
@@ -1184,6 +1336,9 @@ pub struct Settings {
     pub exclude: String,
     pub extra_dirs: String,
     pub view: usize,
+    /// The pane the window opens on. The tables keep the index they had, so a
+    /// file written before the panes existed cannot land on the wrong one.
+    pub group: usize,
     pub top: usize,
     pub format: usize,
     pub lang: usize,
@@ -1209,6 +1364,7 @@ impl Default for Settings {
             exclude: String::new(),
             extra_dirs: String::new(),
             view: 0,
+            group: Group::Code.index(),
             top: 1,
             format: 0,
             lang: i18n::system_lang().index(),
@@ -1286,6 +1442,7 @@ pub fn load_settings() -> Settings {
             "exclude" => settings.exclude = value.trim().to_string(),
             "extra_dirs" => settings.extra_dirs = value.trim().to_string(),
             "view" => settings.view = value.trim().parse().unwrap_or(0),
+            "group" => settings.group = value.trim().parse().unwrap_or(Group::Code.index()),
             "lang" => settings.lang = value.trim().parse().unwrap_or(settings.lang),
             "top" => settings.top = value.trim().parse().unwrap_or(1),
             "format" => settings.format = value.trim().parse().unwrap_or(0),
@@ -1333,6 +1490,7 @@ pub fn save_settings(settings: &Settings) {
     text.push_str(&format!("exclude={}\n", settings.exclude));
     text.push_str(&format!("extra_dirs={}\n", settings.extra_dirs));
     text.push_str(&format!("view={}\n", settings.view));
+    text.push_str(&format!("group={}\n", settings.group));
     text.push_str(&format!("sources={}\n", settings.sources));
     text.push_str(&format!("lang={}\n", settings.lang));
     text.push_str(&format!("top={}\n", settings.top));
@@ -1601,6 +1759,7 @@ mod tests {
         assert_eq!(default_sort(View::Modules), (3, true));
         // The authors tab reads by file, not by counter.
         assert_eq!(default_sort(View::Authors), (-1, false));
+        assert_eq!(default_sort(View::AuthorTotals), (1, true));
     }
 
     #[test]
@@ -1612,7 +1771,36 @@ mod tests {
         assert_eq!(View::from_index(View::ALL.len()), View::Files);
         assert!(View::from_index(4) == View::Smells);
         assert_eq!(View::Smells.tab_title(), i18n::t().tab_smells);
-        assert_eq!(View::Authors.tab_title(), i18n::t().tab_authors);
+        assert_eq!(View::Authors.tab_title(), i18n::t().tab_author_files);
+        // An index an older build wrote still names the same table.
+        assert_eq!(View::from_index(2), View::Authors);
+        assert_eq!(View::from_index(5), View::Excluded);
+    }
+
+    #[test]
+    fn the_panes_own_their_strips() {
+        assert_eq!(View::Authors.group(), Group::Authors);
+        assert_eq!(View::AuthorTotals.group(), Group::Authors);
+        assert_eq!(View::Files.group(), Group::Code);
+        assert!(View::strip(Group::Overview).is_empty());
+        assert_eq!(View::strip(Group::Code), View::CODE_STRIP);
+        assert_eq!(View::strip(Group::Authors), View::AUTHOR_STRIP);
+        // The overview pane is the one with nothing to switch to.
+        assert_eq!(Group::from_index(0), Group::Overview);
+        assert_eq!(Group::Overview.index(), 0);
+        assert_eq!(Group::Authors.index(), 1);
+        assert_eq!(Group::ALL.len(), 3);
+        assert_eq!(Group::from_index(Group::ALL.len()), Group::Code);
+        for group in Group::ALL {
+            for (index, view) in View::strip(group).iter().enumerate() {
+                assert_eq!(View::from_strip(group, index), *view);
+                assert_eq!(view.strip_index(), index);
+            }
+        }
+        assert_eq!(View::AuthorTotals.strip_index(), 0);
+        assert_eq!(View::Authors.strip_index(), 1);
+        assert!(!View::AuthorTotals.opens_files());
+        assert!(View::Files.opens_files());
     }
 
     #[test]
@@ -1688,6 +1876,24 @@ mod tests {
         let hint = table_hint(View::Authors, Some(&report), 2, 2, -1, false);
         assert!(hint.contains("2 author(s) across 1 blamed files"), "{hint}");
         assert!(hint.contains("sorted by File ▲"), "{hint}");
+
+        // The tally pane lists one row per author instead of one per file, and
+        // folds the same numbers the file view splits apart.
+        let totals = view_columns(View::AuthorTotals, &options, false);
+        assert_eq!(
+            totals.iter().map(|column| column.key).collect::<Vec<_>>(),
+            ["files", "lines", "code", "comment", "blank"]
+        );
+        assert_eq!(column_title("files"), i18n::t().col_files);
+        let rows = build_rows(&report, View::AuthorTotals, &totals, &scratch.path);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].label, "Ada");
+        assert_eq!(rows[0].cells[0].number(), 1);
+        assert_eq!(rows[0].cells[1].number(), 8);
+        assert_eq!(rows[0].cells[2].number(), 5);
+        assert_eq!(rows[1].label, "Bob");
+        assert_eq!(rows[1].cells[1].number(), 3);
+        assert!(rows.iter().all(|row| row.target.is_none()));
 
         // Without author data the tab says so instead of drawing nothing.
         report.authors = None;

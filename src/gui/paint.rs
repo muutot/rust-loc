@@ -772,8 +772,61 @@ pub struct Shell<'a> {
     pub sidebar: RECT,
     pub labels: &'a [Label],
     pub spark: Option<Spark<'a>>,
-    pub table: RECT,
+    /// The table card, absent while the overview pane is the one showing.
+    pub table: Option<RECT>,
+    /// The pane captions above the content, left to right.
+    pub panes: &'a [(RECT, &'a str, bool)],
+    /// The tabs of the table in front. Empty when there is no table.
     pub tabs: &'a [(RECT, &'a str, bool)],
+}
+
+/// The pane strip: plain captions on a hairline, the active one underlined.
+///
+/// It is deliberately flatter than the tablet strip inside a pane, so the two
+/// levels cannot be mistaken for each other.
+fn pane_strip(hdc: HDC, panes: &[(RECT, &str, bool)], theme: &theme::Theme) {
+    let Some((first, rest)) = panes.split_first() else {
+        return;
+    };
+    let right = rest
+        .last()
+        .map(|(area, _, _)| area.right)
+        .unwrap_or(first.0.right);
+    let line_y = first.0.bottom - 1;
+    rule(
+        hdc,
+        &rect(first.0.left, line_y, right, line_y + 1),
+        theme::HAIRLINE,
+    );
+    for (area, title, active) in panes {
+        let color = if *active { theme::TEXT } else { theme::MUTED };
+        let font = if *active {
+            theme.fonts.small_bold
+        } else {
+            theme.fonts.small
+        };
+        let mut label = rect(area.left, area.top, area.right, area.bottom - theme.px(5));
+        text(
+            hdc,
+            title,
+            &mut label,
+            color,
+            font,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER,
+        );
+        if *active {
+            // An underline as wide as the caption rather than the whole tab,
+            // so a long caption does not read as a rule across the window.
+            let width = measure(hdc, title, font) + theme.px(14);
+            let left = (area.left + area.right - width) / 2;
+            let top = line_y - theme.px(2);
+            rule(
+                hdc,
+                &rect(left, top, left + width, top + theme.px(2).max(2)),
+                theme::ACCENT,
+            );
+        }
+    }
 }
 
 pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
@@ -868,14 +921,18 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
         theme::BORDER,
     );
 
-    // Table card.
-    card(
-        hdc,
-        &spec.table,
-        theme.px(theme::R_CARD),
-        theme::CARD_BG,
-        Some(theme::BORDER),
-    );
+    // The pane captions, then the pane in front: a table card is only drawn
+    // when a table pane is the one showing.
+    pane_strip(hdc, spec.panes, theme);
+    if let Some(table) = &spec.table {
+        card(
+            hdc,
+            table,
+            theme.px(theme::R_CARD),
+            theme::CARD_BG,
+            Some(theme::BORDER),
+        );
+    }
 
     if let Some(spark) = &spec.spark {
         spark_card(hdc, spark, theme);
@@ -921,14 +978,14 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
     }
 
     // Tab strip: the active tab is a pill, the strip sits on a hairline.
-    if let Some(first) = spec.tabs.first() {
+    if let (Some(first), Some(table)) = (spec.tabs.first(), &spec.table) {
         let line_y = first.0.bottom - 1;
         rule(
             hdc,
             &rect(
-                spec.table.left + theme.px(12),
+                table.left + theme.px(12),
                 line_y,
-                spec.table.right - theme.px(12),
+                table.right - theme.px(12),
                 line_y + 1,
             ),
             theme::HAIRLINE,

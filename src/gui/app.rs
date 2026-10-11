@@ -128,6 +128,14 @@ pub struct AppState {
     pub segments: Vec<(&'static str, u32, u32)>,
     pub modules: Vec<(String, u32)>,
     pub view: model::View,
+    /// The pane whose content the right side shows.
+    pub group: model::Group,
+    /// The table each pane was left on, so switching back lands where it was.
+    pub group_views: [model::View; model::Group::ALL.len()],
+    /// Whether the charts pane, rather than a table, is the one on show. None
+    /// until the first layout, which has to place the controls whatever the
+    /// pane is: they are all created visible.
+    pub overview_shown: Option<bool>,
     pub sort_column: i32,
     pub sort_descending: bool,
     pub scanning: bool,
@@ -157,7 +165,9 @@ pub struct AppState {
     pub spark_rect: RECT,
     pub table_title_rect: RECT,
     pub table_hint_rect: RECT,
-    pub tab_rects: [RECT; 6],
+    pub tab_rects: [RECT; model::View::MAX_STRIP],
+    /// The pane captions above the content.
+    pub group_rects: [RECT; model::Group::ALL.len()],
     /// Every framed input, in the order the sidebar lays them out.
     pub fields: Vec<Field>,
     /// The control the pointer rests on; owner drawn buttons read it to
@@ -206,7 +216,18 @@ impl AppState {
             samples: Vec::new(),
         });
         let card_brush = unsafe { CreateSolidBrush(theme::CARD_BG) };
-        let view = model::View::from_index(settings.view);
+        // A table belongs to a pane, so the saved tab is only honoured when it
+        // sits in the pane that is about to be shown.
+        let saved = model::View::from_index(settings.view);
+        let group = model::Group::from_index(settings.group);
+        let mut group_views = [model::View::Files; model::Group::ALL.len()];
+        group_views[model::Group::Authors.index()] = model::View::Authors;
+        group_views[saved.group().index()] = saved;
+        let view = if group == model::Group::Overview {
+            saved
+        } else {
+            group_views[group.index()]
+        };
         // The saved column only means something on the file and module tabs;
         // the others always come up in their natural order.
         let (sort_column, sort_descending) = match view {
@@ -232,6 +253,9 @@ impl AppState {
             segments: Vec::new(),
             modules: Vec::new(),
             view,
+            group,
+            group_views,
+            overview_shown: None,
             sort_column,
             sort_descending,
             scanning: false,
@@ -256,7 +280,8 @@ impl AppState {
             spark_rect: RECT::default(),
             table_title_rect: RECT::default(),
             table_hint_rect: RECT::default(),
-            tab_rects: [RECT::default(); 6],
+            tab_rects: [RECT::default(); model::View::MAX_STRIP],
+            group_rects: [RECT::default(); model::Group::ALL.len()],
             fields: Vec::new(),
             hot: 0,
             checks: [false; CHECK_BOXES.len()],
@@ -429,6 +454,7 @@ impl AppState {
         self.settings.exclude = window::get_text(self.control(ID_EXCLUDE));
         self.settings.extra_dirs = window::get_text(self.control(ID_EXTRA_DIRS));
         self.settings.view = self.view.index();
+        self.settings.group = self.group.index();
         self.settings.sort_column = self.sort_column;
         self.settings.sort_descending = self.sort_descending;
         self.settings.sources = model::sources_index(self.options.sources);
