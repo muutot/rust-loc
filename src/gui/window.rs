@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use crate::gui::sys::*;
-use crate::gui::{app, dialog, i18n, model, paint, theme};
+use crate::gui::{app, dialog, i18n, model, paint, theme, watch};
 
 pub const CLASS_MAIN: &str = "RustLocMainWindow";
 pub const CLASS_CARDS: &str = "RustLocCards";
@@ -1938,6 +1938,10 @@ unsafe extern "system" fn main_proc(
                 return 1;
             }
             DefWindowProcW(hwnd, message, wparam, lparam)
+        }
+        watch::WM_WATCH => {
+            schedule_rescan(hwnd);
+            0
         }
         WM_TIMER => {
             match wparam {

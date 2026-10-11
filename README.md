@@ -417,7 +417,8 @@ cards and a tabbed per-file / per-module / per-function / excluded-file table.
 A scan runs on
 a worker thread while a veil and a progress bar cover the shell; a fast scan
 finishes before the veil is shown, so no console window ever appears and the
-UI never blocks.
+UI never blocks. The roots are watched too: a file added, edited or removed
+on disk triggers a debounced rescan on its own.
 
 ![rust-loc-gui, per-file view](docs/ui-screenshot.png)
 
@@ -444,6 +445,7 @@ While a scan runs, a veil and a progress bar cover the shell:
 | Smells tab | the files that carry `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`#[allow]`, one row per file, ranked by the total |
 | Since the last scan | each scan diffs itself against the previous one in the same window: a *vs last scan* card with the code change, the added and deleted counts, and a `Delta` column on the Files tab |
 | Report options | `REPORT OPTIONS` keeps generated / minified files out of the totals and adds the COCOMO estimate; the KPI strip grows a row to hold the cost, effort, staffing and schedule cards |
+| Live watch | `ReadDirectoryChangesW` follows the roots on background threads, so a file added, edited or removed rescans by itself (debounced, and churn under `target`, `node_modules`, `.git`, `dist` and `build` is ignored) |
 | Chrome | owner-drawn accent buttons, `SHBrowseForFolderW` / `GetSaveFileNameW` dialogs (no COM, no extra crates), clipboard paste of folder paths, accelerators, a row context menu and chart tooltips |
 | Language | English and Chinese, chosen from the system UI language on first run and switchable at any time |
 | Settings | `%APPDATA%\rust-loc\ui.ini`, read at start-up and written on close |
@@ -584,3 +586,4 @@ by hand).
 11. ~~a per-language breakdown of the whole tree~~ - shipped as `--languages`;
 12. ~~copy-paste detection: which blocks of lines were copied~~ - shipped as
     `--duplicates`.
+13. ~~watch the roots and rescan when files change~~ - shipped in `rust-loc-gui`.

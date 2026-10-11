@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::baseline;
 use crate::gui::sys::*;
-use crate::gui::{i18n, model, paint, scan, theme, window};
+use crate::gui::{i18n, model, paint, scan, theme, watch, window};
 use crate::options::{Format, Options};
 use crate::report::Report;
 
@@ -102,6 +102,11 @@ pub struct AppState {
     pub started: Option<Instant>,
     pub elapsed: f64,
     pub receiver: Option<Receiver<scan::Msg>>,
+    /// Watches the roots so the report refreshes when files change.
+    pub watcher: Option<watch::Watcher>,
+    /// The roots the watcher was started for, so it restarts only when the
+    /// list actually changes.
+    pub watched: Vec<String>,
     pub controls: Vec<(i32, HWND)>,
     pub card_brush: HBRUSH,
     pub status: String,
@@ -179,6 +184,8 @@ impl AppState {
             started: None,
             elapsed: 0.0,
             receiver: None,
+            watcher: None,
+            watched: Vec::new(),
             controls: Vec::new(),
             card_brush,
             status: i18n::t().status_ready.to_string(),
@@ -231,6 +238,16 @@ impl AppState {
     /// Roots currently listed in the sidebar.
     pub fn roots_paths(&self) -> Vec<PathBuf> {
         self.roots.iter().map(PathBuf::from).collect()
+    }
+
+    /// Follow the roots, restarting the watch only when the list changes.
+    pub fn watch_roots(&mut self, hwnd: HWND) {
+        if self.watcher.is_some() && self.watched == self.roots {
+            return;
+        }
+        let roots = self.roots_paths();
+        self.watched = self.roots.clone();
+        self.watcher = Some(watch::start(hwnd, &roots));
     }
 
     /// Add a folder typed, browsed or pasted by the user; returns the label added.
@@ -362,6 +379,7 @@ impl AppState {
         window::reconfigure_list(self);
         window::refresh_status(self);
         window::repaint(self, hwnd);
+        self.watch_roots(hwnd);
     }
 
     /// Recompute columns, rows, cards, charts and the table hint.

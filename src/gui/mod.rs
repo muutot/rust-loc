@@ -12,6 +12,7 @@ mod paint;
 mod scan;
 mod sys;
 mod theme;
+mod watch;
 mod window;
 
 /// Create the main window and pump messages until it closes.
