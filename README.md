@@ -539,6 +539,13 @@ escapes, worst first:
 
 ![rust-loc-gui, smells tab](docs/ui-smells.png)
 
+The *Functions* tab ranks the analysed functions worst first. Each row names
+the function, the `file:line` it was found at, and its code lines, complexity,
+argument count and nesting depth, so the name and the place it lives sit in a
+column each instead of one crowded cell:
+
+![rust-loc-gui, functions tab](docs/ui-functions.png)
+
 Every scan is compared with the one before it, so the KPI strip grows a
 *vs last scan* card and the Files tab a `Delta` column - no baseline file
 needed:
