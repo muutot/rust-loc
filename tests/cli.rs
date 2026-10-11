@@ -677,3 +677,76 @@ fn minified_files_are_detected_and_the_threshold_is_configurable() {
     ]);
     assert!(!raised.contains("(min)"), "{}", raised);
 }
+
+#[test]
+fn cocomo_estimate_appears_only_when_asked_for() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    assert!(!workspace.run(&[]).contains("COCOMO"));
+    let text = workspace.run(&["--cocomo"]);
+    assert!(text.contains("COCOMO estimate (organic)"), "{}", text);
+    assert!(text.contains("Cost to develop"), "{}", text);
+}
+
+#[test]
+fn cocomo_project_type_changes_the_estimate() {
+    let workspace = Workspace::new();
+    let mut source = String::new();
+    for index in 0..2000 {
+        source.push_str(&format!("fn f{}() {{}}\n", index));
+    }
+    workspace.write("src/big.rs", &source);
+    let organic = workspace.document(&["--cocomo"]);
+    let embedded = workspace.document(&["--cocomo-project-type", "embedded"]);
+    let cost = |document: &json::Value| {
+        document
+            .get("cocomo")
+            .unwrap()
+            .get("cost_usd")
+            .unwrap()
+            .number()
+    };
+    let project = |document: &json::Value| {
+        document
+            .get("cocomo")
+            .unwrap()
+            .get("project")
+            .unwrap()
+            .text()
+            .to_string()
+    };
+    assert_eq!(project(&organic), "organic");
+    assert_eq!(project(&embedded), "embedded");
+    assert!(cost(&organic) > 1000.0);
+    assert!(cost(&embedded) > cost(&organic));
+}
+
+#[test]
+fn custom_cocomo_params_drive_the_formula() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let document = workspace.document(&["--cocomo-params", "1,1,1,1"]);
+    let cocomo = document.get("cocomo").unwrap();
+    assert_eq!(cocomo.get("project").unwrap().text(), "custom");
+    assert_eq!(cocomo.get("people").unwrap().number(), 1.0);
+    assert_eq!(cocomo.get("cost_usd").unwrap().number(), 7.4);
+    assert!(workspace
+        .run(&["--cocomo-params", "1,1,1,1"])
+        .contains("$7"));
+}
+
+#[test]
+fn bad_cocomo_arguments_are_rejected() {
+    let workspace = Workspace::new();
+    let arguments = |extra: &[&str]| {
+        let mut args = vec![workspace.path.display().to_string()];
+        args.extend(extra.iter().map(|item| item.to_string()));
+        args
+    };
+    assert!(cli::parse(
+        &arguments(&["--cocomo-project-type", "nope"]),
+        &workspace.path
+    )
+    .is_err());
+    assert!(cli::parse(&arguments(&["--cocomo-params", "1,2,3"]), &workspace.path).is_err());
+}

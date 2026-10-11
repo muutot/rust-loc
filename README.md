@@ -85,6 +85,23 @@ totals and reports them under *Excluded generated code*; `--mark-generated`
 keeps them and appends ` (gen)` / ` (min)` to the file listings instead.
 Both are off by default, so existing reports do not move.
 
+### COCOMO cost estimate
+
+`--cocomo` runs the basic COCOMO 81 model over the business code line count:
+
+```text
+effort   = a * (KLOC ^ b)          person-months
+schedule = c * (effort ^ d)        months
+people   = effort / schedule
+cost     = effort * 2452.67        US dollars
+```
+
+`--cocomo-project-type` picks the textbook coefficients - `organic`
+(2.4, 1.05, 2.5, 0.38, the default), `semi-detached` (3.0, 1.12, 2.5, 0.35) or
+`embedded` (3.6, 1.20, 2.5, 0.32) - while `--cocomo-params a,b,c,d` supplies
+your own. The estimate is derived from business code only, so it moves with
+`--include-tests` and `--exclude-generated` just like the line counters.
+
 ## Usage
 
 ```text
@@ -112,6 +129,9 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--exclude-generated` | drop generated/minified files from the totals |
 | `--mark-generated` | tag listings with `(gen)`/`(min)` instead |
 | `--min-gen-line-length <n>` | minified line-length threshold (default 255) |
+| `--cocomo` | add a COCOMO cost estimate for the business code |
+| `--cocomo-project-type <t>` | `organic`, `semi-detached`, `embedded`, `custom` |
+| `--cocomo-params <a,b,c,d>` | custom COCOMO coefficients |
 | `--jobs <n>` | analysis threads (default: every core) |
 
 Exit code is `0` on success and `2` for a usage error.
@@ -124,6 +144,7 @@ Exit code is `0` on success and `2` for a usage error.
 > rust-loc --format json --show-excluded --uloc .
 > rust-loc --functions --top-functions 10
 > rust-loc --exclude-generated --by-file --sort code --top 20
+> rust-loc --cocomo --cocomo-project-type embedded --format markdown
 ```
 
 ## Windows UI
@@ -271,7 +292,8 @@ by hand).
 1. ~~generated-code detection~~ - shipped as `--exclude-generated` /
    `--mark-generated`;
 2. ~~function-level metrics~~ - shipped as `--functions`;
-3. COCOMO cost estimate on top of the business line count;
+3. ~~COCOMO cost estimate on top of the business line count~~ - shipped as
+   `--cocomo`;
 4. a CI gate: fail when the test-to-code ratio or complexity budget regresses;
 5. baseline comparison (scan once, store JSON, diff two revisions);
 6. git hotspots: churn times complexity per file;

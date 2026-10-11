@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use crate::cocomo;
 use crate::options::{Format, Options};
 use crate::{report, scan};
 
@@ -41,6 +42,9 @@ OPTIONS:
     --exclude-generated      drop generated/minified files from the totals
     --mark-generated         tag listings with (gen)/(min) instead
     --min-gen-line-length <N>  average line length that marks a file minified
+    --cocomo                 add a COCOMO cost estimate
+    --cocomo-project-type <T>  organic, semi-detached, embedded, custom
+    --cocomo-params <a,b,c,d>  custom COCOMO coefficients
     --jobs <N>               analysis threads [default: all cores]
     -h, --help               print this help
     -V, --version            print the version
@@ -127,6 +131,24 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
             "--functions" => options.functions = true,
             "--exclude-generated" | "--no-gen" => options.exclude_generated = true,
             "--mark-generated" => options.mark_generated = true,
+            "--cocomo" => options.cocomo = true,
+            "--cocomo-project-type" => {
+                let value = take(arguments, &mut index, "--cocomo-project-type")?;
+                let kind = cocomo::ProjectType::parse(&value)
+                    .ok_or_else(|| format!("unknown COCOMO project type: {}", value))?;
+                options.cocomo = true;
+                if let Some(params) = kind.params() {
+                    options.cocomo_params = params;
+                }
+                options.cocomo_project = kind;
+            }
+            "--cocomo-params" => {
+                let value = take(arguments, &mut index, "--cocomo-params")?;
+                options.cocomo_params = cocomo::Params::parse(&value)
+                    .ok_or_else(|| format!("--cocomo-params needs a,b,c,d, got {}", value))?;
+                options.cocomo = true;
+                options.cocomo_project = cocomo::ProjectType::Custom;
+            }
             "--min-gen-line-length" => {
                 let value = take(arguments, &mut index, "--min-gen-line-length")?;
                 options.min_gen_line_length = value
@@ -211,6 +233,23 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                     .parse::<i64>()
                     .map_err(|_| format!("--min-gen-line-length needs a number, got {}", value))?
                     .max(0) as usize;
+            }
+            other if other.starts_with("--cocomo-params=") => {
+                let value = &other["--cocomo-params=".len()..];
+                options.cocomo_params = cocomo::Params::parse(value)
+                    .ok_or_else(|| format!("--cocomo-params needs a,b,c,d, got {}", value))?;
+                options.cocomo = true;
+                options.cocomo_project = cocomo::ProjectType::Custom;
+            }
+            other if other.starts_with("--cocomo-project-type=") => {
+                let value = &other["--cocomo-project-type=".len()..];
+                let kind = cocomo::ProjectType::parse(value)
+                    .ok_or_else(|| format!("unknown COCOMO project type: {}", value))?;
+                options.cocomo = true;
+                if let Some(params) = kind.params() {
+                    options.cocomo_params = params;
+                }
+                options.cocomo_project = kind;
             }
             other if other.starts_with('-') && other != "-" => {
                 return Err(format!("unknown option: {}", other));
@@ -372,5 +411,23 @@ mod tests {
                 .min_gen_line_length,
             40
         );
+    }
+
+    #[test]
+    fn cocomo_switches_are_parsed() {
+        let bare = parse_in(&[]).unwrap().options;
+        assert!(!bare.cocomo);
+        assert_eq!(bare.cocomo_project, cocomo::ProjectType::Organic);
+        assert_eq!(bare.cocomo_params, cocomo::ORGANIC);
+        let embedded = parse_in(&["--cocomo-project-type=embedded"])
+            .unwrap()
+            .options;
+        assert!(embedded.cocomo);
+        assert_eq!(embedded.cocomo_params, cocomo::EMBEDDED);
+        let custom = parse_in(&["--cocomo-params", "1,2,3,4"]).unwrap().options;
+        assert_eq!(custom.cocomo_project, cocomo::ProjectType::Custom);
+        assert_eq!(custom.cocomo_params.a, 1.0);
+        assert!(parse_in(&["--cocomo-project-type", "nope"]).is_err());
+        assert!(parse_in(&["--cocomo-params", "1,2,3"]).is_err());
     }
 }

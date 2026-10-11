@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::cocomo;
 use crate::generated;
 use crate::scan;
 
@@ -48,6 +49,10 @@ pub struct Options {
     pub mark_generated: bool,
     /// Average line length that marks a file minified; 0 disables the check.
     pub min_gen_line_length: usize,
+    /// Add a COCOMO cost estimate for the business code.
+    pub cocomo: bool,
+    pub cocomo_project: cocomo::ProjectType,
+    pub cocomo_params: cocomo::Params,
     pub format: Format,
     /// 0 means "use every available core".
     pub jobs: usize,
@@ -75,6 +80,9 @@ impl Default for Options {
             exclude_generated: false,
             mark_generated: false,
             min_gen_line_length: generated::DEFAULT_MIN_LINE_LENGTH,
+            cocomo: false,
+            cocomo_project: cocomo::ProjectType::Organic,
+            cocomo_params: cocomo::ORGANIC,
             format: Format::Text,
             jobs: 0,
         }

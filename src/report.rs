@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::cocomo;
 use crate::options::{Format, Options};
 use crate::scan::{self, Entry, FileFacts, Progress, Totals};
 
@@ -25,6 +26,13 @@ pub struct FunctionRow {
     pub depth: u32,
 }
 
+/// The COCOMO estimate for the business scope.
+pub struct CocomoRow {
+    pub project: &'static str,
+    pub params: cocomo::Params,
+    pub estimate: cocomo::Estimate,
+}
+
 pub struct Report {
     pub roots: Vec<PathBuf>,
     pub options: Options,
@@ -39,6 +47,8 @@ pub struct Report {
     pub functions: Vec<FunctionRow>,
     /// Every business function found before the ranking was truncated.
     pub function_count: usize,
+    /// Cost estimate for the business code lines, when requested.
+    pub cocomo: Option<CocomoRow>,
 }
 
 impl Report {
@@ -190,6 +200,16 @@ pub fn scan(
         }
     }
 
+    let cocomo_row = if options.cocomo {
+        Some(CocomoRow {
+            project: options.cocomo_project.name(),
+            params: options.cocomo_params,
+            estimate: cocomo::estimate(summary.code, options.cocomo_params),
+        })
+    } else {
+        None
+    };
+
     Report {
         roots: roots.to_vec(),
         options: options.clone(),
@@ -202,6 +222,7 @@ pub fn scan(
         excluded,
         functions,
         function_count,
+        cocomo: cocomo_row,
     }
 }
 
@@ -242,6 +263,15 @@ fn file_label(entry: &Entry, options: &Options, cwd: &Path) -> String {
 
 fn number(value: u32, width: usize) -> String {
     format!("{:>width$}", group(value), width = width)
+}
+
+/// Whole dollars, grouped the way every other counter is.
+fn money(value: f64) -> String {
+    let dollars = group(value.max(0.0).round() as u64);
+    let mut out = String::with_capacity(dollars.len() + 1);
+    out.push('$');
+    out.push_str(&dollars);
+    out
 }
 
 fn table_row(label: &str, values: &[u32], width: usize) -> String {
@@ -381,6 +411,11 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         );
     }
     out.push(String::new());
+
+    if let Some(row) = &report.cocomo {
+        render_cocomo_text(row, &mut out);
+        out.push(String::new());
+    }
 
     if options.include_tests {
         out.push("Test code included (--include-tests)".to_string());
@@ -539,6 +574,22 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push(format!("| {} | {} |", name, group(value)));
     }
     out.push(String::new());
+    if let Some(row) = &report.cocomo {
+        out.push(format!("### COCOMO estimate ({})", row.project));
+        out.push(String::new());
+        out.push("| Metric | Value |".to_string());
+        out.push("| --- | ---: |".to_string());
+        out.push(format!(
+            "| Cost to develop | {} |",
+            money(row.estimate.cost)
+        ));
+        out.push(format!(
+            "| Schedule effort | {:.2} months |",
+            row.estimate.schedule
+        ));
+        out.push(format!("| People required | {:.2} |", row.estimate.people));
+        out.push(String::new());
+    }
     if !options.include_tests {
         out.push(format!(
             "Excluded tests: {} test-only files ({} lines), {} lines inside `#[cfg(test)]` items. All Rust lines: {}.",
@@ -763,6 +814,31 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         }
     ));
     out.push_str("  },\n");
+    if let Some(row) = &report.cocomo {
+        out.push_str("  \"cocomo\": {\n");
+        out.push_str(&format!("    \"project\": {},\n", json_string(row.project)));
+        out.push_str(&format!("    \"a\": {},\n", json_number(row.params.a)));
+        out.push_str(&format!("    \"b\": {},\n", json_number(row.params.b)));
+        out.push_str(&format!("    \"c\": {},\n", json_number(row.params.c)));
+        out.push_str(&format!("    \"d\": {},\n", json_number(row.params.d)));
+        out.push_str(&format!(
+            "    \"effort_person_months\": {},\n",
+            json_number(row.estimate.effort)
+        ));
+        out.push_str(&format!(
+            "    \"schedule_months\": {},\n",
+            json_number(row.estimate.schedule)
+        ));
+        out.push_str(&format!(
+            "    \"people\": {},\n",
+            json_number(row.estimate.people)
+        ));
+        out.push_str(&format!(
+            "    \"cost_usd\": {}\n",
+            json_number(row.estimate.cost)
+        ));
+        out.push_str("  },\n");
+    }
     if options.include_tests {
         out.push_str("  \"excluded\": null,\n");
     } else {
@@ -839,4 +915,16 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push_str("\n  ]\n}");
     }
     out
+}
+
+/// The COCOMO estimate block, in the shape `scc` prints it.
+fn render_cocomo_text(row: &CocomoRow, out: &mut Vec<String>) {
+    let estimate = &row.estimate;
+    out.push(format!("COCOMO estimate ({})", row.project));
+    out.push(pad("  Cost to develop", 22) + &format!("{:>12}", money(estimate.cost)));
+    out.push(
+        pad("  Schedule effort", 22)
+            + &format!("{:>12} months", format!("{:.2}", estimate.schedule)),
+    );
+    out.push(pad("  People required", 22) + &format!("{:>12}", format!("{:.2}", estimate.people)));
 }
