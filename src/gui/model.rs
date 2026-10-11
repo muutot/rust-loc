@@ -1094,6 +1094,7 @@ pub fn summary_cards(report: Option<&Report>, options: &Options) -> Vec<Card> {
     let totals = &report.summary;
     let lines = totals.lines as u64;
     let include_tests = report.options.include_tests;
+    let sources = report.options.sources;
     let test_lines = report.excluded.file_lines as u64 + report.excluded.item_lines as u64;
     let mut cards = vec![
         Card {
@@ -1102,7 +1103,10 @@ pub fn summary_cards(report: Option<&Report>, options: &Options) -> Vec<Card> {
             value: human_int(report.business.len() as u64),
             hint: fill(
                 t.hint_files_scanned,
-                &[("n", human_int(report.entries.len() as u64))],
+                &[
+                    ("n", human_int(report.entries.len() as u64)),
+                    ("ext", i18n::extensions(sources).to_string()),
+                ],
             ),
         },
         Card {
@@ -1174,7 +1178,7 @@ pub fn summary_cards(report: Option<&Report>, options: &Options) -> Vec<Card> {
         key: "test_fns",
         label: t.card_test_fns,
         value: human_int(totals.test_fns as u64),
-        hint: t.hint_test_fns.to_string(),
+        hint: i18n::test_item(sources).to_string(),
     });
     if report.options.uloc {
         let total = report.uloc_total.unwrap_or(0) as u64;
@@ -1808,6 +1812,48 @@ mod tests {
         }
         let cost = cards.iter().find(|card| card.key == "cost").unwrap();
         assert!(cost.value.starts_with('$'), "{}", cost.value);
+    }
+
+    #[test]
+    fn the_card_hints_name_the_language_that_was_scanned() {
+        i18n::set_lang(i18n::Lang::En);
+        let scratch = Scratch::new("hints_lang");
+        scratch.write("src/lib.rs", SOURCE);
+        scratch.write("app.py", "def test_one():\n    assert True\n");
+        for (sources, files, test_fns) in [
+            (
+                crate::sources::Sources::Rust,
+                "1 .rs files scanned",
+                "#[test] functions",
+            ),
+            (
+                crate::sources::Sources::Python,
+                "1 .py files scanned",
+                "def test_ functions",
+            ),
+            (
+                crate::sources::Sources::All,
+                "2 .rs / .py files scanned",
+                "test functions",
+            ),
+        ] {
+            let options = Options {
+                sources,
+                ..Options::default()
+            };
+            let report = scratch.scan(&options);
+            let cards = summary_cards(Some(&report), &options);
+            let hint = |key: &str| {
+                cards
+                    .iter()
+                    .find(|card| card.key == key)
+                    .unwrap()
+                    .hint
+                    .clone()
+            };
+            assert_eq!(hint("files"), files, "{sources:?}");
+            assert_eq!(hint("test_fns"), test_fns, "{sources:?}");
+        }
     }
 
     #[test]

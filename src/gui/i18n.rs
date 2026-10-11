@@ -83,6 +83,29 @@ pub fn subtitle(sources: crate::sources::Sources, include_tests: bool) -> String
     format!("{} · {}", head, tail)
 }
 
+/// The extension the file card counts: what the selection read, not the
+/// language this tool happens to be written in.
+pub fn extensions(sources: crate::sources::Sources) -> &'static str {
+    match sources {
+        crate::sources::Sources::Rust => ".rs",
+        crate::sources::Sources::Python => ".py",
+        crate::sources::Sources::All => ".rs / .py",
+    }
+}
+
+/// What the selected language calls the test item the `Test fns` card counted.
+pub fn test_item(sources: crate::sources::Sources) -> &'static str {
+    let (en, zh) = match sources {
+        crate::sources::Sources::Rust => ("#[test] functions", "#[test] 函数"),
+        crate::sources::Sources::Python => ("def test_ functions", "def test_ 函数"),
+        crate::sources::Sources::All => ("test functions", "测试函数"),
+    };
+    match lang() {
+        Lang::En => en,
+        Lang::Zh => zh,
+    }
+}
+
 /// The catalog for the active language.
 pub fn t() -> &'static Strings {
     match lang() {
@@ -163,6 +186,21 @@ mod tests {
         assert!(subtitle(sources, true).ends_with("test code included"));
         assert!(subtitle(sources, false).ends_with("test code excluded"));
         set_lang(Lang::Zh);
+    }
+
+    #[test]
+    fn the_scan_hints_speak_the_language_that_was_read() {
+        use crate::sources::Sources;
+        set_lang(Lang::En);
+        assert_eq!(extensions(Sources::Python), ".py");
+        assert_eq!(extensions(Sources::All), ".rs / .py");
+        assert_eq!(test_item(Sources::Rust), "#[test] functions");
+        assert_eq!(test_item(Sources::Python), "def test_ functions");
+        assert_eq!(test_item(Sources::All), "test functions");
+        set_lang(Lang::Zh);
+        assert_eq!(test_item(Sources::Rust), "#[test] 函数");
+        assert_eq!(test_item(Sources::Python), "def test_ 函数");
+        assert_eq!(test_item(Sources::All), "测试函数");
     }
 
     #[test]
@@ -249,7 +287,7 @@ catalog! {
     card_schedule => ("Schedule", "工期"),
     card_placeholder_value => ("—", "—"),
     hint_placeholder => ("run a scan", "运行扫描后显示"),
-    hint_files_scanned => ("{n} .rs files scanned", "已扫描 {n} 个 .rs 文件"),
+    hint_files_scanned => ("{n} {ext} files scanned", "已扫描 {n} 个 {ext} 文件"),
     hint_business_only => ("business code only", "仅统计业务代码"),
     hint_tests_included => ("test code included", "已包含测试代码"),
     hint_delta_files => ("{added} added, {deleted} deleted", "新增 {added}，删除 {deleted}"),
@@ -259,7 +297,6 @@ catalog! {
     hint_included_totals => ("included in totals", "已计入总计"),
     hint_complexity => ("estimated branch points", "估算分支点"),
     hint_unsafe => ("unsafe keywords", "unsafe 关键字"),
-    hint_test_fns => ("#[test] functions", "#[test] 函数"),
     hint_uloc => ("DRYness {share}", "重复率 {share}"),
     hint_cocomo_cost => ("COCOMO {project} estimate", "COCOMO {project} 估算"),
     hint_effort => ("person-months", "人月"),
