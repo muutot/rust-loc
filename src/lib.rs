@@ -20,5 +20,6 @@ pub mod metrics;
 pub mod options;
 pub mod report;
 pub mod scan;
+pub mod svg;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

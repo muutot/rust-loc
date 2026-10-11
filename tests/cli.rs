@@ -1445,3 +1445,26 @@ fn duplicates_skip_cfg_test_items_unless_tests_are_included() {
     assert_eq!(dupes.get("clone_count").unwrap().integer(), 1);
     assert_eq!(dupes.get("duplicated_lines").unwrap().integer(), 12);
 }
+
+#[test]
+fn svg_export_is_a_standalone_document() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let out = workspace.run(&["--format", "svg"]);
+    assert!(out.starts_with("<svg "), "{}", out);
+    assert!(out.ends_with("</svg>\n"), "{}", out);
+    assert!(out.contains("Top files by code"), "{}", out);
+    assert!(out.contains("font-family"), "{}", out);
+    assert!(!out.contains("<html"), "{}", out);
+}
+
+#[test]
+fn svg_stays_out_of_the_other_formats() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    assert!(!workspace.run(&[]).contains("<svg "));
+    assert_eq!(
+        workspace.invocation(&["--format", "svg"]).options.format,
+        Format::Svg
+    );
+}

@@ -63,11 +63,12 @@ pub const TIMER_RESCAN: usize = 3;
 
 /// Row limits offered by the Top selector; 0 means every row.
 pub const LIMITS: [usize; 4] = [100, 300, 1000, 0];
-pub const FORMATS: [(&str, Format); 4] = [
+pub const FORMATS: [(&str, Format); 5] = [
     ("Text", Format::Text),
     ("JSON", Format::Json),
     ("CSV", Format::Csv),
     ("Markdown", Format::Markdown),
+    ("SVG", Format::Svg),
 ];
 
 /// How many bars the module chart draws at most.

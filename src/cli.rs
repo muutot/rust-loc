@@ -29,7 +29,7 @@ OPTIONS:
     --no-config              ignore any .rustloc.toml
     --snapshot <PATH>        save this scan for a later --baseline diff
     --baseline <PATH>        compare with a snapshot from --snapshot
-    --format <FORMAT>        output format: text, json, csv, markdown [default: text]
+    --format <FORMAT>        output format: text, json, csv, markdown, svg [default: text]
     --json                   alias for --format json
     --by-file, --per-file    per-file breakdown
     --by-module              per-module breakdown

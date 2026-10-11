@@ -1821,7 +1821,9 @@ unsafe extern "system" fn main_proc(
                     }
                 }
                 other => {
-                    if (app::ID_EXPORT_MENU..app::ID_EXPORT_MENU + 4).contains(&other) {
+                    if (app::ID_EXPORT_MENU..app::ID_EXPORT_MENU + app::FORMATS.len() as i32)
+                        .contains(&other)
+                    {
                         export(hwnd, (other - app::ID_EXPORT_MENU) as usize);
                     } else if other == app::ID_COPY_COMMAND {
                         copy_command(hwnd);
@@ -2107,6 +2109,7 @@ fn default_export_name(format: crate::options::Format) -> &'static str {
         crate::options::Format::Json => "rust-loc.json",
         crate::options::Format::Csv => "rust-loc.csv",
         crate::options::Format::Markdown => "rust-loc.md",
+        crate::options::Format::Svg => "rust-loc.svg",
         crate::options::Format::Text => "rust-loc.txt",
     }
 }
@@ -2162,7 +2165,8 @@ fn show_export_menu(hwnd: HWND) {
     unsafe { DestroyMenu(menu) };
     if chosen != 0 {
         let command = chosen as i32;
-        if (app::ID_EXPORT_MENU..app::ID_EXPORT_MENU + 4).contains(&command) {
+        if (app::ID_EXPORT_MENU..app::ID_EXPORT_MENU + app::FORMATS.len() as i32).contains(&command)
+        {
             export(hwnd, (command - app::ID_EXPORT_MENU) as usize);
         } else if command == app::ID_COPY_COMMAND {
             copy_command(hwnd);

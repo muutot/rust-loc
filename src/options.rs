@@ -15,6 +15,7 @@ pub enum Format {
     Json,
     Csv,
     Markdown,
+    Svg,
 }
 
 impl Format {
@@ -24,6 +25,7 @@ impl Format {
             "json" => Some(Format::Json),
             "csv" => Some(Format::Csv),
             "markdown" | "md" => Some(Format::Markdown),
+            "svg" => Some(Format::Svg),
             _ => None,
         }
     }

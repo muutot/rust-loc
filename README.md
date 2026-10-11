@@ -343,6 +343,17 @@ json` adds a `duplicates` object with the window, the clone count, the
 normalised and duplicated line counts, the share, and every cluster with its
 sites; `--format markdown` adds the same table.
 
+### SVG report card
+
+`--format svg` writes the scan as one standalone vector document: a title bar,
+the KPI cards, the composition bar with its legend, the top files by code and,
+with `--languages`, the language table. There is no HTML and no browser in the
+loop, just shapes and text, so any viewer - or a README - can show it:
+
+![rust-loc SVG report](docs/report.svg)
+
+The GUI *Export* menu offers the same SVG next to text, JSON, CSV and Markdown.
+
 ## Usage
 
 ```text
@@ -351,7 +362,7 @@ rust-loc [OPTIONS] [ROOTS]...
 
 | Option | Effect |
 | --- | --- |
-| `--format <text\|json\|csv\|markdown>` | output format (default `text`) |
+| `--format <text\|json\|csv\|markdown\|svg>` | output format (default `text`) |
 | `--config <PATH>` | read this `.rustloc.toml` instead of searching |
 | `--no-config` | ignore any `.rustloc.toml` |
 | `--snapshot <PATH>` | save the business files for a later `--baseline` |
@@ -587,3 +598,4 @@ by hand).
 12. ~~copy-paste detection: which blocks of lines were copied~~ - shipped as
     `--duplicates`.
 13. ~~watch the roots and rescan when files change~~ - shipped in `rust-loc-gui`.
+14. ~~a shareable report without HTML~~ - shipped as `--format svg`.

@@ -590,6 +590,7 @@ pub fn render_with(report: &Report, options: &Options, cwd: &Path) -> String {
         Format::Json => render_json(report, options, cwd),
         Format::Csv => render_csv(report, options, cwd),
         Format::Markdown => render_markdown(report, options, cwd),
+        Format::Svg => crate::svg::render(report, options, cwd),
     }
 }
 

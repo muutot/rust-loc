@@ -924,6 +924,7 @@ pub fn cli_command(report: &Report, cwd: &Path) -> String {
         Format::Json => parts.push("--json".to_string()),
         Format::Csv => parts.push("--csv".to_string()),
         Format::Markdown => parts.push("--markdown".to_string()),
+        Format::Svg => parts.push("--format svg".to_string()),
         Format::Text => {}
     }
     parts.join(" ")
