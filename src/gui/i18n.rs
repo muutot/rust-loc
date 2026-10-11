@@ -246,6 +246,7 @@ catalog! {
     col_uloc => ("ULOC", "ULOC"),
     col_fn_args => ("Args", "参数"),
     col_fn_depth => ("Depth", "深度"),
+    col_fn_where => ("Location", "位置"),
     col_unwrap => ("unwrap", "unwrap"),
     col_expect => ("expect", "expect"),
     col_panic => ("panic!", "panic!"),

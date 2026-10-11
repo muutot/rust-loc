@@ -100,6 +100,7 @@ pub fn column_title(key: &str) -> &'static str {
         "uloc" => t.col_uloc,
         "args" => t.col_fn_args,
         "depth" => t.col_fn_depth,
+        "location" => t.col_fn_where,
         "unwrap" => t.col_unwrap,
         "expect" => t.col_expect,
         "panic" => t.col_panic,
@@ -165,6 +166,10 @@ pub fn view_columns(view: View, options: &Options, has_delta: bool) -> Vec<Colum
         }],
         View::Functions => vec![
             Column {
+                key: "location",
+                width: 200,
+            },
+            Column {
                 key: "code",
                 width: 74,
             },
@@ -222,20 +227,52 @@ pub fn view_columns(view: View, options: &Options, has_delta: bool) -> Vec<Colum
     columns
 }
 
+/// Columns that carry text instead of a counter. Only the functions tab has
+/// one: the file and line a function was found at.
+pub fn is_text_column(key: &str) -> bool {
+    key == "location"
+}
+
 /// Column a tab sorts on until the user clicks a header: worst first for the
 /// function list, most code first for the file and module lists.
 pub fn default_sort(view: View) -> (i32, bool) {
     match view {
-        View::Functions => (1, true),
+        View::Functions => (2, true),
         View::Smells => (6, true),
         View::Excluded => (0, true),
         _ => (3, true),
     }
 }
 
+/// One cell of a table row. The functions tab keeps the file and line a
+/// function was found at as text; every other cell is a counter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Cell {
+    Number(u32),
+    Text(String),
+}
+
+impl Cell {
+    /// The counter a cell holds; a text cell counts as zero.
+    pub fn number(&self) -> i64 {
+        match self {
+            Cell::Number(number) => i64::from(*number),
+            Cell::Text(_) => 0,
+        }
+    }
+
+    /// The text a cell holds; a counter cell reads as empty.
+    pub fn text(&self) -> &str {
+        match self {
+            Cell::Text(value) => value,
+            Cell::Number(_) => "",
+        }
+    }
+}
+
 pub struct Row {
     pub label: String,
-    pub values: Vec<u32>,
+    pub cells: Vec<Cell>,
     /// File the row points at, when it is more precise than the label.
     pub target: Option<String>,
     /// Change in code lines since the previous scan, when there was one.
@@ -341,7 +378,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                     .and_then(|diff| diff.code_delta(&baseline::key(entry, &report.roots, cwd)));
                 rows.push(Row {
                     label: display_path(entry.path(), cwd),
-                    values: counter_values(entry, columns),
+                    cells: counter_cells(entry, columns),
                     target: None,
                     delta,
                 });
@@ -351,7 +388,10 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
             for (label, stats, _) in scan::module_groups(&report.business_entries(), cwd) {
                 rows.push(Row {
                     label: shorten_module(&label),
-                    values: columns.iter().map(|c| stats.column(c.key)).collect(),
+                    cells: columns
+                        .iter()
+                        .map(|c| Cell::Number(stats.column(c.key)))
+                        .collect(),
                     target: None,
                     delta: None,
                 });
@@ -360,10 +400,10 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
         View::Functions => {
             for function in &report.functions {
                 rows.push(Row {
-                    label: function_label(function),
-                    values: columns
+                    label: function.name.clone(),
+                    cells: columns
                         .iter()
-                        .map(|column| function_column(function, column.key))
+                        .map(|column| function_cell(function, column.key))
                         .collect(),
                     target: Some(function.path.clone()),
                     delta: None,
@@ -378,7 +418,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                 }
                 rows.push(Row {
                     label: display_path(entry.path(), cwd),
-                    values: counter_values(entry, columns),
+                    cells: counter_cells(entry, columns),
                     target: None,
                     delta: None,
                 });
@@ -395,7 +435,7 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
             for (path, lines) in pairs {
                 rows.push(Row {
                     label: path,
-                    values: vec![lines],
+                    cells: vec![Cell::Number(lines)],
                     target: None,
                     delta: None,
                 });
@@ -408,11 +448,11 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
 /// Drop the `./` that a root-level module inherits from the relative path.
 /// The counters of one file, in column order. The trailing delta column is
 /// not a counter: the shell draws the signed change from `Row::delta`.
-fn counter_values(entry: &scan::Entry, columns: &[Column]) -> Vec<u32> {
+fn counter_cells(entry: &scan::Entry, columns: &[Column]) -> Vec<Cell> {
     columns
         .iter()
         .filter(|column| column.key != "delta")
-        .map(|column| entry.column(column.key))
+        .map(|column| Cell::Number(entry.column(column.key)))
         .collect()
 }
 
@@ -420,18 +460,16 @@ fn shorten_module(label: &str) -> String {
     label.strip_prefix("./").unwrap_or(label).to_string()
 }
 
-/// name + path:line, the label shown in the functions tab.
-fn function_label(function: &FunctionRow) -> String {
-    format!("{}  ·  {}:{}", function.name, function.path, function.line)
-}
-
-fn function_column(function: &FunctionRow, key: &str) -> u32 {
+/// One cell of the functions tab: the name is the row label, the file and line
+/// is the text column, the counters follow.
+fn function_cell(function: &FunctionRow, key: &str) -> Cell {
     match key {
-        "code" => function.code,
-        "complexity" => function.complexity,
-        "args" => function.params,
-        "depth" => function.depth,
-        _ => 0,
+        "location" => Cell::Text(format!("{}:{}", function.path, function.line)),
+        "code" => Cell::Number(function.code),
+        "complexity" => Cell::Number(function.complexity),
+        "args" => Cell::Number(function.params),
+        "depth" => Cell::Number(function.depth),
+        _ => Cell::Number(0),
     }
 }
 
@@ -587,7 +625,9 @@ pub fn parse_list(text: &str) -> Vec<String> {
     result
 }
 
-/// Stable value sort on top of an ascending label order.
+/// Stable value sort on top of an ascending label order. A text cell sorts by
+/// its text, which is how the location column reads; the trailing delta column
+/// has no cell of its own and sorts on the signed change.
 pub fn sort_rows(rows: &mut [Row], column: i32, descending: bool) {
     if column < 0 {
         rows.sort_by_key(|row| row.label.to_lowercase());
@@ -596,22 +636,20 @@ pub fn sort_rows(rows: &mut [Row], column: i32, descending: bool) {
     let index = column as usize;
     rows.sort_by_key(|row| row.label.to_lowercase());
     rows.sort_by(|a, b| {
-        let left = sort_key(a, index);
-        let right = sort_key(b, index);
+        let order = compare_rows(a, b, index);
         if descending {
-            right.cmp(&left)
+            order.reverse()
         } else {
-            left.cmp(&right)
+            order
         }
     });
 }
 
-/// Value a row sorts on for a column index; the trailing delta column reads
-/// the signed change instead of a counter.
-fn sort_key(row: &Row, index: usize) -> i64 {
-    match row.values.get(index) {
-        Some(value) => i64::from(*value),
-        None => row.delta.unwrap_or(0),
+fn compare_rows(left: &Row, right: &Row, index: usize) -> std::cmp::Ordering {
+    match (left.cells.get(index), right.cells.get(index)) {
+        (Some(Cell::Text(a)), Some(Cell::Text(b))) => a.to_lowercase().cmp(&b.to_lowercase()),
+        (Some(a), Some(b)) => a.number().cmp(&b.number()),
+        _ => left.delta.unwrap_or(0).cmp(&right.delta.unwrap_or(0)),
     }
 }
 
@@ -619,7 +657,14 @@ pub fn filter_rows(rows: &[Row], query: &str) -> Vec<usize> {
     let needle = query.trim().to_lowercase();
     rows.iter()
         .enumerate()
-        .filter(|(_, row)| needle.is_empty() || row.label.to_lowercase().contains(&needle))
+        .filter(|(_, row)| {
+            needle.is_empty()
+                || row.label.to_lowercase().contains(&needle)
+                || row
+                    .cells
+                    .iter()
+                    .any(|cell| cell.text().to_lowercase().contains(&needle))
+        })
         .map(|(index, _)| index)
         .collect()
 }
@@ -1250,14 +1295,21 @@ mod tests {
         let columns = view_columns(View::Functions, &options, false);
         assert_eq!(
             columns.iter().map(|column| column.key).collect::<Vec<_>>(),
-            ["code", "complexity", "args", "depth"]
+            ["location", "code", "complexity", "args", "depth"]
         );
         let rows = build_rows(&report, View::Functions, &columns, &scratch.path);
         assert!(rows.len() >= 3, "{}", rows.len());
         let first = &rows[0];
-        assert!(first.label.starts_with("branchy"), "{}", first.label);
-        assert!(first.label.contains("src/lib.rs:5"), "{}", first.label);
-        assert_eq!(first.values[1], report.functions[0].complexity);
+        assert_eq!(first.label, report.functions[0].name);
+        assert_eq!(
+            first.cells[0],
+            Cell::Text("src/lib.rs:5".to_string()),
+            "the file and line sit in their own column"
+        );
+        assert_eq!(
+            first.cells[2].number(),
+            i64::from(report.functions[0].complexity)
+        );
         assert_eq!(first.target.as_deref(), Some("src/lib.rs"));
         let files = build_rows(
             &report,
@@ -1316,13 +1368,13 @@ mod tests {
         assert!(files.contains("3 lines skipped"), "{files}");
         assert!(files.contains("sorted by Code ▼"), "{files}");
         // The hint has to follow the column the user sorted by, not the tab.
-        let sorted = table_hint(View::Functions, Some(&report), 0, 0, 3, true);
+        let sorted = table_hint(View::Functions, Some(&report), 0, 0, 4, true);
         assert!(sorted.contains("sorted by Depth ▼"), "{sorted}");
     }
 
     #[test]
     fn every_tab_has_a_natural_sort_column() {
-        assert_eq!(default_sort(View::Functions), (1, true));
+        assert_eq!(default_sort(View::Functions), (2, true));
         assert_eq!(default_sort(View::Smells), (6, true));
         assert_eq!(default_sort(View::Files), (3, true));
         assert_eq!(default_sort(View::Modules), (3, true));
@@ -1364,8 +1416,8 @@ mod tests {
         let rows = build_rows(&report, View::Smells, &columns, &scratch.path);
         assert_eq!(rows.len(), 1, "{}", rows.len());
         assert_eq!(rows[0].label, "src/lib.rs");
-        assert_eq!(rows[0].values[0], 1);
-        assert_eq!(rows[0].values[6], 1);
+        assert_eq!(rows[0].cells[0].number(), 1);
+        assert_eq!(rows[0].cells[6].number(), 1);
         assert_eq!(column_title("smells"), i18n::t().col_smells);
         let hint = table_hint(View::Smells, Some(&report), 1, 1, 6, true);
         assert!(hint.contains("1 smells"), "{hint}");
@@ -1411,9 +1463,9 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].label, "src/a.rs");
         assert_eq!(
-            rows[0].values.len(),
+            rows[0].cells.len(),
             columns.len() - 1,
-            "the delta column is drawn from Row::delta, not from values"
+            "the delta column is drawn from Row::delta, not from a cell"
         );
         assert_eq!(rows[0].delta, Some(2));
 

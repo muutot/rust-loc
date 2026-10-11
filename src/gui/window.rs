@@ -780,9 +780,21 @@ fn set_columns(state: &app::AppState) {
     let numeric: i32 = state
         .columns
         .iter()
+        .filter(|column| !model::is_text_column(column.key))
         .map(|column| state.theme.px(column.width))
         .sum();
-    let label_width = (client.right - state.theme.px(18) - numeric).max(state.theme.px(170));
+    // A text column takes the slack instead of the name column, so the long
+    // file path is the part that gets the room.
+    let flexible = state
+        .columns
+        .iter()
+        .any(|column| model::is_text_column(column.key));
+    let slack = client.right - state.theme.px(18) - numeric;
+    let label_width = if flexible {
+        state.theme.px(230)
+    } else {
+        slack.max(state.theme.px(170))
+    };
     let mut specs: Vec<(String, bool, i32)> =
         vec![(state.view.label_title().to_string(), false, label_width)];
     for (position, column) in state.columns.iter().enumerate() {
@@ -793,7 +805,13 @@ fn set_columns(state: &app::AppState) {
         } else {
             title.to_string()
         };
-        specs.push((title, true, state.theme.px(column.width)));
+        let text = model::is_text_column(column.key);
+        let width = if text {
+            (slack - label_width).max(state.theme.px(column.width))
+        } else {
+            state.theme.px(column.width)
+        };
+        specs.push((title, !text, width));
     }
     for (position, (title, numeric, width)) in specs.iter().enumerate() {
         let mut buffer = wide(title);
@@ -836,10 +854,14 @@ pub fn refresh_list(state: &mut app::AppState) {
         item.iSubItem = 0;
         item.pszText = label.as_mut_ptr();
         send(list, LVM_INSERTITEMW, 0, &item as *const LVITEMW as isize);
-        for (offset, value) in row.values.iter().enumerate() {
-            let mut text = wide(&model::human_int(*value as u64));
+        let mut sub = 1;
+        for value in row.cells.iter() {
+            let mut text = wide(&match value {
+                model::Cell::Number(number) => model::human_int(*number as u64),
+                model::Cell::Text(value) => value.clone(),
+            });
             let mut cell: LVITEMW = unsafe { std::mem::zeroed() };
-            cell.iSubItem = offset as i32 + 1;
+            cell.iSubItem = sub;
             cell.pszText = text.as_mut_ptr();
             send(
                 list,
@@ -847,11 +869,12 @@ pub fn refresh_list(state: &mut app::AppState) {
                 position,
                 &cell as *const LVITEMW as isize,
             );
+            sub += 1;
         }
         if let Some(delta) = row.delta {
             let mut text = wide(&model::delta_text(delta));
             let mut cell: LVITEMW = unsafe { std::mem::zeroed() };
-            cell.iSubItem = row.values.len() as i32 + 1;
+            cell.iSubItem = sub;
             cell.pszText = text.as_mut_ptr();
             send(
                 list,
