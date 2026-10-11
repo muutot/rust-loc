@@ -311,6 +311,38 @@ this describes the repository as it is, test code included. `--format json` adds
 a `languages` array and a `language_code` total, and `--format markdown` adds the
 same table.
 
+### Duplicated code
+
+`--duplicates` finds blocks of lines that were copied from somewhere else, the
+way CPD and jscpd do. Every code line is normalised first: indentation and runs
+of whitespace collapse, blank, comment-only and (unless `--include-tests`) test
+lines drop out, and lines with almost nothing on them are ignored so `}` and
+`});` do not flood the list. A six-line window then slides over each file,
+windows that hash the same seed a clone, and each seed is grown forwards while
+all of its sites keep matching, so a region copied once is reported once at its
+full length instead of once per window position:
+
+```console
+> rust-loc --duplicates
+Duplicated code
+  15 copy(ies) of 6 lines or more, 2.5% of 8,800 normalised lines
+
+  1. 11 lines, 2 site(s)
+     src/scan.rs:509
+     src/scan.rs:793
+  2. 10 lines, 2 site(s)
+     src/gui/window.rs:138
+     src/gui/window.rs:295
+```
+
+The scan covers the same business files as the report (test-only files and
+`#[cfg(test)]` items are out, and `--include-tests` puts them back), and a clone
+that spans several files lists every site. `--dup-lines <n>` moves the window
+(default 6, minimum 2), so a larger value only accepts longer copies. `--format
+json` adds a `duplicates` object with the window, the clone count, the
+normalised and duplicated line counts, the share, and every cluster with its
+sites; `--format markdown` adds the same table.
+
 ## Usage
 
 ```text
@@ -342,6 +374,9 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--smells` | add the panic-call / lint-escape counters to the report |
 | `--hotspots` | rank files by complexity times git churn |
 | `--metrics` | add cognitive complexity, Halstead volume and the MI score |
+| `--languages`, `--langs` | per-language breakdown for the whole tree |
+| `--duplicates`, `--dup` | find blocks of lines copied from elsewhere |
+| `--dup-lines <n>` | lines in a copied block before it counts (default 6) |
 | `--exclude-generated` | drop generated/minified files from the totals |
 | `--mark-generated` | tag listings with `(gen)`/`(min)` instead |
 | `--min-gen-line-length <n>` | minified line-length threshold (default 255) |
@@ -542,3 +577,10 @@ by hand).
 6. ~~git hotspots: churn times complexity per file~~ - shipped as
    `--hotspots`;
 7. ~~a native Windows UI (Win32, no web runtime)~~ - shipped as `rust-loc-gui`.
+8. ~~panic-call and lint-escape counters~~ - shipped as `--smells`;
+9. ~~shared per-repo defaults and gates~~ - shipped as `.rustloc.toml`;
+10. ~~maintainability metrics: cognitive complexity, Halstead volume, the MI
+    score~~ - shipped as `--metrics`;
+11. ~~a per-language breakdown of the whole tree~~ - shipped as `--languages`;
+12. ~~copy-paste detection: which blocks of lines were copied~~ - shipped as
+    `--duplicates`.

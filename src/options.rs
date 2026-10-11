@@ -65,6 +65,10 @@ pub struct Options {
     pub metrics: bool,
     /// Add a per-language file and line breakdown for the whole tree.
     pub languages: bool,
+    /// Look for blocks of lines that were copied from somewhere else.
+    pub duplicates: bool,
+    /// Lines in a block before it counts as a copy.
+    pub dup_lines: usize,
     /// `--fail-if` rules; any violation exits with code 1.
     pub fail_if: Vec<gate::Gate>,
     /// Print gate failures as GitHub annotations.
@@ -109,6 +113,8 @@ impl Default for Options {
             hotspots: false,
             metrics: false,
             languages: false,
+            duplicates: false,
+            dup_lines: crate::clones::DEFAULT_WINDOW,
             fail_if: Vec::new(),
             ci: false,
             format: Format::Text,

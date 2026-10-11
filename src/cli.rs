@@ -50,6 +50,8 @@ OPTIONS:
     --hotspots               rank files by complexity and git churn
     --metrics                add cognitive complexity, Halstead and MI
     --languages              list every language in the tree, not just Rust
+    --duplicates             find blocks of lines copied from elsewhere
+    --dup-lines <N>          lines in a block before it counts [default: 6]
     --exclude-generated      drop generated/minified files from the totals
     --mark-generated         tag listings with (gen)/(min) instead
     --min-gen-line-length <N>  average line length that marks a file minified
@@ -137,7 +139,7 @@ fn config_request(arguments: &[String]) -> Result<(Option<String>, bool), String
 
 /// Flags that eat the argument after them, so the pre-pass can tell a scan
 /// root apart from a flag value.
-const VALUE_FLAGS: [&str; 15] = [
+const VALUE_FLAGS: [&str; 16] = [
     "--snapshot",
     "--baseline",
     "--root",
@@ -153,6 +155,7 @@ const VALUE_FLAGS: [&str; 15] = [
     "--top-functions",
     "--cocomo-params",
     "--cocomo-project-type",
+    "--dup-lines",
 ];
 
 /// The first scan root on the command line, used to find the config before
@@ -266,6 +269,14 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
             "--hotspots" => options.hotspots = true,
             "--metrics" => options.metrics = true,
             "--languages" | "--langs" => options.languages = true,
+            "--duplicates" | "--dup" => options.duplicates = true,
+            "--dup-lines" => {
+                let value = take(arguments, &mut index, "--dup-lines")?;
+                options.dup_lines = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("--dup-lines needs a number, got {}", value))?;
+                options.duplicates = true;
+            }
             "--exclude-generated" | "--no-gen" => options.exclude_generated = true,
             "--mark-generated" => options.mark_generated = true,
             "--cocomo" => options.cocomo = true,

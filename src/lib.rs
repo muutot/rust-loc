@@ -6,6 +6,7 @@
 
 pub mod baseline;
 pub mod cli;
+pub mod clones;
 pub mod cocomo;
 pub mod config;
 pub mod gate;

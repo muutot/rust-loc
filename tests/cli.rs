@@ -1358,3 +1358,90 @@ fn languages_json_reports_files_and_line_classes() {
     assert_eq!(typescript.get("code").unwrap().integer(), 1);
     assert!(document.get("language_code").unwrap().integer() >= 2);
 }
+
+/// Two files whose bodies are the same six lines, so the clone detector has
+/// exactly one hit to report.
+const CLONE_RIGHT: &str = "pub fn alpha(x: u32) -> u32 {\n    let mut total = x;\n    total += 1;\n    total *= 2;\n    total -= 3;\n    total /= 4;\n    total\n}\n";
+const CLONE_LEFT: &str = "pub fn beta(x: u32) -> u32 {\n    let mut total = x;\n    total += 1;\n    total *= 2;\n    total -= 3;\n    total /= 4;\n    total\n}\n";
+
+#[test]
+fn duplicates_stay_hidden_unless_asked_for() {
+    let workspace = Workspace::new();
+    workspace.write("src/a.rs", CLONE_RIGHT);
+    workspace.write("src/b.rs", CLONE_LEFT);
+    let out = workspace.run(&[]);
+    assert!(!out.contains("Duplicated code"), "{}", out);
+    let options = workspace.invocation(&["--duplicates"]).options;
+    assert!(options.duplicates);
+}
+
+#[test]
+fn duplicates_report_the_copied_block_and_its_sites() {
+    let workspace = Workspace::new();
+    workspace.write("src/a.rs", CLONE_RIGHT);
+    workspace.write("src/b.rs", CLONE_LEFT);
+    let out = workspace.run(&["--duplicates"]);
+    assert!(out.contains("Duplicated code"), "{}", out);
+    assert!(out.contains("6 lines, 2 site(s)"), "{}", out);
+    assert!(out.contains("src/a.rs:2"), "{}", out);
+    assert!(out.contains("src/b.rs:2"), "{}", out);
+}
+
+#[test]
+fn duplicates_json_carries_the_clone_count() {
+    let workspace = Workspace::new();
+    workspace.write("src/a.rs", CLONE_RIGHT);
+    workspace.write("src/b.rs", CLONE_LEFT);
+    let document = workspace.document(&["--duplicates"]);
+    let dupes = document.get("duplicates").unwrap();
+    assert_eq!(dupes.get("window").unwrap().integer(), 6);
+    assert_eq!(dupes.get("clone_count").unwrap().integer(), 1);
+    assert_eq!(dupes.get("duplicated_lines").unwrap().integer(), 12);
+    assert_eq!(dupes.get("normalised_lines").unwrap().integer(), 14);
+    assert!(dupes.get("percent").unwrap().number() > 85.0);
+    let clusters = dupes.get("clusters").unwrap().items();
+    assert_eq!(clusters.len(), 1);
+    assert_eq!(clusters[0].get("lines").unwrap().integer(), 6);
+    assert_eq!(clusters[0].get("sites").unwrap().items().len(), 2);
+}
+
+#[test]
+fn dup_lines_grows_a_block_back_to_its_real_length() {
+    let workspace = Workspace::new();
+    workspace.write("src/a.rs", CLONE_RIGHT);
+    workspace.write("src/b.rs", CLONE_LEFT);
+    let document = workspace.document(&["--duplicates", "--dup-lines", "3"]);
+    let dupes = document.get("duplicates").unwrap();
+    assert_eq!(dupes.get("window").unwrap().integer(), 3);
+    assert_eq!(dupes.get("clone_count").unwrap().integer(), 1);
+    let clusters = dupes.get("clusters").unwrap().items();
+    assert_eq!(clusters[0].get("lines").unwrap().integer(), 6);
+}
+
+#[test]
+fn duplicates_ignore_test_only_files() {
+    let workspace = Workspace::new();
+    workspace.write("src/a.rs", CLONE_RIGHT);
+    workspace.write("src/only_tests.rs", &format!("#![cfg(test)]\n{CLONE_LEFT}"));
+    let out = workspace.run(&["--duplicates"]);
+    assert!(out.contains("0 copy(ies)"), "{}", out);
+    assert!(!out.contains("only_tests.rs"), "{}", out);
+}
+
+/// The same six lines again, but living inside `#[cfg(test)]` modules.
+const CLONE_IN_TESTS_ONE: &str = "pub fn a() {}\n\n#[cfg(test)]\nmod tests {\n    fn one() {\n        let mut total = x;\n        total += 1;\n        total *= 2;\n        total -= 3;\n        total /= 4;\n        total\n    }\n}\n";
+const CLONE_IN_TESTS_TWO: &str = "pub fn b() {}\n\n#[cfg(test)]\nmod tests {\n    fn two() {\n        let mut total = x;\n        total += 1;\n        total *= 2;\n        total -= 3;\n        total /= 4;\n        total\n    }\n}\n";
+
+#[test]
+fn duplicates_skip_cfg_test_items_unless_tests_are_included() {
+    let workspace = Workspace::new();
+    workspace.write("src/a.rs", CLONE_IN_TESTS_ONE);
+    workspace.write("src/b.rs", CLONE_IN_TESTS_TWO);
+    let hidden = workspace.document(&["--duplicates"]);
+    let dupes = hidden.get("duplicates").unwrap();
+    assert_eq!(dupes.get("clone_count").unwrap().integer(), 0);
+    let shown = workspace.document(&["--duplicates", "--include-tests"]);
+    let dupes = shown.get("duplicates").unwrap();
+    assert_eq!(dupes.get("clone_count").unwrap().integer(), 1);
+    assert_eq!(dupes.get("duplicated_lines").unwrap().integer(), 12);
+}

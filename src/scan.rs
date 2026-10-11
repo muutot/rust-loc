@@ -415,7 +415,7 @@ fn rust_counts(text: &str) -> LineCounts {
 }
 
 /// Read a file as lossy UTF-8, without a BOM and with normalised newlines.
-fn read_text(path: &Path) -> Option<String> {
+pub(crate) fn read_text(path: &Path) -> Option<String> {
     let bytes = std::fs::read(path).ok()?;
     let bytes = match bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
         Some(rest) => rest,

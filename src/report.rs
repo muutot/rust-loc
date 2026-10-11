@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::baseline;
+use crate::clones;
 use crate::cocomo;
 use crate::git;
 use crate::metrics;
@@ -111,6 +112,8 @@ pub struct Report {
     pub metrics: Option<MetricsRow>,
     /// Every language in the scanned tree, largest first.
     pub languages: Vec<LanguageRow>,
+    /// Blocks of copied lines, when `--duplicates` asked for them.
+    pub duplicates: Option<clones::Dupes>,
 }
 
 impl Report {
@@ -285,6 +288,22 @@ pub fn scan(
         Vec::new()
     };
 
+    let duplicates = if options.duplicates {
+        let files: Vec<PathBuf> = business
+            .iter()
+            .map(|index| entries[*index].path().to_path_buf())
+            .collect();
+        Some(clones::detect(
+            &files,
+            cwd,
+            options.dup_lines,
+            options.include_tests,
+            options.worker_count(),
+        ))
+    } else {
+        None
+    };
+
     // Ranked before the entries move into the report, because the ranking
     // borrows them through `business_refs`.
     let hotspots = if options.hotspots {
@@ -310,6 +329,7 @@ pub fn scan(
         hotspots,
         metrics: metrics_row,
         languages,
+        duplicates,
     };
     report.diff = options
         .baseline
@@ -778,6 +798,10 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push(String::new());
         render_hotspots_text(report, &mut out);
     }
+    if options.duplicates {
+        out.push(String::new());
+        render_clones_text(report, &mut out);
+    }
     out.join("\n")
 }
 
@@ -958,6 +982,42 @@ fn render_hotspots_text(report: &Report, out: &mut Vec<String>) {
             group(row.churn)
         ));
         out.push(line);
+    }
+}
+
+/// Blocks of lines that appear more than once in the tree.
+fn render_clones_text(report: &Report, out: &mut Vec<String>) {
+    let Some(dupes) = &report.duplicates else {
+        return;
+    };
+    out.push("Duplicated code".to_string());
+    out.push(format!(
+        "  {} copy(ies) of {} lines or more, {} of {} normalised lines",
+        group(dupes.clusters.len() as u32),
+        group(dupes.window as u32),
+        share(dupes.duplicated_lines as usize, dupes.code_lines as usize),
+        group(dupes.code_lines)
+    ));
+    if dupes.clusters.is_empty() {
+        return;
+    }
+    out.push(String::new());
+    for (index, cluster) in dupes.clusters.iter().enumerate() {
+        out.push(format!(
+            "  {}. {} lines, {} site(s)",
+            index + 1,
+            cluster.lines,
+            cluster.sites.len()
+        ));
+        for site in cluster.sites.iter().take(clones::SITES_SHOWN) {
+            out.push(format!("     {}:{}", site.path, site.line));
+        }
+        if cluster.sites.len() > clones::SITES_SHOWN {
+            out.push(format!(
+                "     ... and {} more",
+                cluster.sites.len() - clones::SITES_SHOWN
+            ));
+        }
     }
 }
 
@@ -1203,6 +1263,45 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
             ));
         }
         out.push(String::new());
+    }
+    if let Some(dupes) = &report.duplicates {
+        out.push("### Duplicated code".to_string());
+        out.push(String::new());
+        out.push(format!(
+            "{} copy(ies) of {} lines or more, {} of {} normalised lines",
+            group(dupes.clusters.len() as u32),
+            group(dupes.window as u32),
+            share(dupes.duplicated_lines as usize, dupes.code_lines as usize),
+            group(dupes.code_lines)
+        ));
+        out.push(String::new());
+        if !dupes.clusters.is_empty() {
+            out.push("| # | Lines | Sites | Locations |".to_string());
+            out.push("| ---: | ---: | ---: | --- |".to_string());
+            for (index, cluster) in dupes.clusters.iter().enumerate() {
+                let sites: Vec<String> = cluster
+                    .sites
+                    .iter()
+                    .take(clones::SITES_SHOWN)
+                    .map(|site| format!("`{}:{}`", site.path, site.line))
+                    .collect();
+                let mut listed = sites.join(", ");
+                if cluster.sites.len() > clones::SITES_SHOWN {
+                    listed.push_str(&format!(
+                        " (+{} more)",
+                        cluster.sites.len() - clones::SITES_SHOWN
+                    ));
+                }
+                out.push(format!(
+                    "| {} | {} | {} | {} |",
+                    index + 1,
+                    cluster.lines,
+                    cluster.sites.len(),
+                    listed
+                ));
+            }
+            out.push(String::new());
+        }
     }
     out.join("\n")
 }
@@ -1619,6 +1718,44 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         let total: u32 = report.languages.iter().map(|row| row.code).sum();
         out.push_str(&format!("  \"language_code\": {},\n", total));
         out.push_str(&format!("  \"languages\": {},\n", json_array(&items, 2)));
+    }
+    if let Some(dupes) = &report.duplicates {
+        let mut items: Vec<String> = Vec::with_capacity(dupes.clusters.len());
+        for cluster in &dupes.clusters {
+            let sites: Vec<String> = cluster
+                .sites
+                .iter()
+                .map(|site| {
+                    format!(
+                        "{{\"path\": {}, \"line\": {}}}",
+                        json_string(&site.path),
+                        site.line
+                    )
+                })
+                .collect();
+            items.push(format!(
+                "{{\"lines\": {}, \"sites\": {}}}",
+                cluster.lines,
+                json_array(&sites, 6)
+            ));
+        }
+        out.push_str("  \"duplicates\": {\n");
+        out.push_str(&format!("    \"window\": {},\n", dupes.window));
+        out.push_str(&format!("    \"clone_count\": {},\n", dupes.clusters.len()));
+        out.push_str(&format!(
+            "    \"duplicated_lines\": {},\n",
+            dupes.duplicated_lines
+        ));
+        out.push_str(&format!(
+            "    \"normalised_lines\": {},\n",
+            dupes.code_lines
+        ));
+        out.push_str(&format!(
+            "    \"percent\": {},\n",
+            json_number(dupes.percent())
+        ));
+        out.push_str(&format!("    \"clusters\": {}\n", json_array(&items, 4)));
+        out.push_str("  },\n");
     }
     if rows.is_empty() {
         out.push_str("  \"files\": []\n}");
