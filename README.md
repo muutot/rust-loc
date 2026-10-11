@@ -235,6 +235,8 @@ used; files from other roots have no churn and drop out. When git is missing,
 or the root is not a repository, the section prints `no git history for these
 files` instead of failing. `--top` caps the rows (default 15), and `--format
 json` adds a `hotspots` array plus `hotspot_total` so a build can script the
+ranking.
+
 ### Maintainability and cognitive complexity
 
 `--metrics` adds a maintainability card, built from three counts that come out
@@ -277,7 +279,37 @@ in a `maintainability` object and a `cognitive` field on every function, and
 `--format csv` adds a `cognitive` column. The card and the extra columns stay
 out of the report unless the flag is given.
 
-RANKING_PLACEHOLDER
+### Language composition
+
+`--languages` (alias `--langs`) steps outside Rust and describes the whole tree,
+the way tokei does: files, lines, blanks, comments and code per language,
+largest by code first, with each language’s share of the code. The table is hand
+written and dependency free, and covers the extensions that turn up in a mixed
+repository (Rust, TypeScript, Svelte, Python, Markdown, JSON, TOML, CSS, shell
+and so on). A file whose extension is not in the table is never read, so images
+and binaries cost nothing.
+
+```console
+> rust-loc --languages ../Clipboard
+Languages
+  15 language(s), 126,828 code lines in 631 file(s)
+
+Language       Files     Lines     Blank   Comment       Code   Share
+---------------------------------------------------------------------
+Rust             285    78,540     6,349     5,273     66,918   52.8%
+Svelte            79    22,533     1,800       410     20,323   16.0%
+TypeScript       130    22,344     1,404     1,083     19,857   15.7%
+Markdown          80    13,097     2,916         0     10,181    8.0%
+JSON              11     3,134         0         5      3,129    2.5%
+```
+
+Rust goes through the same lexer as the rest of the report, so its lines match;
+the other languages use a small comment-aware scanner (line comments, block
+comments and single-line literals). A line holding both code and a trailing
+comment counts as code, the way cloc and tokei count it. Unlike the main report,
+this describes the repository as it is, test code included. `--format json` adds
+a `languages` array and a `language_code` total, and `--format markdown` adds the
+same table.
 
 ## Usage
 
@@ -295,7 +327,7 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--json` | alias for `--format json` |
 | `--by-file`, `--per-file` | per-file breakdown |
 | `--by-module` | per-module (top level component) breakdown |
-| `--sort <key>` | `code`, `lines`, `blank`, `comment`, `test`, `complexity`, `unsafe`, `test_fns`, `smells`, `unwrap`, `expect`, `panic`, `todo`, `unimplemented`, `allow`, `uloc`, `path` |
+| `--sort <key>` | `code`, `lines`, `blank`, `comment`, `test`, `complexity`, `unsafe`, `test_fns`, `smells`, `unwrap`, `expect`, `panic`, `todo`, `unimplemented`, `allow`, `uloc`, `cognitive`, `path` |
 | `--top <n>` | limit listings to `n` rows |
 | `--show-excluded` | list the excluded test-only files |
 | `--include-tests` | count test code as well |

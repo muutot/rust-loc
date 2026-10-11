@@ -63,6 +63,8 @@ pub struct Options {
     /// Add cognitive complexity, Halstead volume and the maintainability
     /// index to the report.
     pub metrics: bool,
+    /// Add a per-language file and line breakdown for the whole tree.
+    pub languages: bool,
     /// `--fail-if` rules; any violation exits with code 1.
     pub fail_if: Vec<gate::Gate>,
     /// Print gate failures as GitHub annotations.
@@ -106,6 +108,7 @@ impl Default for Options {
             smells: false,
             hotspots: false,
             metrics: false,
+            languages: false,
             fail_if: Vec::new(),
             ci: false,
             format: Format::Text,

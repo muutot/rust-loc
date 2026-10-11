@@ -50,6 +50,16 @@ pub struct HotspotRow {
 /// Rows in the hotspot ranking unless `--top` says otherwise.
 pub const DEFAULT_HOTSPOTS: usize = 15;
 
+/// One language in the `--languages` breakdown.
+pub struct LanguageRow {
+    pub name: &'static str,
+    pub files: u32,
+    pub lines: u32,
+    pub blank: u32,
+    pub comment: u32,
+    pub code: u32,
+}
+
 /// The maintainability numbers for the business scope, built by `--metrics`.
 pub struct MetricsRow {
     /// Code-line weighted mean of the per-file index, so a big file counts
@@ -99,6 +109,8 @@ pub struct Report {
     pub hotspots: Vec<HotspotRow>,
     /// Cognitive complexity, Halstead volume and the MI score, when asked for.
     pub metrics: Option<MetricsRow>,
+    /// Every language in the scanned tree, largest first.
+    pub languages: Vec<LanguageRow>,
 }
 
 impl Report {
@@ -267,6 +279,12 @@ pub fn scan(
         None
     };
 
+    let languages = if options.languages {
+        language_rows(roots, options)
+    } else {
+        Vec::new()
+    };
+
     // Ranked before the entries move into the report, because the ranking
     // borrows them through `business_refs`.
     let hotspots = if options.hotspots {
@@ -291,12 +309,34 @@ pub fn scan(
         diff: None,
         hotspots,
         metrics: metrics_row,
+        languages,
     };
     report.diff = options
         .baseline
         .as_ref()
         .map(|snapshot| baseline::Diff::of(&report, snapshot, cwd));
     report
+}
+
+/// Every language in the tree, largest by code first. This reads files the
+/// Rust pass never touches, so it only runs when the flag is given.
+fn language_rows(roots: &[PathBuf], options: &Options) -> Vec<LanguageRow> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for root in roots {
+        let found = scan::discover_languages(root, options);
+        files.extend(scan::apply_gitignore_all(root, found, options.gitignore));
+    }
+    scan::language_totals(&files, options.worker_count())
+        .into_iter()
+        .map(|(name, tally)| LanguageRow {
+            name,
+            files: tally.files,
+            lines: tally.counts.lines,
+            blank: tally.counts.blank,
+            comment: tally.counts.comment,
+            code: tally.counts.code,
+        })
+        .collect()
 }
 
 /// Reduce the business scope to one maintainability card. The index is the
@@ -726,6 +766,10 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         }
     }
 
+    if options.languages {
+        out.push(String::new());
+        render_languages_text(report, &mut out);
+    }
     if options.functions {
         out.push(String::new());
         render_functions_text(report, options.metrics, &mut out);
@@ -790,6 +834,45 @@ fn render_metrics_text(row: &MetricsRow, out: &mut Vec<String>) {
                 format!("{} / {}", group(row.methods as u32), group(row.arguments))
             ),
     );
+}
+
+/// Every language in the tree, biggest by code first.
+fn render_languages_text(report: &Report, out: &mut Vec<String>) {
+    let rows = &report.languages;
+    let total: u32 = rows.iter().map(|row| row.code).sum();
+    out.push("Languages".to_string());
+    out.push(format!(
+        "  {} language(s), {} code lines in {} file(s)",
+        group(rows.len() as u32),
+        group(total),
+        group(rows.iter().map(|row| row.files).sum::<u32>())
+    ));
+    if rows.is_empty() {
+        return;
+    }
+    out.push(String::new());
+    let names: Vec<String> = rows.iter().map(|row| row.name.to_string()).collect();
+    let name_width = column_width(&names, "Language", 12, 24);
+    let mut head = pad("Language", name_width);
+    head.push_str(&format!(
+        "{:>8}{:>10}{:>10}{:>10}{:>11}{:>8}",
+        "Files", "Lines", "Blank", "Comment", "Code", "Share"
+    ));
+    out.push(head);
+    out.push("-".repeat(name_width + 57));
+    for (row, name) in rows.iter().zip(names.iter()) {
+        let mut line = pad(&clip(name, name_width), name_width);
+        line.push_str(&format!(
+            "{:>8}{:>10}{:>10}{:>10}{:>11}{:>8}",
+            group(row.files),
+            group(row.lines),
+            group(row.blank),
+            group(row.comment),
+            group(row.code),
+            share(row.code as usize, total as usize)
+        ));
+        out.push(line);
+    }
 }
 
 /// The worst functions by complexity, one row per function.
@@ -1044,6 +1127,32 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
         for (label, stats, _) in scan::module_groups(&business, cwd) {
             let values: Vec<String> = columns.iter().map(|key| group(stats.column(key))).collect();
             out.push(format!("| `{}` | {} |", label, values.join(" | ")));
+        }
+        out.push(String::new());
+    }
+    if options.languages {
+        out.push("### Languages".to_string());
+        out.push(String::new());
+        let total: u32 = report.languages.iter().map(|row| row.code).sum();
+        out.push(format!(
+            "{} language(s), {} code lines",
+            group(report.languages.len() as u32),
+            group(total)
+        ));
+        out.push(String::new());
+        out.push("| Language | Files | Lines | Blank | Comment | Code | Share |".to_string());
+        out.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: |".to_string());
+        for row in &report.languages {
+            out.push(format!(
+                "| {} | {} | {} | {} | {} | {} | {} |",
+                row.name,
+                group(row.files),
+                group(row.lines),
+                group(row.blank),
+                group(row.comment),
+                group(row.code),
+                share(row.code as usize, total as usize)
+            ));
         }
         out.push(String::new());
     }
@@ -1493,6 +1602,23 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         ));
         row.push_str("    }");
         rows.push(row);
+    }
+    if options.languages {
+        let mut items: Vec<String> = Vec::with_capacity(report.languages.len());
+        for row in &report.languages {
+            items.push(format!(
+                "{{\"name\": {}, \"files\": {}, \"lines\": {}, \"blank\": {}, \"comment\": {}, \"code\": {}}}",
+                json_string(row.name),
+                row.files,
+                row.lines,
+                row.blank,
+                row.comment,
+                row.code
+            ));
+        }
+        let total: u32 = report.languages.iter().map(|row| row.code).sum();
+        out.push_str(&format!("  \"language_code\": {},\n", total));
+        out.push_str(&format!("  \"languages\": {},\n", json_array(&items, 2)));
     }
     if rows.is_empty() {
         out.push_str("  \"files\": []\n}");

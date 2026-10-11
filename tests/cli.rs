@@ -1316,3 +1316,45 @@ fn metrics_do_not_disturb_the_default_columns() {
     assert!(!options.column_keys().contains(&"cognitive"));
     assert!(options.column_keys().contains(&"complexity"));
 }
+
+#[test]
+fn languages_stay_hidden_unless_asked_for() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let hidden = workspace.run(&[]);
+    assert!(!hidden.contains("Languages"), "{}", hidden);
+    assert!(workspace.invocation(&["--languages"]).options.languages);
+}
+
+#[test]
+fn languages_count_a_mixed_tree() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn a() {}\n");
+    workspace.write("web/app.ts", "// note\nexport const x = 1;\n");
+    workspace.write("README.md", "# Title\n\nText.\n");
+    workspace.write("assets/logo.png", "not really a png\n");
+    let out = workspace.run(&["--languages"]);
+    for name in ["Languages", "Rust", "TypeScript", "Markdown"] {
+        assert!(out.contains(name), "{} missing from:\n{}", name, out);
+    }
+    assert!(!out.contains("png"), "{}", out);
+}
+
+#[test]
+fn languages_json_reports_files_and_line_classes() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn a() {}\n");
+    workspace.write("web/app.ts", "// note\nexport const x = 1;\n");
+    let out = workspace.run(&["--languages", "--format", "json"]);
+    let document = json::parse(&out);
+    let rows = document.get("languages").unwrap().items();
+    let typescript = rows
+        .iter()
+        .find(|row| row.get("name").unwrap().text() == "TypeScript")
+        .expect("TypeScript should be listed");
+    assert_eq!(typescript.get("files").unwrap().integer(), 1);
+    assert_eq!(typescript.get("lines").unwrap().integer(), 2);
+    assert_eq!(typescript.get("comment").unwrap().integer(), 1);
+    assert_eq!(typescript.get("code").unwrap().integer(), 1);
+    assert!(document.get("language_code").unwrap().integer() >= 2);
+}

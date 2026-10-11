@@ -1,11 +1,12 @@
 //! File discovery, parallel analysis and the aggregates every renderer shares.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use crate::generated::{self, Generated};
+use crate::languages::{self, LineCounts};
 use crate::lexer::{self, Analysis, FunctionInfo, Halstead, Metrics, Smells};
 use crate::options::Options;
 
@@ -199,6 +200,27 @@ pub fn matches_exclude(path: &Path, root: &Path, patterns: &[String]) -> bool {
 /// Collect every .rs file below root that survives the ignore rules.
 pub fn discover(root: &Path, options: &Options) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = Vec::new();
+    walk(root, options, &mut found, &|path| {
+        path.extension()
+            .map(|extension| extension.eq_ignore_ascii_case("rs"))
+            .unwrap_or(false)
+    });
+    sort_paths(&mut found);
+    found
+}
+
+/// Collect every file the language table knows, for `--languages`.
+pub fn discover_languages(root: &Path, options: &Options) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    walk(root, options, &mut found, &|path| {
+        languages::detect(path).is_some()
+    });
+    sort_paths(&mut found);
+    found
+}
+
+/// Depth-first walk that keeps the files `keep` accepts.
+fn walk(root: &Path, options: &Options, found: &mut Vec<PathBuf>, keep: &dyn Fn(&Path) -> bool) {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let read = match std::fs::read_dir(&dir) {
@@ -221,23 +243,22 @@ pub fn discover(root: &Path, options: &Options) -> Vec<PathBuf> {
             };
             if file_type.is_dir() {
                 stack.push(path);
-            } else if file_type.is_file() {
-                let is_rust = path
-                    .extension()
-                    .map(|extension| extension.eq_ignore_ascii_case("rs"))
-                    .unwrap_or(false);
-                if is_rust && !matches_exclude(&path, root, &options.exclude) {
-                    found.push(path);
-                }
+            } else if file_type.is_file()
+                && keep(&path)
+                && !matches_exclude(&path, root, &options.exclude)
+            {
+                found.push(path);
             }
         }
     }
-    // Mirror Python's `sorted(root.rglob("*.rs"))`: `Path` orders by path
-    // components (case-insensitively on Windows), not by the joined string.
-    // The difference shows up for `a/backup.rs` vs `a/backup/scale.rs`,
-    // where the directory sorts first.
+}
+
+/// Mirror Python's `sorted(root.rglob("*.rs"))`: `Path` orders by path
+/// components (case-insensitively on Windows), not by the joined string.
+/// The difference shows up for `a/backup.rs` vs `a/backup/scale.rs`,
+/// where the directory sorts first.
+fn sort_paths(found: &mut [PathBuf]) {
     found.sort_by_key(|path| component_key(path));
-    found
 }
 
 /// Lowercased path components, the key Python's `PurePath` comparison uses.
@@ -249,6 +270,21 @@ fn component_key(path: &Path) -> Vec<String> {
 
 /// Run git to honour .gitignore rules; degrade to a no-op on any failure.
 pub fn apply_gitignore(root: &Path, files: Vec<PathBuf>, enabled: bool) -> Vec<PathBuf> {
+    // Only the Rust files are in this list, so only they need the pathspec.
+    gitignore_filter(root, files, enabled, &["*.rs"])
+}
+
+/// The same filter for the language walk, which is not Rust-only.
+pub fn apply_gitignore_all(root: &Path, files: Vec<PathBuf>, enabled: bool) -> Vec<PathBuf> {
+    gitignore_filter(root, files, enabled, &[])
+}
+
+fn gitignore_filter(
+    root: &Path,
+    files: Vec<PathBuf>,
+    enabled: bool,
+    patterns: &[&str],
+) -> Vec<PathBuf> {
     if !enabled || files.is_empty() {
         return files;
     }
@@ -256,18 +292,16 @@ pub fn apply_gitignore(root: &Path, files: Vec<PathBuf>, enabled: bool) -> Vec<P
         Some(top) => PathBuf::from(top.trim()),
         None => return files,
     };
-    let listing = match run_git(
-        &top,
-        &[
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "--",
-            "*.rs",
-        ],
-    ) {
+    let mut args = vec![
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--",
+    ];
+    args.extend_from_slice(patterns);
+    let listing = match run_git(&top, &args) {
         Some(listing) => listing,
         None => return files,
     };
@@ -280,6 +314,115 @@ pub fn apply_gitignore(root: &Path, files: Vec<PathBuf>, enabled: bool) -> Vec<P
         .into_iter()
         .filter(|path| kept.contains(&resolve_path(path)))
         .collect()
+}
+
+/// Files and line classes for one language.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Tally {
+    pub files: u32,
+    pub counts: LineCounts,
+}
+
+impl Tally {
+    fn merge(&mut self, other: Tally) {
+        self.files += other.files;
+        self.counts.lines += other.counts.lines;
+        self.counts.blank += other.counts.blank;
+        self.counts.comment += other.counts.comment;
+        self.counts.code += other.counts.code;
+    }
+}
+
+/// Count every known file and fold the result per language, largest first.
+pub fn language_totals(files: &[PathBuf], workers: usize) -> Vec<(&'static str, Tally)> {
+    let mut merged: HashMap<&'static str, Tally> = HashMap::new();
+    let chunk = chunk_size(files.len(), workers);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = files
+            .chunks(chunk)
+            .map(|slice| scope.spawn(move || count_languages(slice)))
+            .collect();
+        for handle in handles {
+            let Ok(partial) = handle.join() else {
+                continue;
+            };
+            for (name, tally) in partial {
+                merged.entry(name).or_default().merge(tally);
+            }
+        }
+    });
+    let mut rows: Vec<(&'static str, Tally)> = merged.into_iter().collect();
+    rows.sort_by(|left, right| {
+        right
+            .1
+            .counts
+            .code
+            .cmp(&left.1.counts.code)
+            .then(left.0.cmp(right.0))
+    });
+    rows
+}
+
+/// How many files one thread of the language pass takes.
+fn chunk_size(total: usize, workers: usize) -> usize {
+    if total == 0 {
+        return 1;
+    }
+    total.div_ceil(workers.max(1)).max(1)
+}
+
+/// Line classes for one slice of files, keyed by language name.
+fn count_languages(files: &[PathBuf]) -> Vec<(&'static str, Tally)> {
+    let mut partial: HashMap<&'static str, Tally> = HashMap::new();
+    for path in files {
+        let Some(language) = languages::detect(path) else {
+            continue;
+        };
+        let Some(text) = read_text(path) else {
+            continue;
+        };
+        let counts = if language.name == "Rust" {
+            rust_counts(&text)
+        } else {
+            languages::count(&text, language)
+        };
+        partial
+            .entry(language.name)
+            .or_default()
+            .merge(Tally { files: 1, counts });
+    }
+    partial.into_iter().collect()
+}
+
+/// What the Rust lexer sees in a whole file, test code included: the language
+/// overview describes the repository, not just its business scope.
+fn rust_counts(text: &str) -> LineCounts {
+    let analysis = lexer::analyze(text);
+    let mut counts = LineCounts {
+        lines: analysis.total as u32,
+        ..LineCounts::default()
+    };
+    for index in 0..analysis.total {
+        if analysis.code[index] {
+            counts.code += 1;
+        } else if analysis.comment[index] {
+            counts.comment += 1;
+        } else {
+            counts.blank += 1;
+        }
+    }
+    counts
+}
+
+/// Read a file as lossy UTF-8, without a BOM and with normalised newlines.
+fn read_text(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let bytes = match bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
+        Some(rest) => rest,
+        None => bytes.as_slice(),
+    };
+    let text = String::from_utf8_lossy(bytes);
+    Some(lexer::normalize_newlines(&text).into_owned())
 }
 
 /// Run git hidden (no console window flash) and return stdout on success.
@@ -441,13 +584,7 @@ pub fn is_test_file(path: &Path) -> bool {
 
 /// Read and analyse one file, reducing it to facts.
 fn read_facts(path: &Path, root: &Path, read: ReadOptions) -> Option<FileFacts> {
-    let bytes = std::fs::read(path).ok()?;
-    let bytes = match bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
-        Some(rest) => rest,
-        None => bytes.as_slice(),
-    };
-    let text = String::from_utf8_lossy(bytes);
-    let text = lexer::normalize_newlines(&text);
+    let text = read_text(path)?;
     let analysis: Analysis = lexer::analyze(&text);
     let generated_kind = generated::detect(&text, &analysis, read.min_gen_line_length);
 
