@@ -1,6 +1,7 @@
 //! File discovery, parallel analysis and the aggregates every renderer shares.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -446,18 +447,71 @@ pub(crate) fn read_text(path: &Path) -> Option<String> {
 
 /// Run git hidden (no console window flash) and return stdout on success.
 pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Option<String> {
-    let mut command = std::process::Command::new("git");
-    command.arg("-C").arg(dir).args(args);
+    let output = git_command(git_program())
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// A git command that never shows a console window of its own.
+fn git_command(program: &OsStr) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let output = command.output().ok()?;
+    command
+}
+
+/// The program every git call runs.
+///
+/// Windows puts Git for Windows' `cmd\git.exe` on `PATH`: a launcher that
+/// starts the real `mingw64\bin\git.exe` behind it. The author pass starts
+/// one git per file, so that second spawn is worth a good part of the pass, and
+/// it buys nothing - ask git where its own parts live once, and run the binary
+/// that sits next to them. Anything that is not that layout, and every other
+/// platform, keeps the plain `git`, which is what a launcher wants anyway.
+fn git_program() -> &'static OsStr {
+    static PROGRAM: std::sync::OnceLock<OsString> = std::sync::OnceLock::new();
+    PROGRAM.get_or_init(|| match direct_git() {
+        Some(program) => program,
+        None => OsString::from("git"),
+    })
+}
+
+/// The real git behind the launcher `PATH` finds, when there is one.
+#[cfg(windows)]
+fn direct_git() -> Option<OsString> {
+    let output = git_command(OsStr::new("git"))
+        .arg("--exec-path")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+    let exec = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    // `<root>/mingw64/libexec/git-core`, or `<root>/libexec/git-core` on an
+    // older install: the real binaries sit in the `bin` beside the libexec.
+    let libexec = exec.parent()?;
+    let root = libexec.parent()?;
+    for candidate in [root.join("mingw64/bin/git.exe"), root.join("bin/git.exe")] {
+        if candidate.is_file() {
+            return Some(candidate.into_os_string());
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn direct_git() -> Option<OsString> {
+    None
 }
 
 /// Per-line classes for a file; test counts lines inside test-only items.
