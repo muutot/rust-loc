@@ -419,6 +419,44 @@ pub fn is_text_column(key: &str) -> bool {
     key == "location" || key == "author"
 }
 
+/// Widths for the columns that hold text, in draw order: the label column
+/// first, then one per text column. `natural` is the width each one needs for
+/// the widest text it holds, `available` the room they all share.
+///
+/// Every column keeps the width its own content asks for and the longest one
+/// takes what the rest leave, so a row of short author names never grows a
+/// column wider than the paths beside it, and the table still fills the
+/// window. When the content needs more room than there is, every column gives
+/// way in proportion to the text it holds instead of one of them carrying the
+/// shortage alone.
+pub fn flex_widths(natural: &[i32], available: i32) -> Vec<i32> {
+    /// Nothing shrinks past the room the narrowest readable cell needs.
+    const MINIMUM: i32 = 96;
+    let mut widths = natural.to_vec();
+    if widths.is_empty() {
+        return widths;
+    }
+    let total: i32 = widths.iter().sum();
+    if total > available {
+        // Not enough room: every column gives way in proportion to the text it
+        // holds, so the long ones pay for the shortage together instead of one
+        // of them carrying it alone.
+        let scale = f64::from(available.max(0)) / f64::from(total);
+        for width in widths.iter_mut() {
+            *width = ((f64::from(*width) * scale) as i32).max(MINIMUM);
+        }
+        return widths;
+    }
+    let mut widest = 0usize;
+    for (index, width) in widths.iter().enumerate() {
+        if *width > widths[widest] {
+            widest = index;
+        }
+    }
+    widths[widest] += available - total;
+    widths
+}
+
 /// The sort column a header item stands for. The label owns item zero, so the
 /// report's own columns are the items after it.
 pub fn header_item_column(item: i32) -> i32 {
@@ -1815,6 +1853,29 @@ mod tests {
         // The authors tab reads by file, not by counter.
         assert_eq!(default_sort(View::Authors), (-1, false));
         assert_eq!(default_sort(View::AuthorTotals), (1, true));
+    }
+
+    /// The text columns share the room the counters leave: the one whose text
+    /// is widest takes what the others do not need.
+    #[test]
+    fn the_widest_text_column_takes_the_room_the_others_leave() {
+        assert_eq!(flex_widths(&[420, 150], 900), vec![750, 150]);
+        // The room follows the widest column, not the first one.
+        assert_eq!(flex_widths(&[140, 460], 900), vec![140, 760]);
+        // A single column fills the row on its own.
+        assert_eq!(flex_widths(&[420], 900), vec![900]);
+        assert!(flex_widths(&[], 900).is_empty());
+    }
+
+    #[test]
+    fn text_columns_give_way_together_when_the_window_is_too_narrow() {
+        // Both give way in proportion to what they hold, so the paths keep more
+        // room than the short names beside them.
+        let widths = flex_widths(&[420, 150], 400);
+        assert_eq!(widths, vec![294, 105]);
+        assert!(widths.iter().sum::<i32>() <= 400);
+        // Nothing shrinks past the floor that keeps a cell readable.
+        assert_eq!(flex_widths(&[140, 90], 120), vec![96, 96]);
     }
 
     /// The author tally filters on the name in its first column, so its cue

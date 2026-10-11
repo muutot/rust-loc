@@ -1109,26 +1109,35 @@ fn set_columns(state: &app::AppState) {
     };
     let mut client = RECT::default();
     unsafe { GetClientRect(list, &mut client) };
+    let px = |value: i32| state.theme.px(value);
     let numeric: i32 = state
         .columns
         .iter()
         .filter(|column| !model::is_text_column(column.key))
-        .map(|column| state.theme.px(column.pixels()))
+        .map(|column| px(column.pixels()))
         .sum();
-    // A text column takes the slack instead of the name column, so the long
-    // file path is the part that gets the room.
-    let flexible = state
-        .columns
-        .iter()
-        .any(|column| model::is_text_column(column.key));
-    let slack = client.right - state.theme.px(18) - numeric;
-    let label_width = if flexible {
-        state.theme.px(230)
-    } else {
-        slack.max(state.theme.px(170))
-    };
+    let available = (client.right - px(18) - numeric).max(px(180));
+    // The text columns are measured instead of handed the slack: a column of
+    // short author names stays as narrow as the names it shows, and the column
+    // whose text is widest - the paths - takes the room that is left.
+    let font = state.theme.fonts.mono;
+    let mut naturals = vec![(widest_row_text(list, &state.rows, font, None) + px(28)).max(px(180))];
+    let mut cell = 0usize;
+    for column in state.columns.iter() {
+        // The delta column is drawn from `Row::delta`, so it holds no cell.
+        if column.key == "delta" {
+            continue;
+        }
+        if model::is_text_column(column.key) {
+            let widest = widest_row_text(list, &state.rows, font, Some(cell));
+            naturals.push((widest + px(28)).max(px(column.pixels())));
+        }
+        cell += 1;
+    }
+    let widths = model::flex_widths(&naturals, available);
     let mut specs: Vec<(String, bool, i32)> =
-        vec![(state.view.label_title().to_string(), false, label_width)];
+        vec![(state.view.label_title().to_string(), false, widths[0])];
+    let mut slot = 0usize;
     for (position, column) in state.columns.iter().enumerate() {
         let active = position as i32 == state.sort_column;
         let title = model::column_title(column.key);
@@ -1139,9 +1148,10 @@ fn set_columns(state: &app::AppState) {
         };
         let text = model::is_text_column(column.key);
         let width = if text {
-            (slack - label_width).max(state.theme.px(column.pixels()))
+            slot += 1;
+            widths[slot]
         } else {
-            state.theme.px(column.pixels())
+            px(column.pixels())
         };
         specs.push((title, !text, width));
     }
@@ -1159,6 +1169,32 @@ fn set_columns(state: &app::AppState) {
             &spec as *const LVCOLUMNW as isize,
         );
     }
+}
+
+/// The widest text one column shows, measured the way the list measures it.
+///
+/// `cell` picks the cell that lines up with a text column; `None` measures the
+/// row label. Only the first rows are read: a longer name further down is rare,
+/// and a cell that still does not fit shows its text in a tooltip.
+fn widest_row_text(list: HWND, rows: &[model::Row], font: HFONT, cell: Option<usize>) -> i32 {
+    const SAMPLE: usize = 2000;
+    let dc = unsafe { GetWindowDC(list) };
+    if dc.is_null() {
+        return 0;
+    }
+    let mut widest = 0;
+    for row in rows.iter().take(SAMPLE) {
+        let value = match cell {
+            Some(index) => match row.cells.get(index) {
+                Some(model::Cell::Text(text)) => text.as_str(),
+                _ => continue,
+            },
+            None => row.label.as_str(),
+        };
+        widest = widest.max(paint::measure(dc, value, font));
+    }
+    unsafe { ReleaseDC(list, dc) };
+    widest
 }
 
 /// Rebuild the header and every row of the table.
