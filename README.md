@@ -138,6 +138,49 @@ with code 1; `--ci` prints GitHub annotations
 totals the report does, so `--include-tests` and `--exclude-generated` shift
 them too, and `--fail-if uloc...` asks for `--uloc`.
 
+### Repository config
+
+Drop a `.rustloc.toml` in the project to give a team one set of scope,
+report and gate defaults instead of a long command line:
+
+```toml
+[scope]
+roots = ["src", "crates"]
+exclude = ["*/generated/*", "*/vendor/*"]
+ignore_dirs = ["dist"]
+default_ignores = true
+gitignore = true
+include_tests = false
+exclude_generated = true
+min_gen_line_length = 255
+
+[report]
+format = "markdown"
+by_file = true
+by_module = true
+sort = "complexity"
+top = 20
+functions = true
+top_functions = 10
+smells = true
+cocomo = true
+jobs = 8
+
+[gate]
+fail_if = ["code>100000", "complexity>5000", "unwrap>0"]
+```
+
+The reader takes `[scope]`, `[report]` and `[gate]`, one `key = value` per
+line, `#` comments, and flat arrays split over several lines. Every key is
+optional. `--config <PATH>` names a file explicitly, `--no-config` ignores
+all of them, and without either flag the file is looked up in the current
+directory and then beside the first scan root, so `rust-loc ../project`
+still finds the project configuration. Command line flags always win, and
+the repeatable keys (`exclude`, `ignore_dirs`, `fail_if`) add to whatever
+the command line already asked for. The report echoes the file it used on a
+`Config:` line, and a typo is fatal: `.rustloc.toml:12: unknown key `sortt`
+in [report]`.
+
 ## Usage
 
 ```text
@@ -147,6 +190,8 @@ rust-loc [OPTIONS] [ROOTS]...
 | Option | Effect |
 | --- | --- |
 | `--format <text\|json\|csv\|markdown>` | output format (default `text`) |
+| `--config <PATH>` | read this `.rustloc.toml` instead of searching |
+| `--no-config` | ignore any `.rustloc.toml` |
 | `--json` | alias for `--format json` |
 | `--by-file`, `--per-file` | per-file breakdown |
 | `--by-module` | per-module (top level component) breakdown |
@@ -187,6 +232,7 @@ usage error.
 > rust-loc --exclude-generated --by-file --sort code --top 20
 > rust-loc --cocomo --cocomo-project-type embedded --format markdown
 > rust-loc --fail-if "code>100000" --fail-if "unsafe>0" --ci
+> rust-loc --config ci/.rustloc.toml --format json
 ```
 
 ## Windows UI

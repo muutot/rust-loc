@@ -462,6 +462,172 @@ fn version_flag_prints_the_crate_version() {
     assert!(out.contains(env!("CARGO_PKG_VERSION")), "{}", out);
 }
 
+const REPO_CONFIG: &str = concat!(
+    "# team defaults\n",
+    "[scope]\n",
+    "exclude = [\"*/skip/*\"]\n",
+    "[report]\n",
+    "format = \"json\"\n",
+    "smells = true\n",
+    "[gate]\n",
+    "fail_if = [\"unwrap > 0\"]\n"
+);
+
+#[test]
+fn a_repo_config_supplies_the_defaults() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", SMELLY);
+    workspace.write("src/skip/me.rs", "fn a() {}\n");
+    workspace.write(".rustloc.toml", REPO_CONFIG);
+
+    let invocation = workspace.invocation(&[]);
+    assert_eq!(invocation.options.format, Format::Json);
+    assert!(invocation.options.smells);
+    assert_eq!(invocation.options.exclude, ["*/skip/*"]);
+    assert_eq!(invocation.options.fail_if.len(), 1);
+    assert!(invocation.options.config.is_some());
+
+    let document = json::parse(&workspace.run(&[]));
+    assert_eq!(
+        document
+            .get("summary")
+            .unwrap()
+            .get("files")
+            .unwrap()
+            .integer(),
+        1
+    );
+    assert!(document
+        .get("config")
+        .unwrap()
+        .text()
+        .ends_with(".rustloc.toml"));
+
+    let (out, status) = workspace.checked(&[]);
+    assert_eq!(status, 1, "{}", out);
+    assert!(out.contains("unwrap 1 > 0"), "{}", out);
+}
+
+#[test]
+fn the_command_line_still_wins_over_the_repo_config() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn a() {}\n");
+    workspace.write(
+        ".rustloc.toml",
+        "[scope]\nexclude = [\"*/generated/*\"]\n[report]\nformat = \"csv\"\ntop = 3\n",
+    );
+    let invocation = workspace.invocation(&[
+        "--format",
+        "markdown",
+        "--no-complexity",
+        "--top",
+        "9",
+        "--exclude",
+        "*/extra/*",
+    ]);
+    assert_eq!(invocation.options.format, Format::Markdown);
+    assert!(!invocation.options.complexity);
+    assert_eq!(invocation.options.top, 9);
+    assert_eq!(
+        invocation.options.exclude,
+        ["*/generated/*", "*/extra/*"],
+        "the config excludes come first, the command line adds to them"
+    );
+
+    let bare = workspace.invocation(&["--no-config"]);
+    assert!(bare.options.config.is_none());
+    assert_eq!(bare.options.format, Format::Text);
+    assert!(bare.options.exclude.is_empty());
+    assert_eq!(bare.options.top, 0);
+}
+
+#[test]
+fn config_roots_are_used_when_none_are_given() {
+    let workspace = Workspace::new();
+    workspace.write("alpha/a.rs", "fn a() {}\n");
+    workspace.write("beta/b.rs", "fn b() {}\n");
+    workspace.write(".rustloc.toml", "[scope]\nroots = [\"alpha\"]\n");
+
+    let args: Vec<String> = vec!["--no-gitignore".to_string()];
+    let invocation = cli::parse(&args, &workspace.path).unwrap();
+    assert_eq!(invocation.roots.len(), 1);
+    assert!(
+        invocation.roots[0].ends_with("alpha"),
+        "{:?}",
+        invocation.roots
+    );
+    let args: Vec<String> = vec![
+        "--no-gitignore".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+    let document = json::parse(&cli::run(&args, &workspace.path).unwrap());
+    assert_eq!(
+        document
+            .get("summary")
+            .unwrap()
+            .get("files")
+            .unwrap()
+            .integer(),
+        1
+    );
+}
+
+#[test]
+fn the_config_is_found_beside_the_scan_root() {
+    let workspace = Workspace::new();
+    workspace.write("proj/src/lib.rs", "fn a() {}\n");
+    workspace.write("proj/.rustloc.toml", "[report]\nformat = \"json\"\n");
+    let mut args: Vec<String> = vec![
+        workspace.path.join("proj").display().to_string(),
+        "--no-gitignore".to_string(),
+    ];
+    let document = json::parse(&cli::run(&args, &workspace.path).unwrap());
+    assert_eq!(
+        document
+            .get("summary")
+            .unwrap()
+            .get("files")
+            .unwrap()
+            .integer(),
+        1
+    );
+    assert!(document
+        .get("config")
+        .unwrap()
+        .text()
+        .ends_with(".rustloc.toml"));
+
+    args.push("--no-config".to_string());
+    assert!(cli::run(&args, &workspace.path)
+        .unwrap()
+        .starts_with("Rust business code"));
+}
+
+#[test]
+fn an_explicit_config_path_must_exist() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn a() {}\n");
+    let args: Vec<String> = vec![
+        workspace.path.display().to_string(),
+        "--config".to_string(),
+        "nope.toml".to_string(),
+    ];
+    let error = cli::parse(&args, &workspace.path).unwrap_err();
+    assert!(error.contains("config file not found"), "{}", error);
+}
+
+#[test]
+fn a_broken_config_stops_the_run_and_names_the_line() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn a() {}\n");
+    workspace.write(".rustloc.toml", "[scope]\nnope = 1\n");
+    let args: Vec<String> = vec![workspace.path.display().to_string()];
+    let error = cli::parse(&args, &workspace.path).unwrap_err();
+    assert!(error.contains(".rustloc.toml:2"), "{}", error);
+    assert!(error.contains("unknown key"), "{}", error);
+}
+
 #[test]
 fn help_flag_documents_every_switch() {
     let workspace = Workspace::new();

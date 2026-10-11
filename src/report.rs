@@ -358,6 +358,9 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         .map(|root| scan::relative(root, cwd))
         .collect();
     out.push("Roots: ".to_string() + &roots.join(", "));
+    if let Some(path) = &options.config {
+        out.push("Config: ".to_string() + &scan::relative(path, cwd));
+    }
     out.push(format!(
         "Scope: {}, {} ignored directory names",
         if options.gitignore {
@@ -808,6 +811,13 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str(&format!("  \"roots\": {},\n", json_array(&roots, 2)));
+    out.push_str(&format!(
+        "  \"config\": {},\n",
+        match &options.config {
+            Some(path) => json_string(&scan::relative(path, cwd)),
+            None => "null".to_string(),
+        }
+    ));
     out.push_str("  \"scope\": {\n");
     out.push_str(&format!("    \"gitignore\": {},\n", options.gitignore));
     out.push_str(&format!(

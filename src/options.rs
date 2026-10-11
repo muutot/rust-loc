@@ -1,6 +1,7 @@
 //! Scan options shared by every renderer.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use crate::cocomo;
 use crate::gate;
@@ -61,6 +62,8 @@ pub struct Options {
     /// Print gate failures as GitHub annotations.
     pub ci: bool,
     pub format: Format,
+    /// Repository config the run started from, when one was found.
+    pub config: Option<PathBuf>,
     /// 0 means "use every available core".
     pub jobs: usize,
 }
@@ -94,6 +97,7 @@ impl Default for Options {
             fail_if: Vec::new(),
             ci: false,
             format: Format::Text,
+            config: None,
             jobs: 0,
         }
     }

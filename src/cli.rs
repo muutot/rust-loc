@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::cocomo;
+use crate::config;
 use crate::gate;
 use crate::options::{Format, Options};
 use crate::{report, scan};
@@ -23,6 +24,8 @@ ARGS:
 
 OPTIONS:
     --root <PATH>            add a scan root (repeatable)
+    --config <PATH>          read this .rustloc.toml instead of the default
+    --no-config              ignore any .rustloc.toml
     --format <FORMAT>        output format: text, json, csv, markdown [default: text]
     --json                   alias for --format json
     --by-file, --per-file    per-file breakdown
@@ -95,16 +98,116 @@ fn resolve_roots(requested: &[String], cwd: &Path) -> Result<Vec<PathBuf>, Strin
     Ok(roots)
 }
 
+/// `--config` and `--no-config` are read before anything else, because the
+/// file they name supplies the defaults every other flag overrides.
+fn config_request(arguments: &[String]) -> Result<(Option<String>, bool), String> {
+    let mut path: Option<String> = None;
+    let mut disabled = false;
+    for (index, argument) in arguments.iter().enumerate() {
+        match argument.as_str() {
+            "--config" => {
+                path = Some(
+                    arguments
+                        .get(index + 1)
+                        .cloned()
+                        .ok_or_else(|| "--config needs a value".to_string())?,
+                );
+            }
+            "--no-config" => disabled = true,
+            other => {
+                if let Some(value) = other.strip_prefix("--config=") {
+                    path = Some(value.to_string());
+                }
+            }
+        }
+    }
+    Ok((path, disabled))
+}
+
+/// Flags that eat the argument after them, so the pre-pass can tell a scan
+/// root apart from a flag value.
+const VALUE_FLAGS: [&str; 13] = [
+    "--root",
+    "--config",
+    "--format",
+    "--sort",
+    "--top",
+    "--jobs",
+    "--exclude",
+    "--ignore-dir",
+    "--fail-if",
+    "--min-gen-line-length",
+    "--top-functions",
+    "--cocomo-params",
+    "--cocomo-project-type",
+];
+
+/// The first scan root on the command line, used to find the config before
+/// the real parse has run.
+fn first_positional(arguments: &[String]) -> Option<String> {
+    let mut index = 0usize;
+    while index < arguments.len() {
+        let argument = arguments[index].as_str();
+        if argument.starts_with('-') && argument != "-" {
+            if VALUE_FLAGS.contains(&argument) {
+                index += 1;
+            }
+        } else {
+            return Some(argument.to_string());
+        }
+        index += 1;
+    }
+    None
+}
+
+/// `--config`, else `cwd/.rustloc.toml`, else the first scan root, so
+/// `rust-loc ../some/project` picks up that project configuration.
+fn locate_config(
+    arguments: &[String],
+    config_path: Option<&str>,
+    no_config: bool,
+    cwd: &Path,
+) -> Result<Option<config::Config>, String> {
+    if no_config {
+        return Ok(None);
+    }
+    if let Some(loaded) = config::load(config_path.map(Path::new), cwd)? {
+        return Ok(Some(loaded));
+    }
+    if config_path.is_some() {
+        return Ok(None);
+    }
+    let Some(root) = first_positional(arguments) else {
+        return Ok(None);
+    };
+    let path = Path::new(&root);
+    let directory = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    config::load_from_dir(&directory)
+}
+
 /// Parse arguments (without the program name) against `cwd`.
 pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
+    let (config_path, no_config) = config_request(arguments)?;
+    let config = locate_config(arguments, config_path.as_deref(), no_config, cwd)?;
     let mut options = Options::default();
     let mut positionals: Vec<String> = Vec::new();
     let mut extra_roots: Vec<String> = Vec::new();
+    let mut config_roots: Vec<String> = Vec::new();
     let mut format_given = false;
-    let mut gitignore_given = false;
     let mut ignore_dirs_given: BTreeSet<String> = BTreeSet::new();
     let mut no_ignore_dirs = false;
     let mut json_alias = false;
+    if let Some(loaded) = &config {
+        loaded.apply(&mut options)?;
+        ignore_dirs_given.extend(loaded.ignore_dirs.iter().cloned());
+        no_ignore_dirs = loaded.default_ignores == Some(false);
+        config_roots = loaded.roots.clone();
+        options.config = Some(loaded.path.clone());
+    }
 
     let mut index = 0usize;
     while index < arguments.len() {
@@ -126,6 +229,11 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                 })
             }
             "--json" => json_alias = true,
+            "--config" => {
+                let _ = take(arguments, &mut index, "--config")?;
+            }
+            "--no-config" => {}
+            other if other.starts_with("--config=") => {}
             "--by-file" | "--per-file" => options.by_file = true,
             "--by-module" => options.by_module = true,
             "--show-excluded" => options.show_excluded = true,
@@ -178,14 +286,8 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                     .max(0) as usize;
                 options.functions = true;
             }
-            "--gitignore" => {
-                options.gitignore = true;
-                gitignore_given = true;
-            }
-            "--no-gitignore" => {
-                options.gitignore = false;
-                gitignore_given = true;
-            }
+            "--gitignore" => options.gitignore = true,
+            "--no-gitignore" => options.gitignore = false,
             "--no-ignore-dirs" => no_ignore_dirs = true,
             "--root" => extra_roots.push(take(arguments, &mut index, "--root")?),
             "--format" => {
@@ -284,9 +386,6 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
     if json_alias && !format_given {
         options.format = Format::Json;
     }
-    if !gitignore_given {
-        options.gitignore = true;
-    }
     options.ignore_dirs = if no_ignore_dirs {
         ignore_dirs_given
     } else {
@@ -295,10 +394,12 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
         dirs
     };
 
-    let mut requested = if positionals.is_empty() {
-        vec![".".to_string()]
-    } else {
+    let mut requested = if !positionals.is_empty() {
         positionals
+    } else if !config_roots.is_empty() {
+        config_roots
+    } else {
+        vec![".".to_string()]
     };
     requested.extend(extra_roots);
     let roots = resolve_roots(&requested, cwd)?;
@@ -311,7 +412,8 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
 }
 
 /// Parse, scan and render. The returned text is exactly what belongs on
-/// stdout, including the trailing newline Python's `print` would add.
+/// stdout, including the trailing newline Python's `print` would add; the
+/// gate diagnostics are dropped, so `--format json` stays parseable.
 pub fn run(arguments: &[String], cwd: &Path) -> Result<String, String> {
     run_checked(arguments, cwd).map(|(output, _diagnostics, _status)| output)
 }
@@ -504,5 +606,25 @@ mod tests {
         assert_eq!(custom.cocomo_params.a, 1.0);
         assert!(parse_in(&["--cocomo-project-type", "nope"]).is_err());
         assert!(parse_in(&["--cocomo-params", "1,2,3"]).is_err());
+    }
+
+    #[test]
+    fn the_first_positional_skips_flag_values() {
+        let args = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| item.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            first_positional(&args(&["--format", "json", "src"])),
+            Some("src".to_string())
+        );
+        assert_eq!(
+            first_positional(&args(&["src", "--format", "json"])),
+            Some("src".to_string())
+        );
+        assert_eq!(first_positional(&args(&["--no-gitignore"])), None);
+        assert_eq!(first_positional(&args(&[])), None);
     }
 }
