@@ -107,6 +107,10 @@ const SCOPE_PROPERTIES: &str = concat!(
     "\"duplicates\":{\"type\":\"boolean\",\"description\":\"Find blocks of copied lines.\"},",
     "\"hotspots\":{\"type\":\"boolean\",",
     "\"description\":\"Rank files by complexity times git churn.\"},",
+    "\"authors\":{\"type\":\"boolean\",",
+    "\"description\":\"Attribute every business line to its last author with git blame.\"},",
+    "\"by_file\":{\"type\":\"boolean\",",
+    "\"description\":\"Break the file listing down by path (with authors, per file).\"},",
     "\"cocomo\":{\"type\":\"boolean\",\"description\":\"Add a COCOMO cost estimate.\"}"
 );
 
@@ -278,7 +282,7 @@ fn history_tool(arguments: &Value, cwd: &Path) -> Result<String, String> {
 }
 
 /// The switches a tool argument can turn on, in the order they are printed.
-const SWITCHES: [(&str, &str); 11] = [
+const SWITCHES: [(&str, &str); 13] = [
     ("include_tests", "--include-tests"),
     ("exclude_generated", "--exclude-generated"),
     ("mark_generated", "--mark-generated"),
@@ -289,6 +293,8 @@ const SWITCHES: [(&str, &str); 11] = [
     ("languages", "--languages"),
     ("duplicates", "--duplicates"),
     ("hotspots", "--hotspots"),
+    ("authors", "--authors"),
+    ("by_file", "--by-file"),
     ("cocomo", "--cocomo"),
 ];
 

@@ -49,6 +49,7 @@ pub struct Config {
     pub functions: Option<bool>,
     pub top_functions: Option<usize>,
     pub smells: Option<bool>,
+    pub authors: Option<bool>,
     pub cocomo: Option<bool>,
     pub cocomo_project: Option<cocomo::ProjectType>,
     pub cocomo_params: Option<cocomo::Params>,
@@ -80,6 +81,7 @@ impl Config {
             uloc,
             functions,
             smells,
+            authors,
             cocomo,
             min_gen_line_length,
             top,
@@ -290,6 +292,7 @@ fn apply(
             config.functions = Some(true);
         }
         ("report", "smells") => config.smells = Some(boolean()?),
+        ("report", "authors") => config.authors = Some(boolean()?),
         ("report", "cocomo") => config.cocomo = Some(boolean()?),
         ("report", "cocomo_project") => {
             let name = string()?;
@@ -574,6 +577,7 @@ mod tests {
              smells = true\n\
              complexity = false\n\
              top_functions = 5\n\
+             authors = true\n\
              cocomo_project = \"embedded\"\n\
              jobs = 4\n\
              [gate]\n\
@@ -586,6 +590,7 @@ mod tests {
         assert_eq!(config.format, Some(Format::Markdown));
         assert_eq!(config.sort.as_deref(), Some("smells"));
         assert_eq!(config.top_functions, Some(5));
+        assert_eq!(config.authors, Some(true));
         assert_eq!(config.functions, Some(true));
         assert_eq!(config.cocomo, Some(true));
         assert_eq!(config.cocomo_params, Some(cocomo::EMBEDDED));
@@ -599,6 +604,7 @@ mod tests {
         assert!(options.uloc);
         assert!(options.smells);
         assert!(options.functions);
+        assert!(options.authors);
         assert_eq!(options.top_functions, 5);
         assert_eq!(options.top, 50);
         assert_eq!(options.jobs, 4);

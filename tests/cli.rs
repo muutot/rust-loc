@@ -1318,6 +1318,113 @@ fn hotspots_without_a_repository_print_an_empty_section() {
 }
 
 #[test]
+fn authors_stay_hidden_unless_asked_for() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let out = workspace.run(&[]);
+    assert!(!out.contains("Authors"), "{}", out);
+}
+
+#[test]
+fn authors_without_a_repository_say_so() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    if git_ok(&workspace.path, &["rev-parse", "--show-toplevel"]) {
+        return; // the temp tree happens to live inside a repository
+    }
+    let out = workspace.run(&["--authors"]);
+    assert!(out.contains("Authors"), "{}", out);
+    assert!(out.contains("not a git repository"), "{}", out);
+}
+
+/// Commit the tree as `name`, so blame has somebody to credit.
+fn commit_as(workspace: &Workspace, name: &str, email: &str, message: &str) -> bool {
+    git_ok(&workspace.path, &["add", "-A"]);
+    let mail = format!("user.email={}", email);
+    let who = format!("user.name={}", name);
+    git_ok(
+        &workspace.path,
+        &["-c", &mail, "-c", &who, "commit", "-q", "-m", message],
+    )
+}
+
+#[test]
+fn authors_split_the_business_lines_of_a_repository() {
+    let workspace = Workspace::new();
+    workspace.write("src/first.rs", "fn a() {}\n// one\n\nfn b() {}\n");
+    if !git_ok(&workspace.path, &["init", "-q"]) {
+        return; // git is not installed; nothing to assert
+    }
+    assert!(commit_as(&workspace, "Ada", "ada@example.com", "first"));
+    workspace.write("src/second.rs", "fn c() {}\n");
+    assert!(commit_as(&workspace, "Bob", "bob@example.com", "second"));
+
+    let document = workspace.document(&["--authors"]);
+    assert!(document.get("authors_available").unwrap().flag());
+    assert_eq!(document.get("authors_untracked").unwrap().integer(), 0);
+    let rows = document.get("authors").unwrap().items();
+    let find = |name: &str| {
+        rows.iter()
+            .find(|row| row.get("name").unwrap().text() == name)
+            .unwrap_or_else(|| panic!("no author {}", name))
+            .clone()
+    };
+    let ada = find("Ada");
+    assert_eq!(ada.get("code").unwrap().integer(), 2);
+    assert_eq!(ada.get("comment").unwrap().integer(), 1);
+    assert_eq!(ada.get("blank").unwrap().integer(), 1);
+    assert_eq!(ada.get("lines").unwrap().integer(), 4);
+    assert_eq!(ada.get("files").unwrap().integer(), 1);
+    let bob = find("Bob");
+    assert_eq!(bob.get("code").unwrap().integer(), 1);
+    assert_eq!(bob.get("lines").unwrap().integer(), 1);
+    // Every business line is credited to somebody, so the halves add up.
+    let blamed = ada.get("lines").unwrap().integer() + bob.get("lines").unwrap().integer();
+    assert_eq!(
+        blamed,
+        document
+            .get("summary")
+            .unwrap()
+            .get("lines")
+            .unwrap()
+            .integer()
+    );
+}
+
+#[test]
+fn a_file_lists_every_author_that_touched_it() {
+    let workspace = Workspace::new();
+    workspace.write("src/shared.rs", "fn a() {}\n");
+    if !git_ok(&workspace.path, &["init", "-q"]) {
+        return;
+    }
+    assert!(commit_as(&workspace, "Ada", "ada@example.com", "first"));
+    workspace.write("src/shared.rs", "fn a() {}\nfn b() {}\n");
+    assert!(commit_as(&workspace, "Bob", "bob@example.com", "second"));
+
+    let document = workspace.document(&["--authors", "--by-file"]);
+    let files = document.get("file_authors").unwrap().items();
+    let entry = files
+        .iter()
+        .find(|file| file.get("path").unwrap().text() == "src/shared.rs")
+        .expect("shared.rs is missing from the per-file report")
+        .clone();
+    let names: Vec<String> = entry
+        .get("authors")
+        .unwrap()
+        .items()
+        .iter()
+        .map(|share| share.get("name").unwrap().text().to_string())
+        .collect();
+    assert_eq!(names.len(), 2, "{:?}", names);
+    assert!(names.iter().any(|n| n == "Ada"), "{:?}", names);
+    assert!(names.iter().any(|n| n == "Bob"), "{:?}", names);
+    let text = workspace.run(&["--authors", "--by-file"]);
+    assert!(text.contains("Per-file authors"), "{}", text);
+    assert!(text.contains("src/shared.rs"), "{}", text);
+}
+
+#[test]
 fn hotspots_rank_files_by_complexity_and_churn() {
     let workspace = Workspace::new();
     workspace.write("src/busy.rs", &"fn busy() {}\n".repeat(40));

@@ -14,10 +14,11 @@ use crate::scan;
 use crate::gui::i18n::{self, fill};
 use crate::gui::theme;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum View {
     Files,
     Modules,
+    Authors,
     Functions,
     Smells,
     Excluded,
@@ -29,6 +30,7 @@ impl View {
         match self {
             View::Files => t.label_file,
             View::Modules => t.label_module,
+            View::Authors => t.label_file,
             View::Functions => t.label_function,
             View::Smells => t.label_file,
             View::Excluded => t.label_test_only_file,
@@ -41,6 +43,7 @@ impl View {
         match self {
             View::Files => t.tab_files,
             View::Modules => t.tab_modules,
+            View::Authors => t.tab_authors,
             View::Functions => t.tab_functions,
             View::Smells => t.tab_smells,
             View::Excluded => t.tab_excluded,
@@ -53,30 +56,29 @@ impl View {
         match self {
             View::Files => t.table_per_file,
             View::Modules => t.table_per_module,
+            View::Authors => t.table_authors,
             View::Functions => t.table_functions,
             View::Smells => t.table_smells,
             View::Excluded => t.table_excluded,
         }
     }
 
+    /// Every tab, in the order the segmented strip shows them.
+    pub const ALL: [View; 6] = [
+        View::Files,
+        View::Modules,
+        View::Authors,
+        View::Functions,
+        View::Smells,
+        View::Excluded,
+    ];
+
     pub fn from_index(index: usize) -> View {
-        match index {
-            1 => View::Modules,
-            2 => View::Functions,
-            3 => View::Smells,
-            4 => View::Excluded,
-            _ => View::Files,
-        }
+        *View::ALL.get(index).unwrap_or(&View::Files)
     }
 
     pub fn index(self) -> usize {
-        match self {
-            View::Files => 0,
-            View::Modules => 1,
-            View::Functions => 2,
-            View::Smells => 3,
-            View::Excluded => 4,
-        }
+        View::ALL.iter().position(|view| *view == self).unwrap_or(0)
     }
 }
 
@@ -108,6 +110,7 @@ pub fn column_title(key: &str) -> &'static str {
         "unimplemented" => t.col_unimplemented,
         "allow" => t.col_allow,
         "smells" => t.col_smells,
+        "author" => t.col_author,
         "delta" => t.col_delta,
         _ => "",
     }
@@ -164,6 +167,28 @@ pub fn view_columns(view: View, options: &Options, has_delta: bool) -> Vec<Colum
             key: "lines",
             width: 90,
         }],
+        View::Authors => vec![
+            Column {
+                key: "author",
+                width: 176,
+            },
+            Column {
+                key: "lines",
+                width: 74,
+            },
+            Column {
+                key: "code",
+                width: 74,
+            },
+            Column {
+                key: "comment",
+                width: 78,
+            },
+            Column {
+                key: "blank",
+                width: 70,
+            },
+        ],
         View::Functions => vec![
             Column {
                 key: "location",
@@ -227,16 +252,17 @@ pub fn view_columns(view: View, options: &Options, has_delta: bool) -> Vec<Colum
     columns
 }
 
-/// Columns that carry text instead of a counter. Only the functions tab has
-/// one: the file and line a function was found at.
+/// Columns that carry text instead of a counter: the file and line a
+/// function was found at, and the author name the blame credited a line to.
 pub fn is_text_column(key: &str) -> bool {
-    key == "location"
+    key == "location" || key == "author"
 }
 
 /// Column a tab sorts on until the user clicks a header: worst first for the
 /// function list, most code first for the file and module lists.
 pub fn default_sort(view: View) -> (i32, bool) {
     match view {
+        View::Authors => (-1, false),
         View::Functions => (2, true),
         View::Smells => (6, true),
         View::Excluded => (0, true),
@@ -397,6 +423,30 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                 });
             }
         }
+        View::Authors => {
+            if let Some(authors) = &report.authors {
+                for file in &authors.files {
+                    let label = display_path(&file.path, cwd);
+                    for share in &file.authors {
+                        if share.lines.business() == 0 {
+                            continue;
+                        }
+                        rows.push(Row {
+                            label: label.clone(),
+                            cells: vec![
+                                Cell::Text(share.name.clone()),
+                                Cell::Number(share.lines.business()),
+                                Cell::Number(share.lines.code),
+                                Cell::Number(share.lines.comment),
+                                Cell::Number(share.lines.blank),
+                            ],
+                            target: Some(file.path.display().to_string()),
+                            delta: None,
+                        });
+                    }
+                }
+            }
+        }
         View::Functions => {
             for function in &report.functions {
                 rows.push(Row {
@@ -553,6 +603,28 @@ pub fn table_hint(
             &[
                 ("total", human_int(report.function_count as u64)),
                 ("shown", human_int(report.functions.len() as u64)),
+            ],
+        )
+    } else if view == View::Authors {
+        let files = report
+            .authors
+            .as_ref()
+            .map(|data| data.files.len())
+            .unwrap_or(0);
+        let authors = report
+            .authors
+            .as_ref()
+            .map(|data| data.rows.len())
+            .unwrap_or(0);
+        if files == 0 {
+            return t.hint_no_authors.to_string();
+        }
+        fill(
+            t.hint_authors,
+            &[
+                ("authors", human_int(authors as u64)),
+                ("files", human_int(files as u64)),
+                ("shown", human_int(shown as u64)),
             ],
         )
     } else if view == View::Smells {
@@ -953,6 +1025,9 @@ pub fn cli_command(report: &Report, cwd: &Path) -> String {
     if options.smells {
         parts.push("--smells".to_string());
     }
+    if options.authors {
+        parts.push("--authors".to_string());
+    }
     if options.cocomo {
         parts.push("--cocomo".to_string());
         if options.cocomo_project != crate::cocomo::ProjectType::Organic {
@@ -1047,6 +1122,7 @@ pub struct Settings {
     pub uloc: bool,
     pub exclude_generated: bool,
     pub cocomo: bool,
+    pub authors: bool,
     pub exclude: String,
     pub extra_dirs: String,
     pub view: usize,
@@ -1071,6 +1147,7 @@ impl Default for Settings {
             uloc: false,
             exclude_generated: false,
             cocomo: false,
+            authors: false,
             exclude: String::new(),
             extra_dirs: String::new(),
             view: 0,
@@ -1147,6 +1224,7 @@ pub fn load_settings() -> Settings {
             "uloc" => settings.uloc = flag,
             "exclude_generated" => settings.exclude_generated = flag,
             "cocomo" => settings.cocomo = flag,
+            "authors" => settings.authors = flag,
             "exclude" => settings.exclude = value.trim().to_string(),
             "extra_dirs" => settings.extra_dirs = value.trim().to_string(),
             "view" => settings.view = value.trim().parse().unwrap_or(0),
@@ -1193,6 +1271,7 @@ pub fn save_settings(settings: &Settings) {
         flag(settings.exclude_generated)
     ));
     text.push_str(&format!("cocomo={}\n", flag(settings.cocomo)));
+    text.push_str(&format!("authors={}\n", flag(settings.authors)));
     text.push_str(&format!("exclude={}\n", settings.exclude));
     text.push_str(&format!("extra_dirs={}\n", settings.extra_dirs));
     text.push_str(&format!("view={}\n", settings.view));
@@ -1411,15 +1490,104 @@ mod tests {
         assert_eq!(default_sort(View::Smells), (6, true));
         assert_eq!(default_sort(View::Files), (3, true));
         assert_eq!(default_sort(View::Modules), (3, true));
+        // The authors tab reads by file, not by counter.
+        assert_eq!(default_sort(View::Authors), (-1, false));
     }
 
     #[test]
     fn view_indices_round_trip_with_the_tab_strip() {
-        for index in 0..5 {
-            assert_eq!(View::from_index(index).index(), index);
+        for (index, view) in View::ALL.iter().enumerate() {
+            assert_eq!(View::from_index(index), *view);
+            assert_eq!(view.index(), index);
         }
-        assert!(View::from_index(3) == View::Smells);
+        assert_eq!(View::from_index(View::ALL.len()), View::Files);
+        assert!(View::from_index(4) == View::Smells);
         assert_eq!(View::Smells.tab_title(), i18n::t().tab_smells);
+        assert_eq!(View::Authors.tab_title(), i18n::t().tab_authors);
+    }
+
+    #[test]
+    fn the_authors_tab_lists_every_author_of_every_file() {
+        i18n::set_lang(i18n::Lang::En);
+        let scratch = Scratch::new("authors");
+        scratch.write("src/lib.rs", SOURCE);
+        let options = Options::default();
+        let mut report = scratch.scan(&options);
+        let path = scratch.path.join("src/lib.rs");
+        let ada = crate::authors::Lines {
+            blank: 2,
+            comment: 1,
+            doc: 0,
+            code: 5,
+            test: 0,
+        };
+        let bob = crate::authors::Lines {
+            blank: 0,
+            comment: 0,
+            doc: 0,
+            code: 3,
+            test: 4,
+        };
+        report.authors = Some(crate::authors::Authors {
+            available: true,
+            untracked: 0,
+            files: vec![crate::authors::FileShare {
+                path: path.clone(),
+                authors: vec![
+                    crate::authors::Share {
+                        name: "Ada".to_string(),
+                        email: "ada@example.com".to_string(),
+                        lines: ada,
+                    },
+                    crate::authors::Share {
+                        name: "Bob".to_string(),
+                        email: "bob@example.com".to_string(),
+                        lines: bob,
+                    },
+                ],
+            }],
+            rows: vec![
+                crate::authors::AuthorRow {
+                    name: "Ada".to_string(),
+                    email: "ada@example.com".to_string(),
+                    files: 1,
+                    lines: ada,
+                },
+                crate::authors::AuthorRow {
+                    name: "Bob".to_string(),
+                    email: "bob@example.com".to_string(),
+                    files: 1,
+                    lines: bob,
+                },
+            ],
+        });
+        let columns = view_columns(View::Authors, &options, false);
+        assert_eq!(
+            columns.iter().map(|column| column.key).collect::<Vec<_>>(),
+            ["author", "lines", "code", "comment", "blank"]
+        );
+        assert!(is_text_column("author"));
+        let rows = build_rows(&report, View::Authors, &columns, &scratch.path);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].label, "src/lib.rs");
+        assert_eq!(rows[0].cells[0].text(), "Ada");
+        assert_eq!(rows[0].cells[1].number(), 8);
+        assert_eq!(rows[0].cells[2].number(), 5);
+        assert_eq!(rows[0].cells[3].number(), 1);
+        assert_eq!(rows[0].cells[4].number(), 2);
+        assert_eq!(rows[1].cells[1].number(), 3);
+        let hint = table_hint(View::Authors, Some(&report), 2, 2, -1, false);
+        assert!(hint.contains("2 author(s) across 1 blamed files"), "{hint}");
+        assert!(hint.contains("sorted by File ▲"), "{hint}");
+
+        // Without author data the tab says so instead of drawing nothing.
+        report.authors = None;
+        let rows = build_rows(&report, View::Authors, &columns, &scratch.path);
+        assert!(rows.is_empty());
+        assert_eq!(
+            table_hint(View::Authors, Some(&report), 0, 0, -1, false),
+            i18n::t().hint_no_authors
+        );
     }
 
     #[test]

@@ -436,3 +436,49 @@ fn the_binary_speaks_the_protocol_on_stdio() {
         Some(2.0)
     );
 }
+
+#[test]
+fn scan_reaches_the_author_blame_when_the_tool_asks_for_it() {
+    let workspace = Workspace::new();
+    let plain = payload(&workspace.call("scan", "{}"));
+    assert!(plain.get("authors_available").is_none());
+
+    let answer = workspace.call("scan", "{\"authors\":true,\"by_file\":true}");
+    assert!(!failed(&answer));
+    let document = payload(&answer);
+    // The scratch tree is not a repository, so the section says so; the point
+    // is that the switch reached the parser and the report kept its shape.
+    assert_eq!(field(&document, "authors_available").boolean(), Some(false));
+    assert_eq!(field(&document, "authors_untracked").number(), Some(0.0));
+    assert!(field(&document, "authors").items().is_empty());
+
+    let text = workspace.call("scan", "{\"authors\":true,\"format\":\"text\"}");
+    assert!(text_of(&text).contains("Authors"), "{}", text_of(&text));
+}
+
+#[test]
+fn scan_reads_python_when_asked() {
+    let workspace = Workspace::new();
+    let rust_only = payload(&workspace.call("scan", "{}"));
+    assert_eq!(
+        field(field(&rust_only, "summary"), "files").number(),
+        Some(2.0)
+    );
+
+    let answer = workspace.call("scan", "{\"sources\":\"python\"}");
+    assert!(!failed(&answer));
+    let document = payload(&answer);
+    assert_eq!(
+        field(field(&document, "scope"), "sources").text(),
+        Some("python")
+    );
+    let summary = field(&document, "summary");
+    assert_eq!(field(summary, "files").number(), Some(1.0));
+    assert!(field(summary, "code").number().unwrap() > 0.0);
+    let listed = names(&document, "files", "path");
+    assert!(listed.iter().any(|path| path.ends_with("app.py")));
+    assert!(!listed.iter().any(|path| path.ends_with(".rs")));
+
+    let text = workspace.call("scan", "{\"sources\":\"python\",\"format\":\"text\"}");
+    assert!(text_of(&text).contains("Python"));
+}

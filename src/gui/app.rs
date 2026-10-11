@@ -37,6 +37,7 @@ pub const ID_LANG: i32 = 1022;
 pub const ID_EXCLUDE_GENERATED: i32 = 1023;
 pub const ID_COCOMO: i32 = 1024;
 pub const ID_SOURCES: i32 = 1025;
+pub const ID_AUTHORS: i32 = 1026;
 
 /// Commands reachable from the keyboard, dispatched through an accelerator table.
 pub const ID_ACCEL_SCAN: i32 = 1100;
@@ -82,7 +83,7 @@ pub const CARD_COLUMNS: i32 = 5;
 /// Function rows the GUI keeps; the table filters and sorts them in place.
 pub const GUI_TOP_FUNCTIONS: usize = 200;
 /// The owner drawn check boxes, in the order the sidebar lays them out.
-pub const CHECK_BOXES: [i32; 7] = [
+pub const CHECK_BOXES: [i32; 8] = [
     ID_GITIGNORE,
     ID_DEFAULT_IGNORES,
     ID_TESTS,
@@ -90,6 +91,7 @@ pub const CHECK_BOXES: [i32; 7] = [
     ID_ULOC,
     ID_EXCLUDE_GENERATED,
     ID_COCOMO,
+    ID_AUTHORS,
 ];
 
 /// The slot an owner drawn check box fills in the state check table.
@@ -155,7 +157,7 @@ pub struct AppState {
     pub spark_rect: RECT,
     pub table_title_rect: RECT,
     pub table_hint_rect: RECT,
-    pub tab_rects: [RECT; 5],
+    pub tab_rects: [RECT; 6],
     /// Every framed input, in the order the sidebar lays them out.
     pub fields: Vec<Field>,
     /// The control the pointer rests on; owner drawn buttons read it to
@@ -187,6 +189,7 @@ impl AppState {
             smells: true,
             exclude_generated: settings.exclude_generated,
             cocomo: settings.cocomo,
+            authors: settings.authors,
             exclude: model::parse_list(&settings.exclude),
             ignore_dirs: configured_ignore_dirs(&settings),
             gitignore: settings.gitignore,
@@ -253,7 +256,7 @@ impl AppState {
             spark_rect: RECT::default(),
             table_title_rect: RECT::default(),
             table_hint_rect: RECT::default(),
-            tab_rects: [RECT::default(); 5],
+            tab_rects: [RECT::default(); 6],
             fields: Vec::new(),
             hot: 0,
             checks: [false; CHECK_BOXES.len()],
@@ -319,6 +322,7 @@ impl AppState {
         self.options.uloc = self.check(ID_ULOC);
         self.options.exclude_generated = self.check(ID_EXCLUDE_GENERATED);
         self.options.cocomo = self.check(ID_COCOMO);
+        self.options.authors = self.check(ID_AUTHORS);
         self.options.gitignore = self.check(ID_GITIGNORE);
         self.options.sources = model::sources_at(window::combo_index(self.control(ID_SOURCES)));
         let defaults = self.check(ID_DEFAULT_IGNORES);
@@ -421,6 +425,7 @@ impl AppState {
         self.settings.uloc = self.options.uloc;
         self.settings.exclude_generated = self.options.exclude_generated;
         self.settings.cocomo = self.options.cocomo;
+        self.settings.authors = self.options.authors;
         self.settings.exclude = window::get_text(self.control(ID_EXCLUDE));
         self.settings.extra_dirs = window::get_text(self.control(ID_EXTRA_DIRS));
         self.settings.view = self.view.index();

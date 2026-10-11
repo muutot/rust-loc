@@ -118,6 +118,8 @@ pub struct Report {
     pub languages: Vec<LanguageRow>,
     /// Blocks of copied lines, when `--duplicates` asked for them.
     pub duplicates: Option<clones::Dupes>,
+    /// Author attribution from `git blame`, when `--authors` asked for it.
+    pub authors: Option<crate::authors::Authors>,
 }
 
 impl Report {
@@ -313,6 +315,16 @@ pub fn scan(
         None
     };
 
+    let authors = if options.authors {
+        Some(crate::authors::Authors::collect(
+            &business_refs,
+            options,
+            cwd,
+        ))
+    } else {
+        None
+    };
+
     // Ranked before the entries move into the report, because the ranking
     // borrows them through `business_refs`.
     let hotspots = if options.hotspots {
@@ -340,6 +352,7 @@ pub fn scan(
         metrics: metrics_row,
         languages,
         duplicates,
+        authors,
     };
     report.diff = options
         .baseline
@@ -920,6 +933,10 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push(String::new());
         render_clones_text(report, &mut out);
     }
+    if options.authors {
+        out.push(String::new());
+        render_authors_text(report, options, cwd, &mut out);
+    }
     out.join("\n")
 }
 
@@ -976,6 +993,108 @@ fn render_metrics_text(row: &MetricsRow, out: &mut Vec<String>) {
                 format!("{} / {}", group(row.methods as u32), group(row.arguments))
             ),
     );
+}
+
+/// Who wrote the business lines, biggest share first.
+fn render_authors_text(report: &Report, options: &Options, cwd: &Path, out: &mut Vec<String>) {
+    let Some(authors) = &report.authors else {
+        return;
+    };
+    out.push("Authors".to_string());
+    if !authors.available {
+        out.push("  not a git repository, so nothing can be blamed".to_string());
+        return;
+    }
+    let shown = authors.shown(options.top);
+    let total: u32 = authors.rows.iter().map(|row| row.lines.code).sum();
+    out.push(format!(
+        "  {} author(s), {} code lines across {} blamed file(s)",
+        group(authors.rows.len() as u32),
+        group(total),
+        group(authors.files.len() as u32)
+    ));
+    if authors.untracked > 0 {
+        out.push(format!(
+            "  {} file(s) are not in git, so their lines are not counted",
+            group(authors.untracked as u32)
+        ));
+    }
+    if shown.is_empty() {
+        return;
+    }
+    out.push(String::new());
+    let names: Vec<String> = shown.iter().map(|row| row.name.clone()).collect();
+    let width = column_width(&names, "Author", 12, 30);
+    let mut head = pad("Author", width);
+    head.push_str(&format!(
+        "{:>8}{:>11}{:>12}{:>10}{:>9}{:>8}",
+        "Files", "Lines", "Code", "Comment", "Blank", "Share"
+    ));
+    out.push(head);
+    out.push("-".repeat(width + 58));
+    for row in shown {
+        let mut line = pad(&clip(&row.name, width), width);
+        line.push_str(&format!(
+            "{:>8}{:>11}{:>12}{:>10}{:>9}{:>8}",
+            group(row.files as u32),
+            group(row.lines.business()),
+            group(row.lines.code),
+            group(row.lines.comment),
+            group(row.lines.blank),
+            share(row.lines.code as usize, total as usize)
+        ));
+        out.push(line);
+    }
+    if shown.len() < authors.rows.len() {
+        out.push(format!(
+            "  showing {} of {} author(s), use --top to show more",
+            group(shown.len() as u32),
+            group(authors.rows.len() as u32)
+        ));
+    }
+    if !options.by_file {
+        return;
+    }
+    let mut ordered = scan::sort_entries(report.business_entries(), &options.sort);
+    if options.top > 0 {
+        ordered.truncate(options.top);
+    }
+    let detailed: Vec<&Entry> = ordered
+        .into_iter()
+        .filter(|entry| {
+            authors
+                .file(entry.path())
+                .is_some_and(|file| !file.authors.is_empty())
+        })
+        .collect();
+    if detailed.is_empty() {
+        return;
+    }
+    out.push(String::new());
+    out.push("Per-file authors".to_string());
+    let mut head = pad("  File / author", width + 2);
+    head.push_str(&format!(
+        "{:>11}{:>12}{:>10}{:>9}",
+        "Lines", "Code", "Comment", "Blank"
+    ));
+    out.push(head);
+    for entry in detailed {
+        let Some(file) = authors.file(entry.path()) else {
+            continue;
+        };
+        out.push("  ".to_string() + &scan::relative(entry.path(), cwd));
+        for item in &file.authors {
+            let mut line = pad(&format!("    {}", clip(&item.name, width)), width + 2);
+            line.push_str(&format!(
+                "{:>11}{:>12}{:>10}{:>9}",
+                group(item.lines.business()),
+                group(item.lines.code),
+                group(item.lines.comment),
+                group(item.lines.blank)
+            ));
+            out.push(line);
+        }
+    }
 }
 
 /// Every language in the tree, biggest by code first.
@@ -1354,6 +1473,65 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
             ));
         }
         out.push(String::new());
+    }
+    if let Some(authors) = &report.authors {
+        out.push("### Authors".to_string());
+        out.push(String::new());
+        if !authors.available {
+            out.push("Not a git repository, so nothing can be blamed.".to_string());
+            out.push(String::new());
+        } else {
+            let total: u32 = authors.rows.iter().map(|row| row.lines.code).sum();
+            out.push(format!(
+                "{} author(s), {} code lines across {} blamed file(s)",
+                group(authors.rows.len() as u32),
+                group(total),
+                group(authors.files.len() as u32)
+            ));
+            out.push(String::new());
+            out.push("| Author | Files | Lines | Code | Comment | Blank | Share |".to_string());
+            out.push("| --- | ---: | ---: | ---: | ---: | ---: | ---: |".to_string());
+            for row in authors.shown(options.top) {
+                out.push(format!(
+                    "| {} | {} | {} | {} | {} | {} | {} |",
+                    row.name,
+                    group(row.files as u32),
+                    group(row.lines.business()),
+                    group(row.lines.code),
+                    group(row.lines.comment),
+                    group(row.lines.blank),
+                    share(row.lines.code as usize, total as usize)
+                ));
+            }
+            out.push(String::new());
+            if options.by_file {
+                let mut ordered = scan::sort_entries(report.business_entries(), &options.sort);
+                if options.top > 0 {
+                    ordered.truncate(options.top);
+                }
+                for entry in ordered {
+                    let Some(file) = authors.file(entry.path()) else {
+                        continue;
+                    };
+                    if file.authors.is_empty() {
+                        continue;
+                    }
+                    out.push(format!("`{}`", scan::relative(entry.path(), cwd)));
+                    out.push(String::new());
+                    for item in &file.authors {
+                        out.push(format!(
+                            "- {}: {} lines ({} code, {} comment, {} blank)",
+                            item.name,
+                            group(item.lines.business()),
+                            group(item.lines.code),
+                            group(item.lines.comment),
+                            group(item.lines.blank)
+                        ));
+                    }
+                    out.push(String::new());
+                }
+            }
+        }
     }
     if options.functions {
         out.push("### Worst functions by complexity".to_string());
@@ -1908,6 +2086,59 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         let total: u32 = report.languages.iter().map(|row| row.code).sum();
         out.push_str(&format!("  \"language_code\": {},\n", total));
         out.push_str(&format!("  \"languages\": {},\n", json_array(&items, 2)));
+    }
+    if let Some(authors) = &report.authors {
+        let mut items: Vec<String> = Vec::with_capacity(authors.rows.len());
+        for row in &authors.rows {
+            items.push(format!(
+                "{{\"name\": {}, \"email\": {}, \"files\": {}, \"lines\": {}, \"blank\": {}, \"comment\": {}, \"doc\": {}, \"code\": {}, \"test\": {}}}",
+                json_string(&row.name),
+                json_string(&row.email),
+                row.files,
+                row.lines.business(),
+                row.lines.blank,
+                row.lines.comment,
+                row.lines.doc,
+                row.lines.code,
+                row.lines.test
+            ));
+        }
+        out.push_str(&format!(
+            "  \"authors_available\": {},\n",
+            authors.available
+        ));
+        out.push_str(&format!(
+            "  \"authors_untracked\": {},\n",
+            authors.untracked
+        ));
+        out.push_str(&format!("  \"authors\": {},\n", json_array(&items, 2)));
+        if options.by_file {
+            let mut files: Vec<String> = Vec::with_capacity(authors.files.len());
+            for file in &authors.files {
+                let shares: Vec<String> = file
+                    .authors
+                    .iter()
+                    .map(|item| {
+                        format!(
+                            "{{\"name\": {}, \"email\": {}, \"lines\": {}, \"blank\": {}, \"comment\": {}, \"code\": {}, \"test\": {}}}",
+                            json_string(&item.name),
+                            json_string(&item.email),
+                            item.lines.business(),
+                            item.lines.blank,
+                            item.lines.comment,
+                            item.lines.code,
+                            item.lines.test
+                        )
+                    })
+                    .collect();
+                files.push(format!(
+                    "{{\"path\": {}, \"authors\": {}}}",
+                    json_string(&scan::relative(&file.path, cwd)),
+                    json_array(&shares, 4)
+                ));
+            }
+            out.push_str(&format!("  \"file_authors\": {},\n", json_array(&files, 2)));
+        }
     }
     if let Some(dupes) = &report.duplicates {
         let mut items: Vec<String> = Vec::with_capacity(dupes.clusters.len());

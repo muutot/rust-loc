@@ -74,6 +74,8 @@ pub struct Options {
     pub languages: bool,
     /// Look for blocks of lines that were copied from somewhere else.
     pub duplicates: bool,
+    /// Blame every business file and split its lines across the authors.
+    pub authors: bool,
     /// Lines in a block before it counts as a copy.
     pub dup_lines: usize,
     /// `--fail-if` rules; any violation exits with code 1.
@@ -128,6 +130,7 @@ impl Default for Options {
             metrics: false,
             languages: false,
             duplicates: false,
+            authors: false,
             dup_lines: crate::clones::DEFAULT_WINDOW,
             fail_if: Vec::new(),
             ci: false,

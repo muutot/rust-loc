@@ -716,7 +716,7 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             paint::Ink::Section,
         ));
         y += metrics.section;
-        for id in [app::ID_EXCLUDE_GENERATED, app::ID_COCOMO] {
+        for id in [app::ID_EXCLUDE_GENERATED, app::ID_COCOMO, app::ID_AUTHORS] {
             unsafe { MoveWindow(state.control(id), left, y, inner, metrics.check, 1) };
             y += metrics.check;
         }
@@ -849,18 +849,12 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             paint::Ink::CaptionEnd,
         ));
 
-        let mut tab_rects = [RECT::default(); 5];
+        let mut tab_rects = [RECT::default(); model::View::ALL.len()];
         let mut tab_x = table.left + px(14);
         let tabs_top = field_top + metrics.control + px(8);
-        for (index, (_view, tab_width)) in [
-            (model::View::Files, px(64)),
-            (model::View::Modules, px(86)),
-            (model::View::Functions, px(94)),
-            (model::View::Smells, px(76)),
-            (model::View::Excluded, px(120)),
-        ]
-        .iter()
-        .enumerate()
+        for (index, tab_width) in [px(64), px(86), px(96), px(94), px(76), px(120)]
+            .iter()
+            .enumerate()
         {
             tab_rects[index] = rect(tab_x, tabs_top, tab_x + tab_width, tabs_top + metrics.tab);
             tab_x += tab_width;
@@ -1082,6 +1076,7 @@ pub fn set_busy(state: &app::AppState, busy: bool) {
         app::ID_ULOC,
         app::ID_EXCLUDE_GENERATED,
         app::ID_COCOMO,
+        app::ID_AUTHORS,
         app::ID_EXCLUDE,
         app::ID_EXTRA_DIRS,
         app::ID_SCAN,
@@ -1465,6 +1460,18 @@ fn create_controls(parent: HWND) -> (Vec<(i32, HWND)>, Vec<app::Field>) {
         ),
     );
     add(
+        app::ID_AUTHORS,
+        create_child(
+            parent,
+            "BUTTON",
+            i18n::t().opt_authors,
+            check,
+            0,
+            app::ID_AUTHORS,
+            22,
+        ),
+    );
+    add(
         app::ID_EXCLUDE,
         create_field(parent, "EDIT", edit, app::ID_EXCLUDE, 24, &mut fields),
     );
@@ -1667,7 +1674,7 @@ fn paste_roots(hwnd: HWND) {
 /// Step through the five report tabs from the keyboard.
 fn cycle_view(hwnd: HWND) {
     with_state(|state| {
-        let next = model::View::from_index((state.view.index() + 1) % 5);
+        let next = model::View::from_index((state.view.index() + 1) % model::View::ALL.len());
         set_view(state, next);
     });
     invalidate(hwnd);
@@ -1922,6 +1929,7 @@ fn apply_language(hwnd: HWND) {
             i18n::t().opt_exclude_generated,
         );
         set_text(state.control(app::ID_COCOMO), i18n::t().opt_cocomo);
+        set_text(state.control(app::ID_AUTHORS), i18n::t().opt_authors);
         set_text(state.control(app::ID_SCAN), i18n::t().button_scan);
         set_text(state.control(app::ID_EXPORT), i18n::t().button_export);
         set_cue(state.control(app::ID_FILTER), i18n::t().filter_cue);
@@ -1974,6 +1982,7 @@ fn on_create(hwnd: HWND) {
         state.set_check(app::ID_ULOC, settings.uloc);
         state.set_check(app::ID_EXCLUDE_GENERATED, settings.exclude_generated);
         state.set_check(app::ID_COCOMO, settings.cocomo);
+        state.set_check(app::ID_AUTHORS, settings.authors);
         state.sync_options();
         set_text(state.control(app::ID_EXCLUDE), &settings.exclude);
         set_text(state.control(app::ID_EXTRA_DIRS), &settings.extra_dirs);
@@ -2252,7 +2261,8 @@ unsafe extern "system" fn main_proc(
                 | app::ID_COMPLEXITY
                 | app::ID_ULOC
                 | app::ID_EXCLUDE_GENERATED
-                | app::ID_COCOMO => {
+                | app::ID_COCOMO
+                | app::ID_AUTHORS => {
                     if code == BN_CLICKED {
                         with_state(|state| {
                             // An owner drawn box has no automatic toggle, so
@@ -2364,6 +2374,7 @@ unsafe extern "system" fn main_proc(
                         | app::ID_ULOC
                         | app::ID_EXCLUDE_GENERATED
                         | app::ID_COCOMO
+                        | app::ID_AUTHORS
                 )
             {
                 with_state(|state| {
@@ -2551,23 +2562,17 @@ unsafe extern "system" fn main_proc(
                         text: state.table_hint.clone(),
                         ink: paint::Ink::Hint,
                     });
-                    let tabs: Vec<(RECT, &str, bool)> = [
-                        model::View::Files,
-                        model::View::Modules,
-                        model::View::Functions,
-                        model::View::Smells,
-                        model::View::Excluded,
-                    ]
-                    .iter()
-                    .enumerate()
-                    .map(|(index, view)| {
-                        (
-                            state.tab_rects[index],
-                            view.tab_title(),
-                            *view == state.view,
-                        )
-                    })
-                    .collect();
+                    let tabs: Vec<(RECT, &str, bool)> = model::View::ALL
+                        .iter()
+                        .enumerate()
+                        .map(|(index, view)| {
+                            (
+                                state.tab_rects[index],
+                                view.tab_title(),
+                                *view == state.view,
+                            )
+                        })
+                        .collect();
                     let summary = model::header_summary(state.report.as_ref());
                     let spark = state.spark.as_ref().map(|data| paint::Spark {
                         area: state.spark_rect,
