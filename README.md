@@ -558,8 +558,8 @@ While a scan runs, a veil and a progress bar cover the shell:
 | Piece | Detail |
 | --- | --- |
 | Bindings | `windows-sys` (the `windows-rs` project), feature-gated to exactly the API surface used; still nothing beyond the system DLLs at run time |
-| Rendering | GDI double buffering; the shell, the KPI cards, the stacked composition bar, the module chart and the scan veil are custom child windows, so nothing flickers |
-| Reports | `SysListView32` with owner-drawn sort headers, zebra striping, a live path filter, Files / Modules / Functions / Smells / Excluded views - every tab opens on its natural sort - and a placeholder KPI strip before the first scan |
+| Rendering | GDI double buffering; the shell, the KPI cards, the stacked composition bar, the module chart and the scan veil are custom child windows, so nothing flickers. Cards, pills and bars are rounded through a clipped region, and the active tab is a pill rather than an underline |
+| Reports | `SysListView32` with owner-drawn sort headers, 28px rows ruled by hairlines, a soft accent selection, a live path filter, Files / Modules / Functions / Smells / Excluded views - every tab opens on its natural sort - and a placeholder KPI strip before the first scan |
 | Smells tab | the files that carry `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`#[allow]`, one row per file, ranked by the total |
 | Since the last scan | each scan diffs itself against the previous one in the same window: a *vs last scan* card with the code change, the added and deleted counts, and a `Delta` column on the Files tab |
 | Report options | `REPORT OPTIONS` keeps generated / minified files out of the totals and adds the COCOMO estimate; the KPI strip grows a row to hold the cost, effort, staffing and schedule cards |

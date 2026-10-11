@@ -339,21 +339,21 @@ struct Metrics {
 impl Metrics {
     fn new(px: impl Fn(i32) -> i32) -> Metrics {
         Metrics {
-            margin: px(10),
-            padding: px(14),
-            gap: px(8),
-            header: px(44),
-            status: px(26),
-            sidebar: px(264),
-            section: px(18),
-            control: px(24),
-            check: px(22),
-            button: px(26),
-            primary: px(30),
-            chart: px(150),
-            card: px(64),
-            spark: px(76),
-            tab: px(30),
+            margin: px(12),
+            padding: px(16),
+            gap: px(10),
+            header: px(50),
+            status: px(30),
+            sidebar: px(278),
+            section: px(22),
+            control: px(28),
+            check: px(25),
+            button: px(30),
+            primary: px(36),
+            chart: px(168),
+            card: px(78),
+            spark: px(86),
+            tab: px(34),
         }
     }
 }
@@ -460,6 +460,13 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
         let mut labels: Vec<paint::Label> = Vec::new();
 
         // ---- sidebar ----------------------------------------------------
+        // The buttons are anchored to the bottom, so the language block sits
+        // above them and the two can never collide.
+        let sidebar_bottom = sidebar.bottom - px(14);
+        let export_top = sidebar_bottom - metrics.button;
+        let scan_top = export_top - px(8) - metrics.primary;
+        let language_top = scan_top - px(18) - metrics.control - metrics.section;
+
         let pad = metrics.padding;
         let left = pad;
         let inner = (metrics.sidebar - pad * 2 - 1).max(px(80));
@@ -470,7 +477,26 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             paint::Ink::Section,
         ));
         y += metrics.section;
-        let roots_height = px(104).min((height - metrics.status - px(372)).max(px(72)));
+        // Everything the sidebar stacks between the roots list and the
+        // language block, so the list can take whatever is left over.
+        let below_roots = metrics.button
+            + px(4)
+            + metrics.section
+            + metrics.check * 5
+            + px(2)
+            + metrics.section
+            + metrics.check * 2
+            + px(2)
+            + metrics.section
+            + metrics.control
+            + px(3)
+            + px(14)
+            + px(10)
+            + metrics.section
+            + metrics.control
+            + px(3)
+            + px(14);
+        let roots_height = (language_top - px(16) - (y + below_roots)).clamp(px(72), px(168));
         unsafe {
             MoveWindow(
                 state.control(app::ID_ROOTS),
@@ -481,8 +507,8 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
                 1,
             )
         };
-        y += roots_height + px(6);
-        let small = (inner - px(4) * 2) / 3;
+        y += roots_height + px(8);
+        let small = (inner - px(6) * 2) / 3;
         for (index, id) in [app::ID_ADD_FOLDER, app::ID_ADD_PATH, app::ID_REMOVE]
             .iter()
             .enumerate()
@@ -490,7 +516,7 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             unsafe {
                 MoveWindow(
                     state.control(*id),
-                    left + index as i32 * (small + px(4)),
+                    left + index as i32 * (small + px(6)),
                     y,
                     small,
                     metrics.button,
@@ -577,21 +603,29 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             paint::Ink::Note,
         ));
 
-        y += px(14) + px(12);
         labels.push(label(
-            rect(left, y, left + inner, y + metrics.section),
+            rect(
+                left,
+                language_top,
+                left + inner,
+                language_top + metrics.section,
+            ),
             i18n::t().section_language,
             paint::Ink::Section,
         ));
-        y += metrics.section;
-        unsafe { MoveWindow(state.control(app::ID_LANG), left, y, inner, px(200), 1) };
-
-        let sidebar_bottom = sidebar.bottom - px(12);
         unsafe {
+            MoveWindow(
+                state.control(app::ID_LANG),
+                left,
+                language_top + metrics.section,
+                inner,
+                px(200),
+                1,
+            );
             MoveWindow(
                 state.control(app::ID_EXPORT),
                 left,
-                sidebar_bottom - metrics.button,
+                export_top,
                 inner,
                 metrics.button,
                 1,
@@ -599,7 +633,7 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             MoveWindow(
                 state.control(app::ID_SCAN),
                 left,
-                sidebar_bottom - metrics.button - px(6) - metrics.primary,
+                scan_top,
                 inner,
                 metrics.primary,
                 1,
@@ -607,9 +641,9 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
         }
 
         // ---- table card -------------------------------------------------
-        let combo_width = px(84);
-        let combo_left = table.right - px(12) - combo_width;
-        let field_top = table.top + px(9);
+        let combo_width = px(88);
+        let combo_left = table.right - px(14) - combo_width;
+        let field_top = table.top + px(12);
         unsafe {
             MoveWindow(
                 state.control(app::ID_TOP),
@@ -621,22 +655,22 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             )
         };
         let filter_right = combo_left - px(8);
-        let filter_left = filter_right - px(190);
+        let filter_left = filter_right - px(200);
         unsafe {
             MoveWindow(
                 state.control(app::ID_FILTER),
                 filter_left,
                 field_top,
-                px(190),
+                px(200),
                 metrics.control,
                 1,
             )
         };
         labels.push(label(
             rect(
-                filter_left - px(46),
+                filter_left - px(52),
                 field_top,
-                filter_left - px(6),
+                filter_left - px(8),
                 field_top + metrics.control,
             ),
             i18n::t().filter_label,
@@ -644,9 +678,9 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
         ));
         labels.push(label(
             rect(
-                combo_left - px(40),
+                combo_left - px(44),
                 field_top,
-                combo_left - px(6),
+                combo_left - px(8),
                 field_top + metrics.control,
             ),
             i18n::t().top_label,
@@ -654,27 +688,23 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
         ));
 
         let mut tab_rects = [RECT::default(); 5];
-        let mut tab_x = table.left + px(12);
+        let mut tab_x = table.left + px(14);
+        let tabs_top = field_top + metrics.control + px(8);
         for (index, (_view, tab_width)) in [
-            (model::View::Files, px(60)),
-            (model::View::Modules, px(78)),
-            (model::View::Functions, px(84)),
-            (model::View::Smells, px(72)),
-            (model::View::Excluded, px(112)),
+            (model::View::Files, px(64)),
+            (model::View::Modules, px(86)),
+            (model::View::Functions, px(94)),
+            (model::View::Smells, px(76)),
+            (model::View::Excluded, px(120)),
         ]
         .iter()
         .enumerate()
         {
-            tab_rects[index] = rect(
-                tab_x,
-                table.top + px(32),
-                tab_x + tab_width,
-                table.top + px(32) + metrics.tab,
-            );
+            tab_rects[index] = rect(tab_x, tabs_top, tab_x + tab_width, tabs_top + metrics.tab);
             tab_x += tab_width;
         }
-        let list_top = table.top + px(32) + metrics.tab + px(6);
-        let list_bottom = table.bottom - px(26);
+        let list_top = tabs_top + metrics.tab + px(4);
+        let list_bottom = table.bottom - px(28);
         let list_width = (table.right - table.left - px(20)).max(px(120));
         unsafe {
             MoveWindow(
@@ -692,10 +722,10 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
         state.spark_rect = spark;
         state.tab_rects = tab_rects;
         state.table_title_rect = rect(
-            table.left + px(12),
-            table.top + px(9),
-            table.left + px(320),
-            table.top + px(29),
+            table.left + px(14),
+            table.top + px(12),
+            table.left + px(360),
+            table.top + px(34),
         );
         state.table_hint_rect = rect(
             table.left + px(12),
@@ -937,11 +967,13 @@ fn create_child(
         let instance = GetModuleHandleW(std::ptr::null());
         let class_name = wide(class);
         let label = wide(text);
+        // WS_CLIPSIBLINGS keeps a control from painting over a sibling above
+        // it, so the scan mask stays opaque across every native control.
         CreateWindowExW(
             ex_style,
             class_name.as_ptr(),
             label.as_ptr(),
-            style,
+            style | WS_CLIPSIBLINGS,
             0,
             0,
             10,
@@ -1231,7 +1263,7 @@ fn create_controls(parent: HWND) -> Vec<(i32, HWND)> {
 fn apply_fonts(state: &app::AppState) {
     let base = state.theme.fonts.base as usize;
     let mono = state.theme.fonts.mono as usize;
-    let bold = state.theme.fonts.bold as usize;
+    let bold = state.theme.fonts.header as usize;
     let small = state.theme.fonts.label as usize;
     for (id, hwnd) in &state.controls {
         let font = match *id {
@@ -1617,6 +1649,13 @@ fn on_create(hwnd: HWND) {
             extended as usize,
             extended as isize,
         );
+        // A report row is as tall as the small image list, so a one pixel
+        // image sets the breathing room the default font cannot.
+        let images = unsafe { ImageList_Create(1, state.theme.px(28), ILC_COLOR32, 1, 1) };
+        if images != 0 {
+            send(list, LVM_SETIMAGELIST, LVSIL_SMALL as usize, images);
+            state.row_images = images;
+        }
         send(list, LVM_SETBKCOLOR, 0, theme::CARD_BG as isize);
         send(list, LVM_SETTEXTBKCOLOR, 0, theme::CARD_BG as isize);
         send(list, LVM_SETTEXTCOLOR, 0, theme::TEXT as isize);
@@ -1658,17 +1697,78 @@ unsafe fn custom_draw(lparam: LPARAM) -> LRESULT {
     match (*info).nmcd.dwDrawStage {
         CDDS_PREPAINT => CDRF_NOTIFYITEMDRAW as LRESULT,
         CDDS_ITEMPREPAINT => {
-            let row = (*info).nmcd.dwItemSpec;
-            let color = if row % 2 == 0 {
-                theme::CARD_BG
+            let painting = info as *mut NMLVCUSTOMDRAW;
+            let chosen = send(
+                (*info).nmcd.hdr.hwndFrom,
+                LVM_GETITEMSTATE,
+                (*info).nmcd.dwItemSpec,
+                LVIS_SELECTED as isize,
+            ) & LVIS_SELECTED as isize
+                != 0;
+            if chosen {
+                (*painting).clrTextBk = theme::ACCENT_SOFT;
+                (*painting).clrText = theme::ACCENT_DARK;
             } else {
-                theme::GRID_BG
-            };
-            (*(info as *mut NMLVCUSTOMDRAW)).clrTextBk = color;
+                (*painting).clrTextBk = theme::CARD_BG;
+                (*painting).clrText = theme::TEXT;
+            }
+            CDRF_NOTIFYPOSTPAINT as LRESULT
+        }
+        CDDS_ITEMPOSTPAINT => {
+            // A hairline the width of the table under every row: ruled rows
+            // rather than a grid of boxes.
+            let mut line = (*info).nmcd.rc;
+            let mut client = RECT::default();
+            if GetClientRect((*info).nmcd.hdr.hwndFrom, &mut client) != 0 {
+                line.left = client.left;
+                line.right = client.right;
+            }
+            line.top = line.bottom - 1;
+            paint::fill((*info).nmcd.hdc, &line, theme::HAIRLINE);
+            CDRF_DODEFAULT as LRESULT
+        }
+        // The control fills its own background first, so the header rule has
+        // to wait until everything else is on the DC.
+        CDDS_POSTPAINT => {
+            header_rule(info);
             CDRF_DODEFAULT as LRESULT
         }
         _ => CDRF_DODEFAULT as LRESULT,
     }
+}
+
+/// The column header owns the top of the table, so its bottom rule is drawn
+/// during the list's own paint instead of subclassing the header.
+unsafe fn header_rule(info: *const NMLVCUSTOMDRAW) {
+    let list = (*info).nmcd.hdr.hwndFrom;
+    let header = send(list, LVM_GETHEADER, 0, 0) as HWND;
+    if header.is_null() {
+        return;
+    }
+    let mut bounds = RECT::default();
+    if send(
+        header,
+        HDM_GETITEMRECT,
+        0,
+        &mut bounds as *mut RECT as isize,
+    ) == 0
+    {
+        return;
+    }
+    let mut client = RECT::default();
+    if GetClientRect(list, &mut client) == 0 {
+        return;
+    }
+    // The header window paints over its own last pixel row, so the rule sits
+    // on the first row of the table instead.
+    let top = bounds.bottom + 1;
+    let line = RECT {
+        left: client.left,
+        top,
+        right: client.right,
+        bottom: top + 1,
+    };
+    paint::fill((*info).nmcd.hdc, &line, theme::HAIRLINE);
 }
 
 /// A click on the painted tab strip.
@@ -1720,8 +1820,8 @@ unsafe extern "system" fn main_proc(
             let info = lparam as *mut MINMAXINFO;
             if !info.is_null() {
                 let scale = with_state(|state| state.theme.px(1)).unwrap_or(1);
-                (*info).ptMinTrackSize.x = 1180 * scale;
-                (*info).ptMinTrackSize.y = 744 * scale;
+                (*info).ptMinTrackSize.x = 1220 * scale;
+                (*info).ptMinTrackSize.y = 800 * scale;
             }
             0
         }
@@ -2094,6 +2194,11 @@ unsafe extern "system" fn main_proc(
             0
         }
         WM_DESTROY => {
+            with_state(|state| {
+                if state.row_images != 0 {
+                    unsafe { ImageList_Destroy(state.row_images) };
+                }
+            });
             persist(hwnd);
             PostQuitMessage(0);
             0

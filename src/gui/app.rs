@@ -117,6 +117,8 @@ pub struct AppState {
     pub watched: Vec<String>,
     pub controls: Vec<(i32, HWND)>,
     pub card_brush: HBRUSH,
+    /// The one pixel image list that sets the report row height.
+    pub row_images: HIMAGELIST,
     pub status: String,
     pub table_title: String,
     pub table_hint: String,
@@ -206,6 +208,7 @@ impl AppState {
             watched: Vec::new(),
             controls: Vec::new(),
             card_brush,
+            row_images: 0,
             status: i18n::t().status_ready.to_string(),
             table_title,
             table_hint: String::new(),

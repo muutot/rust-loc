@@ -39,30 +39,59 @@ pub fn fill(hdc: HDC, area: &RECT, color: u32) {
     }
 }
 
-/// Rounded rectangle with an optional 1px border.
+/// A rounded region matching an area, never thicker than half of it so a
+/// "pill" request still lands inside the shape.
+pub fn region(area: &RECT, radius: i32) -> HRGN {
+    let width = area.right - area.left;
+    let height = area.bottom - area.top;
+    let radius = radius.max(0).min(height / 2).min(width / 2);
+    unsafe {
+        CreateRoundRectRgn(
+            area.left,
+            area.top,
+            area.right + 1,
+            area.bottom + 1,
+            radius * 2,
+            radius * 2,
+        )
+    }
+}
+
+/// Run a painter with the clip replaced by a rounded region, so no fill can
+/// spill past a corner.
+fn clipped(hdc: HDC, area: &RECT, radius: i32, paint: impl FnOnce()) {
+    let clip = region(area, radius);
+    unsafe { SelectClipRgn(hdc, clip) };
+    paint();
+    unsafe {
+        SelectClipRgn(hdc, std::ptr::null_mut());
+        DeleteObject(clip as HGDIOBJ);
+    }
+}
+
+/// Rounded rectangle with an optional 1px border, corners included.
 pub fn card(hdc: HDC, area: &RECT, radius: i32, fill_color: u32, border: Option<u32>) {
     if area.right <= area.left || area.bottom <= area.top {
         return;
     }
-    unsafe {
-        let brush: HBRUSH = CreateSolidBrush(fill_color);
-        let pen = CreatePen(PS_SOLID, 1, border.unwrap_or(fill_color));
-        let old_brush = SelectObject(hdc, brush as HGDIOBJ);
-        let old_pen = SelectObject(hdc, pen as HGDIOBJ);
-        RoundRect(
-            hdc,
-            area.left,
-            area.top,
-            area.right,
-            area.bottom,
-            radius * 2,
-            radius * 2,
-        );
-        SelectObject(hdc, old_brush);
-        SelectObject(hdc, old_pen);
-        DeleteObject(brush as HGDIOBJ);
-        DeleteObject(pen as HGDIOBJ);
-    }
+    clipped(hdc, area, radius, || match border {
+        // The border is the outer shape; the fill covers all but its last pixel.
+        Some(color) => {
+            fill(hdc, area, color);
+            let inner = rect(area.left + 1, area.top + 1, area.right - 1, area.bottom - 1);
+            if inner.right > inner.left && inner.bottom > inner.top {
+                fill(hdc, &inner, fill_color);
+            }
+        }
+        None => fill(hdc, area, fill_color),
+    });
+}
+
+/// A card with a one pixel lip under it: the cheapest way to read as lifted.
+pub fn raised(hdc: HDC, area: &RECT, radius: i32, fill_color: u32, border: Option<u32>) {
+    let below = rect(area.left, area.top + 1, area.right, area.bottom + 1);
+    card(hdc, &below, radius, theme::SHADOW, None);
+    card(hdc, area, radius, fill_color, border);
 }
 
 /// A one pixel hairline.
@@ -106,8 +135,33 @@ fn caption(hdc: HDC, value: &str, area: &mut RECT, theme: &theme::Theme) {
         area,
         theme::MUTED,
         theme.fonts.label_bold,
-        DT_LEFT | DT_SINGLELINE,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
     );
+}
+
+/// A sidebar section caption, with the rest of its row ruled off.
+fn section_caption(hdc: HDC, value: &str, area: &RECT, theme: &theme::Theme) {
+    let upper = value.to_uppercase();
+    let width = measure(hdc, &upper, theme.fonts.label_bold);
+    let mut label = *area;
+    label.right = (label.left + width + theme.px(8)).min(area.right);
+    text(
+        hdc,
+        &upper,
+        &mut label,
+        theme::MUTED,
+        theme.fonts.label_bold,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+    );
+    let start = area.left + width + theme.px(10);
+    let middle = (area.top + area.bottom) / 2;
+    if start + theme.px(8) < area.right {
+        fill(
+            hdc,
+            &rect(start, middle, area.right, middle + 1),
+            theme::HAIRLINE,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -146,10 +200,10 @@ pub fn cards(
         let left = area.left + padding + column * (width + gap);
         let top = area.top + padding + row * (height + gap);
         let bounds = rect(left, top, left + width, top + height);
-        card(
+        raised(
             hdc,
             &bounds,
-            theme.px(8),
+            theme.px(10),
             theme::CARD_BG,
             Some(theme::BORDER),
         );
@@ -160,19 +214,19 @@ pub fn cards(
             bounds.bottom - 1,
         );
         card(hdc, &stripe, theme.px(2), item.tone(), None);
-        let inner = theme.px(11);
+        let inner = theme.px(14);
         let mut label = rect(
             left + inner,
-            top + theme.px(6),
-            bounds.right - theme.px(6),
-            top + theme.px(20),
+            top + theme.px(8),
+            bounds.right - theme.px(8),
+            top + theme.px(24),
         );
         caption(hdc, item.label, &mut label, theme);
         let mut value = rect(
             left + inner,
-            top + theme.px(18),
-            bounds.right - theme.px(6),
-            top + theme.px(43),
+            top + theme.px(24),
+            bounds.right - theme.px(8),
+            top + theme.px(53),
         );
         text(
             hdc,
@@ -184,9 +238,9 @@ pub fn cards(
         );
         let mut hint = rect(
             left + inner,
-            bounds.bottom - theme.px(16),
-            bounds.right - theme.px(6),
-            bounds.bottom - theme.px(3),
+            bounds.bottom - theme.px(19),
+            bounds.right - theme.px(8),
+            bounds.bottom - theme.px(5),
         );
         text(
             hdc,
@@ -203,14 +257,14 @@ pub fn cards(
 // Chart cards
 // ---------------------------------------------------------------------------
 
-/// A white card with a title in its top left corner.
+/// A white card with a title in its top left corner and a hairline under it.
 fn chart_card(hdc: HDC, area: &RECT, title: &str, theme: &theme::Theme) -> RECT {
-    card(hdc, area, theme.px(10), theme::CARD_BG, Some(theme::BORDER));
+    raised(hdc, area, theme.px(10), theme::CARD_BG, Some(theme::BORDER));
     let mut head = rect(
-        area.left + theme.px(12),
+        area.left + theme.px(14),
         area.top + theme.px(8),
-        area.right - theme.px(12),
-        area.top + theme.px(26),
+        area.right - theme.px(14),
+        area.top + theme.px(30),
     );
     text(
         hdc,
@@ -218,13 +272,23 @@ fn chart_card(hdc: HDC, area: &RECT, title: &str, theme: &theme::Theme) -> RECT 
         &mut head,
         theme::TEXT,
         theme.fonts.small_bold,
-        DT_LEFT | DT_SINGLELINE,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+    );
+    fill(
+        hdc,
+        &rect(
+            area.left + theme.px(14),
+            area.top + theme.px(34),
+            area.right - theme.px(14),
+            area.top + theme.px(35),
+        ),
+        theme::HAIRLINE,
     );
     rect(
-        area.left + theme.px(12),
-        area.top + theme.px(30),
-        area.right - theme.px(12),
-        area.bottom - theme.px(10),
+        area.left + theme.px(14),
+        area.top + theme.px(46),
+        area.right - theme.px(14),
+        area.bottom - theme.px(12),
     )
 }
 
@@ -242,7 +306,7 @@ pub fn composition(
         return;
     }
     let total: u64 = segments.iter().map(|segment| segment.1 as u64).sum();
-    let bar_height = theme.px(22).min(content.bottom - content.top);
+    let bar_height = theme.px(26).min(content.bottom - content.top);
     let track = rect(
         content.left,
         content.top,
@@ -267,28 +331,50 @@ pub fn composition(
         return;
     }
     let width = track.right - track.left;
-    let mut cursor = track.left;
-    for (_, value, color) in segments {
-        if *value == 0 {
-            continue;
+    let visible = segments.iter().filter(|segment| segment.1 > 0).count();
+    clipped(hdc, &track, bar_height / 2, || {
+        let mut cursor = track.left;
+        let mut drawn = 0usize;
+        let mut seams: Vec<i32> = Vec::with_capacity(visible);
+        for (_, value, color) in segments {
+            if *value == 0 {
+                continue;
+            }
+            let span = (*value as u64)
+                .saturating_mul(width as u64)
+                .checked_div(total)
+                .unwrap_or(0) as i32;
+            let right = (cursor + span).min(track.right);
+            if right > cursor {
+                fill(hdc, &rect(cursor, track.top, right, track.bottom), *color);
+                drawn += 1;
+                if drawn < visible {
+                    seams.push(right);
+                }
+            }
+            cursor = right;
         }
-        let span = (*value as u64)
-            .saturating_mul(width as u64)
-            .checked_div(total)
-            .unwrap_or(0) as i32;
-        let right = (cursor + span).min(track.right);
-        if right > cursor {
-            fill(hdc, &rect(cursor, track.top, right, track.bottom), *color);
+        // A card coloured seam between neighbours reads the bar as segments
+        // without needing a second row of gaps.
+        for seam in seams {
+            fill(
+                hdc,
+                &rect(seam - 1, track.top, seam + 1, track.bottom),
+                theme::CARD_BG,
+            );
         }
-        cursor = right;
-    }
+    });
     let legend_top = track.bottom + theme.px(10);
-    let row_height = theme.px(21);
+    let row_height = theme.px(23);
     let column_width = width / 2;
+    // A gutter between the two columns keeps the left column's percentage from
+    // touching the right column's swatch.
+    let gutter = theme.px(14);
     for (index, (name, value, color)) in segments.iter().enumerate() {
         let column = index as i32 % 2;
         let row = index as i32 / 2;
-        let left = content.left + column * column_width;
+        let left = content.left + column * (column_width + gutter);
+        let right = left + column_width - gutter;
         let top = legend_top + row * row_height;
         if top + theme.px(16) > content.bottom {
             break;
@@ -303,7 +389,7 @@ pub fn composition(
         let mut name_bounds = rect(
             left + theme.px(15),
             top - theme.px(1),
-            left + column_width - theme.px(4),
+            right - theme.px(4),
             top + theme.px(17),
         );
         text(
@@ -312,19 +398,14 @@ pub fn composition(
             &mut name_bounds,
             theme::MUTED,
             theme.fonts.hint,
-            DT_LEFT | DT_SINGLELINE,
+            DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS,
         );
         let value_text = format!(
             "{}   {}",
             model::human_int(*value as u64),
             model::human_share(*value as u64, total)
         );
-        let mut value_bounds = rect(
-            left,
-            top - theme.px(1),
-            left + column_width - theme.px(2),
-            top + theme.px(17),
-        );
+        let mut value_bounds = rect(left, top - theme.px(1), right, top + theme.px(17));
         text(
             hdc,
             &value_text,
@@ -334,7 +415,7 @@ pub fn composition(
             DT_RIGHT | DT_SINGLELINE,
         );
         regions.push((
-            rect(left, top, left + column_width, top + row_height),
+            rect(left, top, right, top + row_height),
             i18n::fill(
                 i18n::t().hover_segment,
                 &[
@@ -377,7 +458,7 @@ pub fn modules(
         );
         return;
     }
-    let row_height = theme.px(20);
+    let row_height = theme.px(23);
     let capacity = ((content.bottom - content.top) / row_height).max(1) as usize;
     let rows = &rows[..rows.len().min(capacity)];
     let peak = rows.iter().map(|row| row.1).max().unwrap_or(1).max(1);
@@ -412,27 +493,31 @@ pub fn modules(
             theme.fonts.hint,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
         );
-        fill(
+        card(
             hdc,
             &rect(
                 track_left,
-                middle - theme.px(5),
+                middle - theme.px(6),
                 track_right,
-                middle + theme.px(5),
+                middle + theme.px(6),
             ),
+            theme.px(6),
             theme::BAR_TRACK,
+            None,
         );
         let span = ((track_right - track_left) as f64 * (*value as f64 / peak as f64)) as i32;
         if span > 0 {
-            fill(
+            card(
                 hdc,
                 &rect(
                     track_left,
-                    middle - theme.px(5),
+                    middle - theme.px(6),
                     (track_left + span).min(track_right),
-                    middle + theme.px(5),
+                    middle + theme.px(6),
                 ),
+                theme.px(6),
                 theme::ACCENT,
+                None,
             );
         }
         let mut amount = rect(
@@ -492,15 +577,15 @@ pub fn tooltip(hdc: HDC, area: &RECT, hover: &Hover, theme: &theme::Theme) {
         hdc,
         &bounds,
         theme.px(6),
-        theme::VEIL_BG,
-        Some(theme::VEIL_BORDER),
+        theme::TIP_BG,
+        Some(theme::TIP_BORDER),
     );
     let mut caption = bounds;
     text(
         hdc,
         &hover.text,
         &mut caption,
-        theme::VEIL_TEXT,
+        theme::TIP_TEXT,
         theme.fonts.hint,
         DT_CENTER | DT_SINGLELINE | DT_VCENTER,
     );
@@ -554,14 +639,14 @@ fn spark_card(hdc: HDC, spark: &Spark, theme: &theme::Theme) {
     if area.right - area.left < theme.px(140) || area.bottom - area.top < theme.px(40) {
         return;
     }
-    card(
+    raised(
         hdc,
         &area,
         theme.px(10),
         theme::CARD_BG,
         Some(theme::BORDER),
     );
-    let pad = theme.px(12);
+    let pad = theme.px(14);
     let column = theme.px(150).min((area.right - area.left) / 2);
     let right = area.left + pad + column;
     let mut title = rect(
@@ -626,7 +711,7 @@ fn bars(hdc: HDC, area: &RECT, values: &[u32], tone: u32, theme: &theme::Theme) 
     fill(
         hdc,
         &rect(area.left, area.bottom - 1, area.right, area.bottom),
-        theme::BORDER,
+        theme::HAIRLINE,
     );
     let min = *values.iter().min().unwrap();
     let max = *values.iter().max().unwrap();
@@ -640,14 +725,17 @@ fn bars(hdc: HDC, area: &RECT, values: &[u32], tone: u32, theme: &theme::Theme) 
     let gap = theme.px(3).min(slot / 4);
     let bar = (slot - gap).max(theme.px(2));
     let usable = height - theme.px(4);
+    // The newest scan sits on the right edge, so the series reads like the
+    // rest of the card: latest first.
+    let start = area.right - slot * values.len() as i32;
     for (index, value) in values.iter().enumerate() {
         let scaled = if span == 0 {
             usable / 2
         } else {
             usable * (value - min) as i32 / span as i32
         };
-        let left = area.left + index as i32 * slot;
-        fill(
+        let left = start.max(area.left) + index as i32 * slot;
+        card(
             hdc,
             &rect(
                 left,
@@ -655,7 +743,9 @@ fn bars(hdc: HDC, area: &RECT, values: &[u32], tone: u32, theme: &theme::Theme) 
                 left + bar,
                 area.bottom,
             ),
+            theme.px(3),
             tone,
+            None,
         );
     }
 }
@@ -705,14 +795,16 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
         theme.fonts.brand,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER,
     );
-    let mut cursor = spec.header.left + pad + brand_width + theme.px(6);
+    let mut cursor = spec.header.left + pad + brand_width + theme.px(10);
     let version_width = measure(hdc, spec.version, theme.fonts.hint);
-    let mut version = rect(
-        cursor,
-        spec.header.top,
-        cursor + version_width,
-        spec.header.bottom,
+    let chip = rect(
+        cursor - theme.px(7),
+        spec.header.top + theme.px(15),
+        cursor + version_width + theme.px(7),
+        spec.header.bottom - theme.px(15),
     );
+    card(hdc, &chip, theme.px(9), theme::TRACK_BG, None);
+    let mut version = rect(cursor, chip.top, cursor + version_width, chip.bottom);
     text(
         hdc,
         spec.version,
@@ -721,7 +813,7 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
         theme.fonts.hint,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER,
     );
-    cursor += version_width + theme.px(12);
+    cursor += version_width + theme.px(14);
     let mut subtitle = rect(
         cursor,
         spec.header.top,
@@ -780,7 +872,7 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
     for label in spec.labels {
         let mut bounds = label.area;
         match label.ink {
-            Ink::Section => caption(hdc, &label.text, &mut bounds, theme),
+            Ink::Section => section_caption(hdc, &label.text, &bounds, theme),
             Ink::Note => text(
                 hdc,
                 &label.text,
@@ -816,9 +908,9 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
         }
     }
 
-    // Tab strip: a hairline under the strip with the active tab underlined.
+    // Tab strip: the active tab is a pill, the strip sits on a hairline.
     if let Some(first) = spec.tabs.first() {
-        let line_y = first.0.bottom - theme.px(5);
+        let line_y = first.0.bottom - 1;
         rule(
             hdc,
             &rect(
@@ -827,37 +919,40 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
                 spec.table.right - theme.px(12),
                 line_y + 1,
             ),
-            theme::BORDER,
+            theme::HAIRLINE,
         );
     }
     for (bounds, title, active) in spec.tabs {
-        let color = if *active { theme::ACCENT } else { theme::MUTED };
-        let mut label = rect(
-            bounds.left,
-            bounds.top,
-            bounds.right,
-            bounds.bottom - theme.px(5),
+        let pill = rect(
+            bounds.left + theme.px(2),
+            bounds.top + theme.px(2),
+            bounds.right - theme.px(2),
+            bounds.bottom - theme.px(7),
         );
+        if *active {
+            card(
+                hdc,
+                &pill,
+                (pill.bottom - pill.top) / 2,
+                theme::ACCENT_SOFT,
+                None,
+            );
+        }
+        let color = if *active { theme::ACCENT } else { theme::MUTED };
+        let font = if *active {
+            theme.fonts.small_bold
+        } else {
+            theme.fonts.small
+        };
+        let mut label = pill;
         text(
             hdc,
             title,
             &mut label,
             color,
-            theme.fonts.small,
+            font,
             DT_CENTER | DT_SINGLELINE | DT_VCENTER,
         );
-        if *active {
-            fill(
-                hdc,
-                &rect(
-                    bounds.left,
-                    bounds.bottom - theme.px(2),
-                    bounds.right,
-                    bounds.bottom,
-                ),
-                theme::ACCENT,
-            );
-        }
     }
 }
 
@@ -909,7 +1004,7 @@ pub fn button(hdc: HDC, item: &DRAWITEMSTRUCT, style: ButtonStyle, theme: &theme
             (fill, Some(theme::BORDER), theme::TEXT)
         }
     };
-    card(hdc, &bounds, theme.px(6), background, border);
+    card(hdc, &bounds, theme.px(8), background, border);
     let mut label = bounds;
     let mut text_buffer = vec![0u16; 256];
     let length = unsafe {
@@ -943,6 +1038,19 @@ pub fn overlay(hdc: HDC, area: &RECT, done: usize, total: usize, path: &str, the
     let left = area.left + (width - card_width) / 2;
     let top = area.top + (height - card_height) / 2;
     let bounds = rect(left, top, left + card_width, top + card_height);
+    // A soft ring under the card lifts it off the scrim without a real shadow.
+    card(
+        hdc,
+        &rect(
+            bounds.left - theme.px(4),
+            bounds.top,
+            bounds.right + theme.px(4),
+            bounds.bottom + theme.px(6),
+        ),
+        theme.px(18),
+        theme::SHADOW,
+        None,
+    );
     card(
         hdc,
         &bounds,

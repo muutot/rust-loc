@@ -11,16 +11,22 @@ pub const fn rgb(value: u32) -> u32 {
     ((value & 0xFF) << 16) | (value & 0xFF00) | ((value >> 16) & 0xFF)
 }
 
-pub const PANEL_BG: u32 = rgb(0xF3F5F9);
+pub const PANEL_BG: u32 = rgb(0xF1F3F9);
 pub const CARD_BG: u32 = rgb(0xFFFFFF);
-pub const GRID_BG: u32 = rgb(0xFBFCFE);
-pub const BORDER: u32 = rgb(0xE2E6EE);
-pub const TEXT: u32 = rgb(0x1F2430);
-pub const MUTED: u32 = rgb(0x6B7280);
+pub const GRID_BG: u32 = rgb(0xFAFBFD);
+pub const BORDER: u32 = rgb(0xE3E8F0);
+/// A hairline between table rows.
+pub const HAIRLINE: u32 = rgb(0xEEF1F7);
+/// The one pixel lip under a raised card.
+pub const SHADOW: u32 = rgb(0xE7EBF3);
+pub const TEXT: u32 = rgb(0x111827);
+pub const MUTED: u32 = rgb(0x667085);
 pub const ACCENT: u32 = rgb(0x2563EB);
 pub const ACCENT_DARK: u32 = rgb(0x1D4ED8);
-pub const TRACK_BG: u32 = rgb(0xEEF1F6);
-pub const BAR_TRACK: u32 = rgb(0xF1F4F9);
+/// Washed accent for the active tab and the selected row.
+pub const ACCENT_SOFT: u32 = rgb(0xEDF3FF);
+pub const TRACK_BG: u32 = rgb(0xEDF1F7);
+pub const BAR_TRACK: u32 = rgb(0xF0F3F9);
 
 pub const COLOR_CODE: u32 = rgb(0x2563EB);
 pub const COLOR_DOC: u32 = rgb(0x8B5CF6);
@@ -32,13 +38,20 @@ pub const COLOR_UNSAFE: u32 = rgb(0xDC2626);
 pub const COLOR_TEST_FNS: u32 = rgb(0x0891B2);
 pub const COLOR_ULOC: u32 = rgb(0x16A34A);
 
-pub const VEIL_BG: u32 = rgb(0x101828);
-pub const VEIL_CARD: u32 = rgb(0x1B2437);
-pub const VEIL_BORDER: u32 = rgb(0x2E3A52);
-pub const VEIL_TEXT: u32 = rgb(0xE8EDF8);
-pub const VEIL_MUTED: u32 = rgb(0x9AA9C6);
-pub const VEIL_TRACK: u32 = rgb(0x243352);
-pub const VEIL_ACCENT: u32 = rgb(0x60A5FA);
+/// The dark popover a chart tooltip is painted on.
+pub const TIP_BG: u32 = rgb(0x101828);
+pub const TIP_BORDER: u32 = rgb(0x2E3A52);
+pub const TIP_TEXT: u32 = rgb(0xE8EDF8);
+
+/// The scan overlay: a light scrim that stays inside the app palette so the
+/// progress card reads as part of the window instead of a second theme.
+pub const VEIL_BG: u32 = rgb(0xF2F5FA);
+pub const VEIL_CARD: u32 = rgb(0xFFFFFF);
+pub const VEIL_BORDER: u32 = rgb(0xE3E8F0);
+pub const VEIL_TEXT: u32 = rgb(0x111827);
+pub const VEIL_MUTED: u32 = rgb(0x667085);
+pub const VEIL_TRACK: u32 = rgb(0xEDF1F7);
+pub const VEIL_ACCENT: u32 = rgb(0x2563EB);
 
 const FW_SEMIBOLD: i32 = 600;
 const DEFAULT_CHARSET: u8 = 1;
@@ -51,6 +64,8 @@ pub struct Fonts {
     pub base: HFONT,
     /// Table headers and emphasised body text.
     pub bold: HFONT,
+    /// The report table's column header.
+    pub header: HFONT,
     /// The report table.
     pub mono: HFONT,
     /// The header summary on the right of the title bar.
@@ -78,6 +93,7 @@ impl Drop for Fonts {
         for handle in [
             self.base,
             self.bold,
+            self.header,
             self.mono,
             self.mono_small,
             self.brand,
@@ -111,18 +127,19 @@ impl Theme {
             Lang::En => "Segoe UI",
         };
         let fonts = Fonts {
-            base: make_font(ui, scale(95, dpi), 400),
-            bold: make_font(ui, scale(95, dpi), FW_SEMIBOLD),
-            mono: make_font("Cascadia Mono", scale(90, dpi), 400),
-            mono_small: make_font("Cascadia Mono", scale(82, dpi), 400),
-            brand: make_font(ui, scale(145, dpi), FW_SEMIBOLD),
-            title: make_font(ui, scale(150, dpi), FW_SEMIBOLD),
-            value: make_font(ui, scale(150, dpi), FW_SEMIBOLD),
-            label: make_font(ui, scale(88, dpi), 400),
-            label_bold: make_font(ui, scale(80, dpi), FW_SEMIBOLD),
-            small: make_font(ui, scale(92, dpi), 400),
-            small_bold: make_font(ui, scale(88, dpi), FW_SEMIBOLD),
-            hint: make_font(ui, scale(80, dpi), 400),
+            base: make_font(ui, scale(100, dpi), 400),
+            bold: make_font(ui, scale(100, dpi), FW_SEMIBOLD),
+            header: make_font(ui, scale(96, dpi), FW_SEMIBOLD),
+            mono: make_font("Cascadia Mono", scale(94, dpi), 400),
+            mono_small: make_font("Cascadia Mono", scale(86, dpi), 400),
+            brand: make_font(ui, scale(155, dpi), FW_SEMIBOLD),
+            title: make_font(ui, scale(155, dpi), FW_SEMIBOLD),
+            value: make_font(ui, scale(170, dpi), FW_SEMIBOLD),
+            label: make_font(ui, scale(92, dpi), 400),
+            label_bold: make_font(ui, scale(82, dpi), FW_SEMIBOLD),
+            small: make_font(ui, scale(97, dpi), 400),
+            small_bold: make_font(ui, scale(93, dpi), FW_SEMIBOLD),
+            hint: make_font(ui, scale(87, dpi), 400),
         };
         Theme { dpi, fonts }
     }
