@@ -1136,6 +1136,11 @@ fn set_columns(state: &app::AppState) {
         cell += 1;
     }
     let widths = model::flex_widths(&naturals, available);
+    // A counter column is never narrower than the header that names it: the
+    // caption is what tells the reader what the numbers are, so a clipped
+    // "Complexity..." is a broken column however well the counters fit.
+    let header_font = state.theme.fonts.header;
+    let header_dc = unsafe { GetWindowDC(list) };
     let mut specs: Vec<(String, bool, i32)> =
         vec![(state.view.label_title().to_string(), false, widths[0])];
     let mut slot = 0usize;
@@ -1152,9 +1157,12 @@ fn set_columns(state: &app::AppState) {
             slot += 1;
             widths[slot]
         } else {
-            px(column.pixels())
+            px(column.pixels()).max(header_fit(header_dc, &title, header_font, px(18)))
         };
         specs.push((title, !text, width));
+    }
+    if !header_dc.is_null() {
+        unsafe { ReleaseDC(list, header_dc) };
     }
     for (position, (title, numeric, width)) in specs.iter().enumerate() {
         let mut buffer = wide(title);
@@ -1170,6 +1178,14 @@ fn set_columns(state: &app::AppState) {
             &spec as *const LVCOLUMNW as isize,
         );
     }
+}
+
+/// Room a header needs for its caption, its own padding included.
+fn header_fit(dc: HDC, title: &str, font: HFONT, padding: i32) -> i32 {
+    if dc.is_null() {
+        return 0;
+    }
+    paint::measure(dc, title, font) + padding
 }
 
 /// The widest text one column shows, measured the way the list measures it.
