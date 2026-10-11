@@ -95,7 +95,9 @@ impl Workspace {
             "--no-gitignore".to_string(),
         ];
         args.extend(extra.iter().map(|item| item.to_string()));
-        cli::run_checked(&args, &self.path).expect("cli::run_checked failed")
+        let (output, diagnostics, status) =
+            cli::run_checked(&args, &self.path).expect("cli::run_checked failed");
+        (format!("{}{}", output, diagnostics), status)
     }
 }
 
@@ -858,6 +860,40 @@ fn ci_mode_prints_github_annotations() {
         text
     );
     assert!(!text.contains("Quality gate failed"), "{}", text);
+}
+
+#[test]
+fn gate_diagnostics_stay_out_of_stdout() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let args: Vec<String> = vec![
+        workspace.path.display().to_string(),
+        "--no-gitignore".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+        "--fail-if".to_string(),
+        "code>1".to_string(),
+    ];
+    let (output, diagnostics, status) =
+        cli::run_checked(&args, &workspace.path).expect("cli::run_checked failed");
+    assert_eq!(status, 1);
+    let document = json::parse(&output);
+    assert_eq!(
+        document
+            .get("summary")
+            .unwrap()
+            .get("code")
+            .unwrap()
+            .integer(),
+        3
+    );
+    assert!(
+        diagnostics.contains("Quality gate failed"),
+        "{}",
+        diagnostics
+    );
+    assert!(!output.contains("Quality gate"), "{}", output);
+    assert!(diagnostics.contains("code 3 > 1"), "{}", diagnostics);
 }
 
 #[test]

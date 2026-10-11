@@ -14,8 +14,11 @@ fn main() -> ExitCode {
         }
     };
     match cli::run_checked(&arguments, &cwd) {
-        Ok((output, status)) => {
+        Ok((output, diagnostics, status)) => {
             print!("{}", output);
+            if !diagnostics.is_empty() {
+                eprint!("{}", diagnostics);
+            }
             ExitCode::from(status)
         }
         Err(message) => {

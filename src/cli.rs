@@ -313,15 +313,16 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
 /// Parse, scan and render. The returned text is exactly what belongs on
 /// stdout, including the trailing newline Python's `print` would add.
 pub fn run(arguments: &[String], cwd: &Path) -> Result<String, String> {
-    run_checked(arguments, cwd).map(|(output, _status)| output)
+    run_checked(arguments, cwd).map(|(output, _diagnostics, _status)| output)
 }
 
-/// Like run, but also reports the exit code the quality gates imply.
-pub fn run_checked(arguments: &[String], cwd: &Path) -> Result<(String, u8), String> {
+/// Like run, but also reports the gate diagnostics (which belong on stderr)
+/// and the exit code the quality gates imply.
+pub fn run_checked(arguments: &[String], cwd: &Path) -> Result<(String, String, u8), String> {
     let invocation = parse(arguments, cwd)?;
     match invocation.action {
-        Action::Help => Ok((format!("{}\n", USAGE), 0)),
-        Action::Version => Ok((format!("rust-loc {}\n", crate::VERSION), 0)),
+        Action::Help => Ok((format!("{}\n", USAGE), String::new(), 0)),
+        Action::Version => Ok((format!("rust-loc {}\n", crate::VERSION), String::new(), 0)),
         Action::Report => {
             let report = report::scan(&invocation.roots, &invocation.options, cwd, None);
             let mut rendered = report::render(&report, cwd);
@@ -329,8 +330,7 @@ pub fn run_checked(arguments: &[String], cwd: &Path) -> Result<(String, u8), Str
                 rendered.push('\n');
             }
             let (gate_text, status) = check_gates(&invocation.options, &report)?;
-            rendered.push_str(&gate_text);
-            Ok((rendered, status))
+            Ok((rendered, gate_text, status))
         }
     }
 }
