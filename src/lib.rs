@@ -16,8 +16,10 @@ pub mod git;
 #[cfg(windows)]
 pub mod gui;
 pub mod history;
+pub mod json;
 pub mod languages;
 pub mod lexer;
+pub mod mcp;
 pub mod metrics;
 pub mod options;
 pub mod png;

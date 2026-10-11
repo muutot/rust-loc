@@ -412,7 +412,43 @@ number - `--smells`, `--uloc`, `--metrics` - is turned on for it.
 
 Nothing here talks to a server: the badge is a local SVG, and `--format json`
 is the machine endpoint for a dashboard or an agent that wants the same numbers
-as one document per run.
+as one document per run. An agent that would rather ask questions than parse a
+document drives `rust-loc-mcp` instead.
+
+### Query mode (MCP)
+
+`rust-loc-mcp` serves the same library over the Model Context Protocol: one
+JSON-RPC message per line on stdin, one answer per line on stdout, and nothing
+else on the pipe, so an editor or an agent can launch it as a stdio server:
+
+```console
+> '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gate","arguments":{"roots":["."],"rules":["code>1000"]}}}' | rust-loc-mcp.exe .
+{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"failed\":true,\"rules\":[{\"rule\":\"code 14,179 > 1,000\",\"metric\":\"code\",\"limit\":1000,\"value\":14179,\"passed\":false,\"worst\":\"src/gui/window.rs:1704\"}]}"}],"isError":false}}
+```
+
+Three tools are offered, and every one of them runs the same `cli::parse` and
+`report::scan` the command line does, so an answer cannot drift from the report
+a shell would print:
+
+| Tool | Arguments | Answer |
+| --- | --- | --- |
+| `scan` | the scope switches (`roots`, `include_tests`, `exclude`, `exclude_generated`, `uloc`, `smells`, `functions`, `metrics`, `languages`, `duplicates`, `hotspots`, `cocomo`) and `format` | the report, JSON by default and text, markdown or CSV on request |
+| `gate` | the same scope plus `rules`, e.g. `["code>100000", "complexity>5000"]` | `failed`, and one entry per rule with its value, limit, verdict and the file (and function) to blame |
+| `history` | the `path` of a file `--history` wrote, and an optional `metric` | the series, its sparkline, every per-trend series and the change since the previous scan |
+
+A client that launches servers from a config file points at the binary:
+
+```json
+{
+  "mcpServers": {
+    "rust-loc": { "command": "rust-loc-mcp", "args": ["C:\\some\\repo"] }
+  }
+}
+```
+
+The protocol needs a JSON reader and the crate links nothing, so `src/json.rs`
+is a small hand written one: one complete value per line, nesting capped at 64
+so a hostile request cannot blow the stack, and errors that carry a byte offset.
 
 ## Usage
 
@@ -587,9 +623,12 @@ rest being directory walking and the `git ls-files` call for `.gitignore`.
 | `src/cli.rs` | argument parsing and execution (also used by tests) |
 | `src/main.rs` | thin binary entry point |
 | `src/bin/rust-loc-gui.rs` | native Win32 front end entry point |
+| `src/bin/rust-loc-mcp.rs` | Model Context Protocol server entry point (stdio, one message per line) |
+| `src/json.rs` | hand written JSON reader and writer for the MCP server |
 | `src/gui/` | the Win32 shell: window classes, layout, GDI painting, dialogs |
 | `gui/rust-loc-gui.manifest` | Common Controls v6 + per-monitor DPI manifest embedded by `build.rs` |
-| `tests/` | integration tests: CLI behaviour and tokeniser edge cases |
+| `src/mcp.rs` | the MCP methods and the `scan`, `gate` and `history` tools |
+| `tests/` | integration tests: CLI behaviour, tokeniser edge cases and the MCP server |
 | `python/` | the original Python implementation, kept as the parity reference |
 | `docs/` | reference screenshots of the native UI |
 
@@ -598,7 +637,8 @@ rest being directory walking and the `git ls-files` call for `.gitignore`.
 ```console
 > cargo build --release      # target/release/rust-loc.exe
 > cargo build --release --bin rust-loc-gui   # target/release/rust-loc-gui.exe
-> cargo test                 # 69 tests
+> cargo build --release --bin rust-loc-mcp   # target/release/rust-loc-mcp.exe
+> cargo test                 # 268 tests
 > cargo clippy --all-targets -- -D warnings
 > cargo fmt --all
 ```
@@ -672,10 +712,11 @@ by hand).
 14. ~~a shareable report without HTML~~ - shipped as `--format svg`.
 15. ~~a raster export for slides and issue trackers~~ - the GUI writes the card
     as a PNG.
-16. ~~a README badge and a machine readable endpoint~~ - shipped as `--badge`
-    and `--format json`. An MCP server is deliberately out of scope: the crate
-    links no dependencies, so one would need a hand rolled JSON reader to answer
-    a query a shell and `--format json` already answer.
+16. ~~a README badge, a machine readable endpoint and an MCP query mode~~ -
+    shipped as `--badge`, `--format json`, and `rust-loc-mcp`, which answers
+    `scan`, `gate` and `history` over stdio. The server needed a JSON reader,
+    and the crate links nothing, so `src/json.rs` is hand written: one
+    complete value per line, nesting capped at 64, and errors with byte offsets.
 17. ~~a documented trend between scans~~ - shipped as `--history`, the history
     block of `--format json` / `--format markdown`, and the window's scan
     history card.
