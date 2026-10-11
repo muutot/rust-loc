@@ -132,11 +132,14 @@ is one of `> >= < <= == !=`, and the rule fails when the comparison holds:
 > rust-loc --fail-if "unwrap>0" --fail-if "smells>200"
 ```
 
-A failed rule prints *Quality gate failed* with the measured value and exits
-with code 1; `--ci` prints GitHub annotations
-(`::error title=rust-loc gate::...`) instead. Gates read the same business
-totals the report does, so `--include-tests` and `--exclude-generated` shift
-them too, and `--fail-if uloc...` asks for `--uloc`.
+A failed rule prints *Quality gate failed* with the measured value and a
+`worst:` line naming the file that contributed most to it, then exits with
+code 1; `--ci` prints a GitHub annotation instead
+(`::error,file=...,line=...,title=rust-loc gate::...`) so the failure lands on
+the offending file in the pull request - and on the exact line when the metric
+belongs to a single function (`code`, `complexity`). Gates read the same
+business totals the report does, so `--include-tests` and
+`--exclude-generated` shift them too, and `--fail-if uloc...` asks for `--uloc`.
 
 ### Repository config
 
@@ -426,7 +429,7 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--cocomo-project-type <t>` | `organic`, `semi-detached`, `embedded`, `custom` |
 | `--cocomo-params <a,b,c,d>` | custom COCOMO coefficients |
 | `--fail-if <spec>` | exit 1 when `metric op value` fails (repeatable) |
-| `--ci` | print gate failures as GitHub annotations |
+| `--ci` | print gate failures as GitHub annotations on the file/line to blame |
 | `--jobs <n>` | analysis threads (default: every core) |
 
 Exit code is `0` on success, `1` when a `--fail-if` gate fails, and `2` for a

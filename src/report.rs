@@ -234,7 +234,7 @@ pub fn scan(
 
     let mut function_count = 0usize;
     let mut functions: Vec<FunctionRow> = Vec::new();
-    if options.functions {
+    if options.wants_function_table() {
         for entry in &business_refs {
             for function in &entry.facts.functions {
                 if function.test && !options.include_tests {

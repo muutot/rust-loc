@@ -65,7 +65,8 @@ OPTIONS:
     --cocomo-project-type <T>  organic, semi-detached, embedded, custom
     --cocomo-params <a,b,c,d>  custom COCOMO coefficients
     --fail-if <SPEC>         exit 1 when METRIC OP VALUE fails (repeatable)
-    --ci                     print gate failures as GitHub annotations
+    --ci                     print gate failures as GitHub annotations,
+                             pointing at the file (and function) to blame
     --jobs <N>               analysis threads [default: all cores]
     -h, --help               print this help
     -V, --version            print the version
@@ -502,7 +503,7 @@ pub fn run_checked(arguments: &[String], cwd: &Path) -> Result<(String, String, 
             if invocation.options.badge.is_some() || invocation.options.format != Format::Csv {
                 rendered.push('\n');
             }
-            let (gate_text, status) = check_gates(&invocation.options, &report)?;
+            let (gate_text, status) = check_gates(&invocation.options, &report, cwd)?;
             Ok((rendered, gate_text, status))
         }
     }
@@ -519,7 +520,11 @@ fn badge_needs(metric: badge::Metric, options: &mut Options) {
 }
 
 /// Evaluate every `--fail-if` rule against the business totals.
-fn check_gates(options: &Options, report: &report::Report) -> Result<(String, u8), String> {
+fn check_gates(
+    options: &Options,
+    report: &report::Report,
+    cwd: &Path,
+) -> Result<(String, u8), String> {
     if options.fail_if.is_empty() {
         return Ok((String::new(), 0));
     }
@@ -537,8 +542,12 @@ fn check_gates(options: &Options, report: &report::Report) -> Result<(String, u8
     let mut text = String::new();
     if options.ci {
         for (rule, value) in &failures {
+            let location = match rule.metric.blame(report, cwd) {
+                Some(spot) => spot.annotation(),
+                None => String::new(),
+            };
             text.push_str(&format!(
-                "::error title=rust-loc gate::{}\n",
+                "::error{location},title=rust-loc gate::{}\n",
                 rule.message(*value)
             ));
         }
@@ -546,6 +555,9 @@ fn check_gates(options: &Options, report: &report::Report) -> Result<(String, u8
         text.push_str("Quality gate failed\n");
         for (rule, value) in &failures {
             text.push_str(&format!("  {}\n", rule.message(*value)));
+            if let Some(spot) = rule.metric.blame(report, cwd) {
+                text.push_str(&format!("    worst: {}\n", spot.label()));
+            }
         }
     }
     Ok((text, 1))

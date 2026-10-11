@@ -1089,17 +1089,40 @@ fn fail_if_reports_violations_and_the_exit_status() {
 }
 
 #[test]
-fn ci_mode_prints_github_annotations() {
+fn ci_mode_points_at_the_worst_file_and_function() {
     let workspace = Workspace::new();
     workspace.write("src/lib.rs", BASIC);
     let (text, status) = workspace.checked(&["--fail-if", "code>1", "--ci"]);
     assert_eq!(status, 1);
     assert!(
-        text.contains("::error title=rust-loc gate::code 3 > 1"),
+        text.contains("::error,file=src/lib.rs,line=3,title=rust-loc gate::code 3 > 1"),
         "{}",
         text
     );
     assert!(!text.contains("Quality gate failed"), "{}", text);
+}
+
+#[test]
+fn a_file_scoped_gate_annotates_the_path_alone() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let (text, status) = workspace.checked(&["--fail-if", "blank>0", "--ci"]);
+    assert_eq!(status, 1);
+    assert!(
+        text.contains("::error,file=src/lib.rs,title=rust-loc gate::blank 1 > 0"),
+        "{}",
+        text
+    );
+    assert!(!text.contains("line="), "{}", text);
+}
+
+#[test]
+fn a_plain_gate_names_the_worst_file() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let (text, status) = workspace.checked(&["--fail-if", "code>1"]);
+    assert_eq!(status, 1);
+    assert!(text.contains("worst: src/lib.rs:3"), "{}", text);
 }
 
 #[test]

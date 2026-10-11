@@ -186,9 +186,20 @@ impl Options {
             uloc: self.uloc,
             // `--metrics` reports NOM and NARGS, so it needs the function list
             // even when `--functions` did not ask for the table.
-            functions: self.functions || self.metrics,
+            functions: self.functions || self.metrics || self.wants_function_table(),
             include_tests: self.include_tests,
             min_gen_line_length: self.min_gen_line_length,
         }
+    }
+
+    /// True when the function table has to be built: `--functions` shows it,
+    /// and a gate on a function scoped counter reads it to point an
+    /// annotation at the line of the worst function.
+    pub fn wants_function_table(&self) -> bool {
+        self.functions
+            || self
+                .fail_if
+                .iter()
+                .any(|rule| rule.metric.collects_functions())
     }
 }

@@ -3,8 +3,10 @@
 //! A gate is evaluated against the business totals the report already carries,
 //! so the same numbers a human reads decide the exit code.
 
-use crate::report::group;
-use crate::scan::Totals;
+use std::path::Path;
+
+use crate::report::{group, Report};
+use crate::scan::{self, Totals};
 
 /// The comparison an operator performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +145,91 @@ impl Metric {
             other => totals.column(other.key()),
         }
     }
+
+    /// True for the counters a single function can own, so an annotation can
+    /// point at its line rather than at the whole file.
+    pub fn per_function(self) -> bool {
+        matches!(self, Metric::Complexity | Metric::Code)
+    }
+
+    /// Locating this metric needs the function table, which the scan only
+    /// builds when something asks for it.
+    pub fn collects_functions(self) -> bool {
+        self.per_function()
+    }
+
+    /// The business file that contributes most to this metric, with the line
+    /// of its worst function when a function owns the counter.
+    pub fn blame(self, report: &Report, cwd: &Path) -> Option<Blame> {
+        if self == Metric::Files {
+            return None;
+        }
+        let key = self.key();
+        let worst = report
+            .business_entries()
+            .into_iter()
+            .max_by_key(|entry| entry.column(key))?;
+        if worst.column(key) == 0 {
+            return None;
+        }
+        let path = scan::relative(worst.path(), cwd);
+        let line = if self.per_function() {
+            report
+                .functions
+                .iter()
+                .filter(|row| row.path == path)
+                .max_by_key(|row| match self {
+                    Metric::Code => row.code,
+                    _ => row.complexity,
+                })
+                .map(|row| row.line)
+        } else {
+            None
+        };
+        Some(Blame { path, line })
+    }
+}
+
+/// The place a violated gate points at. A file scoped counter only knows the
+/// path; the counters a function owns also know a line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blame {
+    pub path: String,
+    pub line: Option<u32>,
+}
+
+impl Blame {
+    /// "src/main.rs:42", or just the path when the line is unknown.
+    pub fn label(&self) -> String {
+        match self.line {
+            Some(line) => format!("{}:{}", self.path, line),
+            None => self.path.clone(),
+        }
+    }
+
+    /// The "file=..." (and "line=...") part of a GitHub annotation, with the
+    /// values escaped the way the workflow commands require.
+    pub fn annotation(&self) -> String {
+        match self.line {
+            Some(line) => format!(",file={},line={line}", escape_property(&self.path)),
+            None => format!(",file={}", escape_property(&self.path)),
+        }
+    }
+}
+
+/// Percent, comma and colon break the property list of a workflow command,
+/// so they are the three characters that get escaped.
+fn escape_property(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '%' => out.push_str("%25"),
+            ',' => out.push_str("%2C"),
+            ':' => out.push_str("%3A"),
+            _ => out.push(character),
+        }
+    }
+    out
 }
 
 /// One `--fail-if` rule.
