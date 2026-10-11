@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::cocomo;
+use crate::gate;
 use crate::options::{Format, Options};
 use crate::{report, scan};
 
@@ -45,6 +46,8 @@ OPTIONS:
     --cocomo                 add a COCOMO cost estimate
     --cocomo-project-type <T>  organic, semi-detached, embedded, custom
     --cocomo-params <a,b,c,d>  custom COCOMO coefficients
+    --fail-if <SPEC>         exit 1 when METRIC OP VALUE fails (repeatable)
+    --ci                     print gate failures as GitHub annotations
     --jobs <N>               analysis threads [default: all cores]
     -h, --help               print this help
     -V, --version            print the version
@@ -132,6 +135,15 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
             "--exclude-generated" | "--no-gen" => options.exclude_generated = true,
             "--mark-generated" => options.mark_generated = true,
             "--cocomo" => options.cocomo = true,
+            "--fail-if" => {
+                let value = take(arguments, &mut index, "--fail-if")?;
+                options
+                    .fail_if
+                    .push(gate::Gate::parse(&value).ok_or_else(|| {
+                        format!("--fail-if needs METRIC OP VALUE, got {}", value)
+                    })?);
+            }
+            "--ci" => options.ci = true,
             "--cocomo-project-type" => {
                 let value = take(arguments, &mut index, "--cocomo-project-type")?;
                 let kind = cocomo::ProjectType::parse(&value)
@@ -251,6 +263,14 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                 }
                 options.cocomo_project = kind;
             }
+            other if other.starts_with("--fail-if=") => {
+                let value = &other["--fail-if=".len()..];
+                options
+                    .fail_if
+                    .push(gate::Gate::parse(value).ok_or_else(|| {
+                        format!("--fail-if needs METRIC OP VALUE, got {}", value)
+                    })?);
+            }
             other if other.starts_with('-') && other != "-" => {
                 return Err(format!("unknown option: {}", other));
             }
@@ -291,20 +311,59 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
 /// Parse, scan and render. The returned text is exactly what belongs on
 /// stdout, including the trailing newline Python's `print` would add.
 pub fn run(arguments: &[String], cwd: &Path) -> Result<String, String> {
+    run_checked(arguments, cwd).map(|(output, _status)| output)
+}
+
+/// Like run, but also reports the exit code the quality gates imply.
+pub fn run_checked(arguments: &[String], cwd: &Path) -> Result<(String, u8), String> {
     let invocation = parse(arguments, cwd)?;
     match invocation.action {
-        Action::Help => Ok(format!("{}\n", USAGE)),
-        Action::Version => Ok(format!("rust-loc {}\n", crate::VERSION)),
+        Action::Help => Ok((format!("{}\n", USAGE), 0)),
+        Action::Version => Ok((format!("rust-loc {}\n", crate::VERSION), 0)),
         Action::Report => {
             let report = report::scan(&invocation.roots, &invocation.options, cwd, None);
-            let rendered = report::render(&report, cwd);
-            Ok(if invocation.options.format == Format::Csv {
-                rendered
-            } else {
-                format!("{}\n", rendered)
-            })
+            let mut rendered = report::render(&report, cwd);
+            if invocation.options.format != Format::Csv {
+                rendered.push('\n');
+            }
+            let (gate_text, status) = check_gates(&invocation.options, &report)?;
+            rendered.push_str(&gate_text);
+            Ok((rendered, status))
         }
     }
+}
+
+/// Evaluate every `--fail-if` rule against the business totals.
+fn check_gates(options: &Options, report: &report::Report) -> Result<(String, u8), String> {
+    if options.fail_if.is_empty() {
+        return Ok((String::new(), 0));
+    }
+    let files = report.business.len() as u32;
+    let mut failures: Vec<(gate::Gate, f64)> = Vec::new();
+    for rule in &options.fail_if {
+        let value = rule.value(&report.summary, files, report.uloc_total)?;
+        if rule.violated(value) {
+            failures.push((*rule, value));
+        }
+    }
+    if failures.is_empty() {
+        return Ok((String::new(), 0));
+    }
+    let mut text = String::new();
+    if options.ci {
+        for (rule, value) in &failures {
+            text.push_str(&format!(
+                "::error title=rust-loc gate::{}\n",
+                rule.message(*value)
+            ));
+        }
+    } else {
+        text.push_str("Quality gate failed\n");
+        for (rule, value) in &failures {
+            text.push_str(&format!("  {}\n", rule.message(*value)));
+        }
+    }
+    Ok((text, 1))
 }
 
 #[cfg(test)]

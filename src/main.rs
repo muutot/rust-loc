@@ -13,10 +13,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match cli::run(&arguments, &cwd) {
-        Ok(output) => {
+    match cli::run_checked(&arguments, &cwd) {
+        Ok((output, status)) => {
             print!("{}", output);
-            ExitCode::SUCCESS
+            ExitCode::from(status)
         }
         Err(message) => {
             eprintln!("rust-loc: {}", message);

@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use crate::cocomo;
+use crate::gate;
 use crate::generated;
 use crate::scan;
 
@@ -53,6 +54,10 @@ pub struct Options {
     pub cocomo: bool,
     pub cocomo_project: cocomo::ProjectType,
     pub cocomo_params: cocomo::Params,
+    /// `--fail-if` rules; any violation exits with code 1.
+    pub fail_if: Vec<gate::Gate>,
+    /// Print gate failures as GitHub annotations.
+    pub ci: bool,
     pub format: Format,
     /// 0 means "use every available core".
     pub jobs: usize,
@@ -83,6 +88,8 @@ impl Default for Options {
             cocomo: false,
             cocomo_project: cocomo::ProjectType::Organic,
             cocomo_params: cocomo::ORGANIC,
+            fail_if: Vec::new(),
+            ci: false,
             format: Format::Text,
             jobs: 0,
         }

@@ -87,6 +87,16 @@ impl Workspace {
             .unwrap_or_else(|| panic!("no json entry ending with {}", suffix))
             .clone()
     }
+
+    /// Like `run`, but keeps the exit code the quality gates produced.
+    fn checked(&self, extra: &[&str]) -> (String, u8) {
+        let mut args: Vec<String> = vec![
+            self.path.display().to_string(),
+            "--no-gitignore".to_string(),
+        ];
+        args.extend(extra.iter().map(|item| item.to_string()));
+        cli::run_checked(&args, &self.path).expect("cli::run_checked failed")
+    }
 }
 
 impl Drop for Workspace {
@@ -749,4 +759,56 @@ fn bad_cocomo_arguments_are_rejected() {
     )
     .is_err());
     assert!(cli::parse(&arguments(&["--cocomo-params", "1,2,3"]), &workspace.path).is_err());
+}
+
+#[test]
+fn fail_if_reports_violations_and_the_exit_status() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let (text, status) = workspace.checked(&["--fail-if", "code>1"]);
+    assert_eq!(status, 1);
+    assert!(text.contains("Quality gate failed"), "{}", text);
+    assert!(text.contains("code 3 > 1"), "{}", text);
+    assert_eq!(workspace.checked(&["--fail-if", "code>100"]).1, 0);
+    assert_eq!(
+        workspace
+            .checked(&["--fail-if", "code>100"])
+            .0
+            .matches("Quality gate")
+            .count(),
+        0
+    );
+    assert_eq!(workspace.checked(&["--fail-if=code>=3"]).1, 1);
+    assert_eq!(workspace.checked(&["--fail-if", "code<1"]).1, 0);
+    assert_eq!(workspace.checked(&["--fail-if", "complexity==0"]).1, 1);
+    assert_eq!(workspace.checked(&["--fail-if", "files>1"]).1, 0);
+}
+
+#[test]
+fn ci_mode_prints_github_annotations() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let (text, status) = workspace.checked(&["--fail-if", "code>1", "--ci"]);
+    assert_eq!(status, 1);
+    assert!(
+        text.contains("::error title=rust-loc gate::code 3 > 1"),
+        "{}",
+        text
+    );
+    assert!(!text.contains("Quality gate failed"), "{}", text);
+}
+
+#[test]
+fn fail_if_rejects_bad_specs_and_needs_uloc() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let arguments = |extra: &[&str]| {
+        let mut args = vec![workspace.path.display().to_string()];
+        args.extend(extra.iter().map(|item| item.to_string()));
+        args
+    };
+    assert!(cli::run(&arguments(&["--fail-if", "nope"]), &workspace.path).is_err());
+    let error = cli::run(&arguments(&["--fail-if", "uloc>1"]), &workspace.path).unwrap_err();
+    assert!(error.contains("--uloc"), "{}", error);
+    assert_eq!(workspace.checked(&["--uloc", "--fail-if", "uloc>1"]).1, 1);
 }

@@ -6,6 +6,7 @@
 
 pub mod cli;
 pub mod cocomo;
+pub mod gate;
 pub mod generated;
 #[cfg(windows)]
 pub mod gui;

@@ -102,6 +102,25 @@ cost     = effort * 2452.67        US dollars
 your own. The estimate is derived from business code only, so it moves with
 `--include-tests` and `--exclude-generated` just like the line counters.
 
+### Quality gates
+
+`--fail-if <metric><op><value>` turns the report into a build check; repeat it
+for as many budgets as you like. The metric is any counter the report shows
+(`files`, `lines`, `blank`, `comment`, `doc`, `code`, `test`,
+`physical`, `complexity`, `unsafe`, `test-fns`, `uloc`), the operator is one
+of `> >= < <= == !=`, and the rule fails when the comparison holds:
+
+```console
+> rust-loc --fail-if "code>100000" --fail-if "complexity>=5000"
+> rust-loc --fail-if "unsafe==0" --fail-if "test-fns<20"
+```
+
+A failed rule prints *Quality gate failed* with the measured value and exits
+with code 1; `--ci` prints GitHub annotations
+(`::error title=rust-loc gate::...`) instead. Gates read the same business
+totals the report does, so `--include-tests` and `--exclude-generated` shift
+them too, and `--fail-if uloc...` asks for `--uloc`.
+
 ## Usage
 
 ```text
@@ -132,9 +151,12 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--cocomo` | add a COCOMO cost estimate for the business code |
 | `--cocomo-project-type <t>` | `organic`, `semi-detached`, `embedded`, `custom` |
 | `--cocomo-params <a,b,c,d>` | custom COCOMO coefficients |
+| `--fail-if <spec>` | exit 1 when `metric op value` fails (repeatable) |
+| `--ci` | print gate failures as GitHub annotations |
 | `--jobs <n>` | analysis threads (default: every core) |
 
-Exit code is `0` on success and `2` for a usage error.
+Exit code is `0` on success, `1` when a `--fail-if` gate fails, and `2` for a
+usage error.
 
 ```console
 > rust-loc src-tauri/src src-tauri/crates
@@ -145,6 +167,7 @@ Exit code is `0` on success and `2` for a usage error.
 > rust-loc --functions --top-functions 10
 > rust-loc --exclude-generated --by-file --sort code --top 20
 > rust-loc --cocomo --cocomo-project-type embedded --format markdown
+> rust-loc --fail-if "code>100000" --fail-if "unsafe>0" --ci
 ```
 
 ## Windows UI
@@ -294,7 +317,8 @@ by hand).
 2. ~~function-level metrics~~ - shipped as `--functions`;
 3. ~~COCOMO cost estimate on top of the business line count~~ - shipped as
    `--cocomo`;
-4. a CI gate: fail when the test-to-code ratio or complexity budget regresses;
+4. ~~a CI gate: fail when the test-to-code ratio or complexity budget
+   regresses~~ - shipped as `--fail-if` / `--ci`;
 5. baseline comparison (scan once, store JSON, diff two revisions);
 6. git hotspots: churn times complexity per file;
 7. ~~a native Windows UI (Win32, no web runtime)~~ - shipped as `rust-loc-gui`.
