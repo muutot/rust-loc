@@ -165,7 +165,9 @@ pub fn scan(
         done += files.len();
         let forward: Option<Box<Progress<'_>>> = match progress {
             Some(callback) => Some(Box::new(move |stage, index, _total, path| {
-                callback(stage, offset + index, total, path)
+                // Shown relative to the root, the way the tables name files.
+                let shown = scan::relative(path, root);
+                callback(stage, offset + index, total, Path::new(&shown))
             })),
             None => None,
         };

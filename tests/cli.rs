@@ -1405,8 +1405,10 @@ fn blame_reports_the_stage_that_outlasts_the_read() {
     assert!(commit_as(&workspace, "Ada", "ada@example.com", "first"));
 
     let seen = std::sync::Mutex::new(Vec::new());
-    let callback = |stage: Stage, done: usize, total: usize, _path: &std::path::Path| {
-        seen.lock().unwrap().push((stage, done, total));
+    let callback = |stage: Stage, done: usize, total: usize, path: &std::path::Path| {
+        seen.lock()
+            .unwrap()
+            .push((stage, done, total, path.display().to_string()));
     };
     let invocation = workspace.invocation(&["--no-gitignore", "--authors"]);
     report::scan(
@@ -1420,9 +1422,30 @@ fn blame_reports_the_stage_that_outlasts_the_read() {
     // Both have to reach the UI, or the bar sits at 100% while the slow half
     // of the scan is still running.
     let seen = seen.into_inner().unwrap();
-    assert!(seen.contains(&(Stage::Files, 2, 2)), "{seen:?}");
-    assert!(seen.contains(&(Stage::Blame, 1, 2)), "{seen:?}");
-    assert!(seen.contains(&(Stage::Blame, 2, 2)), "{seen:?}");
+    let of = |stage: Stage| -> Vec<(usize, usize, String)> {
+        seen.iter()
+            .filter(|entry| entry.0 == stage)
+            .map(|entry| (entry.1, entry.2, entry.3.clone()))
+            .collect()
+    };
+    assert_eq!(
+        of(Stage::Files).len(),
+        2,
+        "the read reports every file: {seen:?}"
+    );
+    // The caption names the file from the scan root, not from the drive.
+    let mut blamed = of(Stage::Blame);
+    blamed.sort();
+    assert_eq!(
+        blamed,
+        vec![
+            (1, 2, "src/first.rs".to_string()),
+            (2, 2, "src/second.rs".to_string()),
+        ]
+    );
+    assert!(of(Stage::Files)
+        .iter()
+        .all(|entry| entry.2.starts_with("src/")));
 }
 
 #[test]

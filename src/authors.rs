@@ -193,6 +193,13 @@ fn repo_tops(entries: &[&Entry]) -> Vec<Option<PathBuf>> {
         .collect()
 }
 
+/// Report one blamed file, named from the scan root the way the tables name
+/// files rather than from the drive the process happens to run on.
+fn report_blame(callback: &Progress<'_>, entry: &Entry, done: usize, total: usize) {
+    let shown = scan::relative(entry.path(), entry.root());
+    callback(Stage::Blame, done, total, Path::new(&shown));
+}
+
 /// Blame every entry in parallel, keeping one slot per entry. Every finished
 /// file is reported to `progress`, because this stage outlasts the read that
 /// filled the bar before it.
@@ -218,7 +225,7 @@ fn blame_all(
         for (index, slot) in results.iter_mut().enumerate() {
             *slot = blame(index);
             if let Some(callback) = progress {
-                callback(Stage::Blame, index + 1, total, entries[index].path());
+                report_blame(callback, entries[index], index + 1, total);
             }
         }
         return results;
@@ -241,7 +248,7 @@ fn blame_all(
                 }
                 let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 if let Some(callback) = progress {
-                    callback(Stage::Blame, finished, total, entries[index].path());
+                    report_blame(callback, entries[index], finished, total);
                 }
             });
         }
