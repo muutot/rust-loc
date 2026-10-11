@@ -805,8 +805,10 @@ fn parse_carries_every_switch() {
         "*/gen/*",
         "--ignore-dir",
         "tmp",
+        "--hotspots",
     ]);
     let options = invocation.options;
+    assert!(options.hotspots);
     assert!(options.by_file);
     assert_eq!(options.sort, "lines");
     assert_eq!(options.top, 5);
@@ -1147,4 +1149,88 @@ fn fail_if_rejects_bad_specs_and_needs_uloc() {
     let error = cli::run(&arguments(&["--fail-if", "uloc>1"]), &workspace.path).unwrap_err();
     assert!(error.contains("--uloc"), "{}", error);
     assert_eq!(workspace.checked(&["--uloc", "--fail-if", "uloc>1"]).1, 1);
+}
+
+/// True when a git subcommand succeeds. History tests skip when git is absent
+/// so the suite still passes on a machine without it.
+fn git_ok(dir: &std::path::Path, args: &[&str]) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[test]
+fn hotspots_stay_hidden_unless_asked_for() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let out = workspace.run(&[]);
+    assert!(!out.contains("Git hotspots"), "{}", out);
+}
+
+#[test]
+fn hotspots_without_a_repository_print_an_empty_section() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let out = workspace.run(&["--hotspots"]);
+    assert!(out.contains("Git hotspots"), "{}", out);
+    assert!(out.contains("no git history"), "{}", out);
+}
+
+#[test]
+fn hotspots_rank_files_by_complexity_and_churn() {
+    let workspace = Workspace::new();
+    workspace.write("src/busy.rs", &"fn busy() {}\n".repeat(40));
+    workspace.write("src/idle.rs", &"fn idle() {}\n".repeat(40));
+    if !git_ok(&workspace.path, &["init", "-q"]) {
+        return; // git is not installed; nothing to assert
+    }
+    let commit = |message: &str| {
+        git_ok(&workspace.path, &["add", "-A"]);
+        git_ok(
+            &workspace.path,
+            &[
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
+        );
+    };
+    commit("first");
+    for round in 1..=2 {
+        let mut text = "fn busy() {}\n".repeat(40);
+        for line in 0..10 * round {
+            text.push_str(&format!("// touch {line}\n"));
+        }
+        workspace.write("src/busy.rs", &text);
+        commit(&format!("touch {round}"));
+    }
+    let out = workspace.run(&["--hotspots", "--format", "json", "--top", "10"]);
+    let document = json::parse(&out);
+    let rows = document.get("hotspots").unwrap().items();
+    assert_eq!(
+        document.get("hotspot_total").unwrap().integer(),
+        rows.len() as u64
+    );
+    let busy = rows
+        .iter()
+        .find(|row| row.get("path").unwrap().text() == "src/busy.rs")
+        .expect("busy.rs should be ranked");
+    assert_eq!(busy.get("commits").unwrap().integer(), 3);
+    assert!(busy.get("churn").unwrap().integer() >= 60);
+    assert_eq!(
+        rows[0].get("path").unwrap().text(),
+        "src/busy.rs",
+        "the most churned file should lead"
+    );
 }

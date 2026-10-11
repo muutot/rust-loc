@@ -58,6 +58,8 @@ pub struct Options {
     pub cocomo_params: cocomo::Params,
     /// Report panic-shaped calls and lint escapes (unwrap/expect/panic/allow).
     pub smells: bool,
+    /// Rank files by complexity times how often git says they change.
+    pub hotspots: bool,
     /// `--fail-if` rules; any violation exits with code 1.
     pub fail_if: Vec<gate::Gate>,
     /// Print gate failures as GitHub annotations.
@@ -99,6 +101,7 @@ impl Default for Options {
             cocomo_project: cocomo::ProjectType::Organic,
             cocomo_params: cocomo::ORGANIC,
             smells: false,
+            hotspots: false,
             fail_if: Vec::new(),
             ci: false,
             format: Format::Text,

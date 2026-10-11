@@ -10,6 +10,7 @@ pub mod cocomo;
 pub mod config;
 pub mod gate;
 pub mod generated;
+pub mod git;
 #[cfg(windows)]
 pub mod gui;
 pub mod lexer;

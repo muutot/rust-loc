@@ -283,7 +283,7 @@ pub fn apply_gitignore(root: &Path, files: Vec<PathBuf>, enabled: bool) -> Vec<P
 }
 
 /// Run git hidden (no console window flash) and return stdout on success.
-fn run_git(dir: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Option<String> {
     let mut command = std::process::Command::new("git");
     command.arg("-C").arg(dir).args(args);
     #[cfg(windows)]

@@ -210,6 +210,33 @@ taken from another directory still lines up. A file that does not start with
 `# rust-loc snapshot v1`, or a row that is not `path` TAB `lines` TAB `code`
 TAB `complexity` TAB `smells`, is refused with the line number.
 
+### Git hotspots
+
+`--hotspots` ranks files by `complexity x churn` (the way `scc --hotspots`
+does): a file that is both hard to read and rewritten often is where bugs
+hide. Churn is the lines added plus removed across `git log --no-merges`,
+and the commit count is how often the file was touched, so a small file
+edited ten times can outrank a large one that has not moved:
+
+```console
+> rust-loc --hotspots --top 10
+Git hotspots
+  15 file(s) ranked by complexity x churn
+
+File                        Code    Cplx  Commits       Churn
+-------------------------------------------------------------
+src/gui/window.rs          2,223     230        4       2,427
+src/lexer.rs                 758     272        3         850
+src/report.rs              1,231     146        7       1,227
+```
+
+The first scan root that lives in a git repository decides which history is
+used; files from other roots have no churn and drop out. When git is missing,
+or the root is not a repository, the section prints `no git history for these
+files` instead of failing. `--top` caps the rows (default 15), and `--format
+json` adds a `hotspots` array plus `hotspot_total` so a build can script the
+ranking.
+
 ## Usage
 
 ```text
@@ -239,6 +266,7 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--functions` | list functions ranked by complexity |
 | `--top-functions <n>` | rows in the function list (default 20, `0` = all) |
 | `--smells` | add the panic-call / lint-escape counters to the report |
+| `--hotspots` | rank files by complexity times git churn |
 | `--exclude-generated` | drop generated/minified files from the totals |
 | `--mark-generated` | tag listings with `(gen)`/`(min)` instead |
 | `--min-gen-line-length <n>` | minified line-length threshold (default 255) |
@@ -266,6 +294,7 @@ usage error.
 > rust-loc --config ci/.rustloc.toml --format json
 > rust-loc --snapshot ci/baseline.txt
 > rust-loc --baseline ci/baseline.txt --by-file --sort code
+> rust-loc --hotspots --top 10
 ```
 
 ## Windows UI
@@ -434,5 +463,6 @@ by hand).
    regresses~~ - shipped as `--fail-if` / `--ci`;
 5. ~~baseline comparison (scan once, store it, diff two revisions)~~ -
    shipped as `--snapshot` / `--baseline`;
-6. git hotspots: churn times complexity per file;
+6. ~~git hotspots: churn times complexity per file~~ - shipped as
+   `--hotspots`;
 7. ~~a native Windows UI (Win32, no web runtime)~~ - shipped as `rust-loc-gui`.

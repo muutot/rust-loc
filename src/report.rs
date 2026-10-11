@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::baseline;
 use crate::cocomo;
+use crate::git;
 use crate::options::{Format, Options};
 use crate::scan::{self, Entry, FileFacts, Progress, Totals};
 
@@ -34,6 +35,19 @@ pub struct CocomoRow {
     pub estimate: cocomo::Estimate,
 }
 
+/// One file in the git hotspots ranking.
+pub struct HotspotRow {
+    pub path: String,
+    pub code: u32,
+    pub complexity: u32,
+    pub commits: u64,
+    pub churn: u64,
+    pub score: u64,
+}
+
+/// Rows in the hotspot ranking unless `--top` says otherwise.
+pub const DEFAULT_HOTSPOTS: usize = 15;
+
 pub struct Report {
     pub roots: Vec<PathBuf>,
     pub options: Options,
@@ -52,6 +66,8 @@ pub struct Report {
     pub cocomo: Option<CocomoRow>,
     /// Comparison with a saved snapshot, when --baseline asked for one.
     pub diff: Option<baseline::Diff>,
+    /// Files ranked by complexity and git churn, when asked for.
+    pub hotspots: Vec<HotspotRow>,
 }
 
 impl Report {
@@ -213,6 +229,14 @@ pub fn scan(
         None
     };
 
+    // Ranked before the entries move into the report, because the ranking
+    // borrows them through `business_refs`.
+    let hotspots = if options.hotspots {
+        rank_hotspots(&business_refs, roots, options, cwd)
+    } else {
+        Vec::new()
+    };
+
     let mut report = Report {
         roots: roots.to_vec(),
         options: options.clone(),
@@ -227,12 +251,55 @@ pub fn scan(
         function_count,
         cocomo: cocomo_row,
         diff: None,
+        hotspots,
     };
     report.diff = options
         .baseline
         .as_ref()
         .map(|snapshot| baseline::Diff::of(&report, snapshot, cwd));
     report
+}
+
+/// Rank files by complexity times git churn, the way `scc --hotspots` does.
+/// The first root that lives in a git repository decides which history to
+/// use; files from other roots have no churn and simply drop out.
+fn rank_hotspots(
+    entries: &[&Entry],
+    roots: &[PathBuf],
+    options: &Options,
+    cwd: &Path,
+) -> Vec<HotspotRow> {
+    let Some((toplevel, churn)) = roots.iter().find_map(|root| git::churn(root)) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<HotspotRow> = entries
+        .iter()
+        .filter_map(|entry| {
+            let key = git::repo_relative(entry.path(), &toplevel)?;
+            let change = churn.get(&key).copied().unwrap_or_default();
+            Some(HotspotRow {
+                path: scan::relative(entry.path(), cwd),
+                code: entry.stats.code,
+                complexity: entry.stats.complexity,
+                commits: change.commits,
+                churn: change.lines(),
+                score: u64::from(entry.stats.complexity) * change.lines(),
+            })
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then(b.churn.cmp(&a.churn))
+            .then(a.path.cmp(&b.path))
+    });
+    let limit = if options.top > 0 {
+        options.top
+    } else {
+        DEFAULT_HOTSPOTS
+    };
+    rows.truncate(limit);
+    rows
 }
 
 /// 1234567 -> 1,234,567, matching Python string formatting.
@@ -552,6 +619,10 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push(String::new());
         render_functions_text(report, &mut out);
     }
+    if options.hotspots {
+        out.push(String::new());
+        render_hotspots_text(report, &mut out);
+    }
     out.join("\n")
 }
 
@@ -627,6 +698,41 @@ fn render_functions_text(report: &Report, out: &mut Vec<String>) {
             group(row.complexity),
             row.params,
             row.depth
+        ));
+        out.push(line);
+    }
+}
+
+/// Files that are both complex and often changed, worst first.
+fn render_hotspots_text(report: &Report, out: &mut Vec<String>) {
+    let rows = &report.hotspots;
+    out.push("Git hotspots".to_string());
+    out.push(format!(
+        "  {} file(s) ranked by complexity x churn",
+        group(rows.len() as u32)
+    ));
+    if rows.is_empty() {
+        out.push("  no git history for these files".to_string());
+        return;
+    }
+    out.push(String::new());
+    let paths: Vec<String> = rows.iter().map(|row| row.path.clone()).collect();
+    let path_width = column_width(&paths, "File", 24, 64);
+    let mut head = pad("File", path_width);
+    head.push_str(&format!(
+        "{:>8}{:>8}{:>9}{:>12}",
+        "Code", "Cplx", "Commits", "Churn"
+    ));
+    out.push(head);
+    out.push("-".repeat(path_width + 37));
+    for (row, path) in rows.iter().zip(paths.iter()) {
+        let mut line = pad(&clip(path, path_width), path_width);
+        line.push_str(&format!(
+            "{:>8}{:>8}{:>9}{:>12}",
+            group(row.code),
+            group(row.complexity),
+            group(row.commits),
+            group(row.churn)
         ));
         out.push(line);
     }
@@ -794,6 +900,24 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
             out.push(format!(
                 "| `{}` | `{}:{}` | {} | {} | {} | {} |",
                 row.name, row.path, row.line, row.code, row.complexity, row.params, row.depth
+            ));
+        }
+        out.push(String::new());
+    }
+    if options.hotspots {
+        out.push("### Git hotspots".to_string());
+        out.push(String::new());
+        out.push(format!(
+            "{} file(s) ranked by complexity x churn",
+            group(report.hotspots.len() as u32)
+        ));
+        out.push(String::new());
+        out.push("| File | Code | Cplx | Commits | Churn |".to_string());
+        out.push("| --- | ---: | ---: | ---: | ---: |".to_string());
+        for row in &report.hotspots {
+            out.push(format!(
+                "| `{}` | {} | {} | {} | {} |",
+                row.path, row.code, row.complexity, row.commits, row.churn
             ));
         }
         out.push(String::new());
@@ -1065,6 +1189,25 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
             ));
         }
         out.push_str(&format!("  \"functions\": {},\n", json_array(&items, 2)));
+    }
+    if options.hotspots {
+        let mut items: Vec<String> = Vec::with_capacity(report.hotspots.len());
+        for row in &report.hotspots {
+            items.push(format!(
+                "{{\"path\": {}, \"code\": {}, \"complexity\": {}, \"commits\": {}, \"churn\": {}, \"score\": {}}}",
+                json_string(&row.path),
+                row.code,
+                row.complexity,
+                row.commits,
+                row.churn,
+                row.score
+            ));
+        }
+        out.push_str(&format!(
+            "  \"hotspot_total\": {},\n",
+            report.hotspots.len()
+        ));
+        out.push_str(&format!("  \"hotspots\": {},\n", json_array(&items, 2)));
     }
     if let Some(diff) = &report.diff {
         let mut items: Vec<String> = Vec::with_capacity(diff.files.len());
