@@ -215,7 +215,7 @@ pub fn cards(
         raised(
             hdc,
             &bounds,
-            theme.px(10),
+            theme.px(theme::R_CARD),
             theme::CARD_BG,
             Some(theme::BORDER),
         );
@@ -344,7 +344,7 @@ pub fn composition(
     }
     let width = track.right - track.left;
     let visible = segments.iter().filter(|segment| segment.1 > 0).count();
-    clipped(hdc, &track, bar_height / 2, || {
+    clipped(hdc, &track, theme.px(theme::R_CARD), || {
         let mut cursor = track.left;
         let mut drawn = 0usize;
         let mut seams: Vec<i32> = Vec::with_capacity(visible);
@@ -513,7 +513,7 @@ pub fn modules(
                 track_right,
                 middle + theme.px(6),
             ),
-            theme.px(6),
+            theme.px(theme::R_MARK),
             theme::BAR_TRACK,
             None,
         );
@@ -527,7 +527,7 @@ pub fn modules(
                     (track_left + span).min(track_right),
                     middle + theme.px(6),
                 ),
-                theme.px(6),
+                theme.px(theme::R_MARK),
                 theme::ACCENT,
                 None,
             );
@@ -588,7 +588,7 @@ pub fn tooltip(hdc: HDC, area: &RECT, hover: &Hover, theme: &theme::Theme) {
     card(
         hdc,
         &bounds,
-        theme.px(6),
+        theme.px(theme::R_CARD),
         theme::TIP_BG,
         Some(theme::TIP_BORDER),
     );
@@ -654,7 +654,7 @@ fn spark_card(hdc: HDC, spark: &Spark, theme: &theme::Theme) {
     raised(
         hdc,
         &area,
-        theme.px(10),
+        theme.px(theme::R_CARD),
         theme::CARD_BG,
         Some(theme::BORDER),
     );
@@ -755,7 +755,7 @@ fn bars(hdc: HDC, area: &RECT, values: &[u32], tone: u32, theme: &theme::Theme) 
                 left + bar,
                 area.bottom,
             ),
-            theme.px(3),
+            theme.px(theme::R_MARK),
             tone,
             None,
         );
@@ -815,7 +815,7 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
         cursor + version_width + theme.px(7),
         spec.header.bottom - theme.px(15),
     );
-    card(hdc, &chip, theme.px(9), theme::TRACK_BG, None);
+    card(hdc, &chip, theme.px(theme::R_MARK), theme::TRACK_BG, None);
     let mut version = rect(cursor, chip.top, cursor + version_width, chip.bottom);
     text(
         hdc,
@@ -872,7 +872,7 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
     card(
         hdc,
         &spec.table,
-        theme.px(10),
+        theme.px(theme::R_CARD),
         theme::CARD_BG,
         Some(theme::BORDER),
     );
@@ -945,7 +945,7 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
             card(
                 hdc,
                 &pill,
-                (pill.bottom - pill.top) / 2,
+                theme.px(theme::R_CONTROL),
                 theme::ACCENT_SOFT,
                 None,
             );
@@ -1030,7 +1030,7 @@ pub fn button(
             (fill, None, theme::TEXT)
         }
     };
-    card(hdc, &bounds, theme.px(8), background, border);
+    card(hdc, &bounds, theme.px(theme::R_CONTROL), background, border);
     let mut label = bounds;
     let mut text_buffer = vec![0u16; 256];
     let length = unsafe {
@@ -1082,7 +1082,13 @@ pub fn list_item(hdc: HDC, item: &DRAWITEMSTRUCT, theme: &theme::Theme) {
         bounds.bottom - theme.px(2),
     );
     if selected {
-        card(hdc, &pill, theme.px(6), theme::ACCENT_SOFT, None);
+        card(
+            hdc,
+            &pill,
+            theme.px(theme::R_MARK),
+            theme::ACCENT_SOFT,
+            None,
+        );
     }
     let colour = if selected {
         theme::ACCENT_DARK
@@ -1127,14 +1133,14 @@ pub fn overlay(hdc: HDC, area: &RECT, done: usize, total: usize, path: &str, the
             bounds.right + theme.px(4),
             bounds.bottom + theme.px(6),
         ),
-        theme.px(18),
+        theme.px(theme::R_CARD + 2),
         theme::SHADOW,
         None,
     );
     card(
         hdc,
         &bounds,
-        theme.px(14),
+        theme.px(theme::R_CARD),
         theme::VEIL_CARD,
         Some(theme::VEIL_BORDER),
     );
@@ -1179,7 +1185,13 @@ pub fn overlay(hdc: HDC, area: &RECT, done: usize, total: usize, path: &str, the
         bounds.right - padding,
         track_top + theme.px(14),
     );
-    card(hdc, &track, theme.px(7), theme::VEIL_TRACK, None);
+    card(
+        hdc,
+        &track,
+        theme.px(theme::R_MARK),
+        theme::VEIL_TRACK,
+        None,
+    );
     let track_width = (track.right - track.left).max(1) as u64;
     let span = (done as u64)
         .saturating_mul(track_width)
@@ -1192,7 +1204,13 @@ pub fn overlay(hdc: HDC, area: &RECT, done: usize, total: usize, path: &str, the
             (track.left + span).min(track.right),
             track.bottom,
         );
-        card(hdc, &filled, theme.px(7), theme::VEIL_ACCENT, None);
+        card(
+            hdc,
+            &filled,
+            theme.px(theme::R_MARK),
+            theme::VEIL_ACCENT,
+            None,
+        );
     }
     let mut caption = rect(
         left + padding,

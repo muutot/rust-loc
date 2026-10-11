@@ -187,7 +187,7 @@ unsafe extern "system" fn field_proc(
                     paint::fill(hdc, client, theme::CARD_BG);
                     let control = state.frame_control(hwnd);
                     let focused = !control.is_null() && unsafe { GetFocus() } == control;
-                    paint::field(hdc, client, state.theme.px(8), focused);
+                    paint::field(hdc, client, state.theme.px(theme::R_CONTROL), focused);
                 });
             });
             0
@@ -580,7 +580,7 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             state,
             app::ID_ROOTS,
             rect(left, y, left + inner, y + roots_height),
-            px(8),
+            px(theme::R_CONTROL),
             false,
         );
         // The owner drawn rows need their height too, and a DPI change has to
@@ -650,7 +650,7 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             state,
             app::ID_EXCLUDE,
             rect(left, y, left + inner, y + metrics.control),
-            px(8),
+            px(theme::R_CONTROL),
             true,
         );
         y += metrics.control + px(3);
@@ -671,7 +671,7 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             state,
             app::ID_EXTRA_DIRS,
             rect(left, y, left + inner, y + metrics.control),
-            px(8),
+            px(theme::R_CONTROL),
             true,
         );
         y += metrics.control + px(3);
@@ -697,7 +697,7 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             left,
             language_top + metrics.section,
             inner,
-            px(8),
+            px(theme::R_CONTROL),
             px(200),
         );
         unsafe {
@@ -729,7 +729,7 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             combo_left,
             field_top,
             combo_width,
-            px(8),
+            px(theme::R_CONTROL),
             px(200),
         );
         let filter_right = combo_left - px(8);
@@ -743,7 +743,7 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
                 filter_left + px(200),
                 field_top + metrics.control,
             ),
-            px(8),
+            px(theme::R_CONTROL),
             true,
         );
         labels.push(label(

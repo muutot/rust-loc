@@ -37,6 +37,13 @@ pub const CHIP_PRESS: u32 = rgb(0xD6DEED);
 /// A lighter blue under the pointer, darker while pressed.
 pub const ACCENT_HOVER: u32 = rgb(0x3B78F0);
 
+/// Corner radii, in logical pixels. The chrome stays close to square on
+/// purpose - a three to five pixel arc reads as a modern surface, while
+/// anything rounder reads as a bubble.
+pub const R_CARD: i32 = 5;
+pub const R_CONTROL: i32 = 4;
+pub const R_MARK: i32 = 3;
+
 pub const COLOR_CODE: u32 = rgb(0x2563EB);
 pub const COLOR_DOC: u32 = rgb(0x8B5CF6);
 pub const COLOR_COMMENT: u32 = rgb(0x22C55E);
