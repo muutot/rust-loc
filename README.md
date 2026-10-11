@@ -1,13 +1,15 @@
 # rust-loc
 
-Count Rust source lines with **test code excluded**, plus the metrics the other
-counters skip: ULOC/DRYness, an scc-compatible complexity estimate, `unsafe` use
-and test-function totals.
+Count source lines with **test code excluded** — Rust by default, Python too
+with `--sources` — plus the metrics the other counters skip: ULOC/DRYness, an
+scc-compatible complexity estimate, `unsafe` use and test-function totals.
 
 `rust-loc` is a single-binary Rust tool. `python/` holds the original Python
-implementation, kept as the **reference implementation**: the Rust CLI is
-verified to emit byte-identical reports for text, JSON, CSV and Markdown, and
-`scripts/check-parity.ps1` re-runs that comparison on demand.
+implementation the Rust port was matched against line for line, and
+`scripts/check-parity.ps1` re-runs that comparison on a tree both CLIs
+understand. The Rust CLI is the maintained one: it has since grown switches the
+reference never had (positional roots, `--sources`, the gate suite, the
+functions and smells tables).
 
 ## Why another line counter
 
@@ -22,19 +24,59 @@ blank, then subtracts test code so the numbers describe the shipped logic. It
 matches the competitors on the core columns (`files`, `lines`, `blank`,
 `comment`, `code`) so it can be dropped into an existing dashboard.
 
+## Source languages
+
+`--sources <rust|python|all>` picks what a scan reads. The default is `rust`,
+so every existing invocation counts exactly the `.rs` files it always did.
+`--sources python` reads a Python tree instead, and `--sources all` reads both,
+which is what a repository that ships a Rust core with a Python tool wants from
+one run.
+
+```console
+> rust-loc --sources python tools
+> rust-loc --sources all src python --by-file
+```
+
+A language brings its own reader and its own idea of a test; everything
+downstream — the tables, the gates, the badges, the JSON — is shared. The
+report heading, the block titles and the JSON `scope.sources` key follow the
+selection, so a Python-only run never claims to have counted Rust.
+
+| Language | Reader | Counted as test code, excluded by default |
+| --- | --- | --- |
+| Rust | `src/lexer.rs` | `tests/`, `benches/`, `*_test.rs` files, `#[cfg(test)]` items, `#![cfg(test)]` crates |
+| Python | `src/pylexer.rs` | `test_*.py`, `*_test.py`, `conftest.py`, `tests/` packages, and the bodies of `def test_*` / `class Test*` (including pytest, unittest, mock and hypothesis decorated tests) |
+
+### Python
+
+The Python reader mirrors the Rust one, with the language's own spellings:
+
+| Metric | Python |
+| --- | --- |
+| `doc` | docstrings (triple-quoted `"` or `'`) on a module, class or def |
+| `complexity` | `if` / `elif` / `else`, `for`, `while`, `except`, `and` / `or`, `==` / `!=`, and `case` branches |
+| `test_fns` | `def test_*` functions |
+| `todo` | `TODO` / `FIXME` / `XXX` comments |
+| `unimplemented` | `NotImplementedError` |
+| `allow` | `noqa`, `type: ignore`, `pylint: disable`, `pyright: ignore`, `mypy: ignore` |
+
+`unsafe`, `unwrap`, `expect` and `panic` are Rust spellings with no Python
+counterpart, so they stay zero and the report drops the *Unsafe* row rather than
+print a misleading `0`.
+
 ## Metrics
 
 | Metric | Meaning |
 | --- | --- |
-| `files` | analysed `.rs` files after test-only files are removed |
+| `files` | analysed source files (`.rs`, or `.py` with `--sources`) after test-only files are removed |
 | `lines` | `blank + comment + code` for the business scope |
 | `blank` / `comment` / `code` | per-line classification, excluding test lines |
 | `doc` | subset of `comment`: `///`, `//!`, `/** */`, `/*! */` |
-| `test` | lines inside test-only files or `#[cfg(test)]` items |
-| `complexity` | approximate cyclomatic complexity using scc's Rust branch tokens (`if else for while loop match && || == !=`) |
+| `test` | lines inside test-only files or test items (`#[cfg(test)]` / `def test_*`) |
+| `complexity` | approximate cyclomatic complexity using scc's branch tokens (Rust: `if else for while loop match && \|\| == !=`; Python: `if elif else for while except and or == != case`) |
 | `unsafe` | `unsafe` keyword count (cargo-count style) |
 | `test_fns` | functions carrying `#[test]`, `#[tokio::test]`, `#[rstest]`, ... |
-| `smells` | `unwrap + expect + panic + todo + unimplemented + allow` |
+| `smells` | `unwrap + expect + panic + todo + unimplemented + allow` (Rust); `todo + unimplemented + allow` (Python) |
 | `unwrap` / `expect` | calls to those `Option`/`Result` methods (a field sharing the name is not one) |
 | `panic` / `todo` / `unimplemented` | `panic!()`, `todo!()`, `unimplemented!()` macro calls |
 | `allow` | `#[allow(...)]` lint escapes |
@@ -166,6 +208,7 @@ top = 20
 functions = true
 top_functions = 10
 smells = true
+authors = true
 cocomo = true
 jobs = 8
 
@@ -268,6 +311,54 @@ or the root is not a repository, the section prints `no git history for these
 files` instead of failing. `--top` caps the rows (default 15), and `--format
 json` adds a `hotspots` array plus `hotspot_total` so a build can script the
 ranking.
+
+### Who wrote the lines
+
+`--authors` blames every business file and hands each line to the author who
+last touched it. The blamed line is classified with the same lexer the file
+listing uses, so an author's code, comment and blank columns add up to the same
+totals the summary prints:
+
+```console
+> rust-loc --authors
+Authors
+  2 author(s), 15,471 code lines across 36 blamed file(s)
+  3 file(s) are not in git, so their lines are not counted
+
+Author              Files      Lines        Code   Comment    Blank   Share
+---------------------------------------------------------------------------
+Muu                    36     16,958      15,067     1,021      870   97.4%
+Not Committed Yet      14        550         404        85       61    2.6%
+```
+
+`--by-file` turns the same blame into a per-file breakdown, one block per file
+with each author's share below it, so the owners of a single file are visible at
+a glance:
+
+```console
+> rust-loc --authors --by-file --top 2
+Per-file authors
+  File / author          Lines        Code   Comment    Blank
+  src/gui/window.rs
+    Muu                  2,941       2,710       132       99
+    Not Committed Yet         51          34         9        8
+  src/report.rs
+    Muu                  1,865       1,758        50       57
+    Not Committed Yet        336         283        26       27
+```
+
+The email is the identity when git has one, otherwise the name, and lines that
+are still uncommitted are kept in a `Not Committed Yet` row instead of being
+dropped. Files git does not track (ignored, or outside the repository) are
+reported in the header so the blamed lines never silently disagree with the
+summary. `--format json` adds `authors_available`, `authors_untracked`, an
+`authors` array and, with `--by-file`, a `file_authors` array, and
+`--format markdown` carries the same table plus one bullet list per file.
+
+The attribution is blame attribution: a reformatted line belongs to whoever last
+rewrote it, not to the person who first wrote it. The scan costs one
+`git blame` per file, so `--authors` is deliberately off unless asked for;
+without the flag nothing here runs and no report changes.
 
 ### Maintainability and cognitive complexity
 
@@ -432,7 +523,7 @@ a shell would print:
 
 | Tool | Arguments | Answer |
 | --- | --- | --- |
-| `scan` | the scope switches (`roots`, `include_tests`, `exclude`, `exclude_generated`, `uloc`, `smells`, `functions`, `metrics`, `languages`, `duplicates`, `hotspots`, `cocomo`) and `format` | the report, JSON by default and text, markdown or CSV on request |
+| `scan` | the scope switches (`roots`, `include_tests`, `exclude`, `exclude_generated`, `uloc`, `smells`, `functions`, `metrics`, `languages`, `duplicates`, `hotspots`, `authors`, `by_file`, `cocomo`) and `format` | the report, JSON by default and text, markdown or CSV on request |
 | `gate` | the same scope plus `rules`, e.g. `["code>100000", "complexity>5000"]` | `failed`, and one entry per rule with its value, limit, verdict and the file (and function) to blame |
 | `history` | the `path` of a file `--history` wrote, and an optional `metric` | the series, its sparkline, every per-trend series and the change since the previous scan |
 
@@ -473,6 +564,7 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--top <n>` | limit listings to `n` rows |
 | `--show-excluded` | list the excluded test-only files |
 | `--include-tests` | count test code as well |
+| `--sources <rust\|python\|all>` | source languages to read (default `rust`) |
 | `--exclude <glob>` | skip matching paths (repeatable) |
 | `--ignore-dir <name>` | skip a directory name (repeatable) |
 | `--no-ignore-dirs` | do not skip the built-in directory list |
@@ -483,6 +575,7 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--top-functions <n>` | rows in the function list (default 20, `0` = all) |
 | `--smells` | add the panic-call / lint-escape counters to the report |
 | `--hotspots` | rank files by complexity times git churn |
+| `--authors`, `--blame` | attribute every business line to its last author with `git blame` |
 | `--metrics` | add cognitive complexity, Halstead volume and the MI score |
 | `--languages`, `--langs` | per-language breakdown for the whole tree |
 | `--duplicates`, `--dup` | find blocks of lines copied from elsewhere |
@@ -505,6 +598,8 @@ usage error.
 > rust-loc src-tauri/src src-tauri/crates
 > rust-loc --by-file --sort complexity --top 15
 > rust-loc --format markdown --by-module --uloc
+> rust-loc --sources python tools --smells
+> rust-loc --sources all src python --by-file --sort code
 > rust-loc --format csv --by-file > loc.csv
 > rust-loc --format json --show-excluded --uloc .
 > rust-loc --functions --top-functions 10
@@ -523,7 +618,8 @@ usage error.
 ## Windows UI
 
 `rust-loc-gui.exe` is a native Win32 front end over the same library: one
-window, no web runtime, no UI toolkit. A scan-root sidebar owns the options,
+window, no web runtime, no UI toolkit. A scan-root sidebar owns the options
+(including the *Sources* selector that picks Rust, Python or both),
 the results pane shows a line-composition bar, a top-module chart, the KPI
 cards and a tabbed per-file / per-module / per-function / excluded-file table.
 A scan runs on
@@ -623,7 +719,11 @@ rest being directory walking and the `git ls-files` call for `.gitignore`.
 
 | Path | Contents |
 | --- | --- |
-| `src/lexer.rs` | single-pass tokeniser: line classes, metrics, `#[cfg(test)]` spans |
+| `src/lexer.rs` | Rust single-pass tokeniser: line classes, metrics, `#[cfg(test)]` spans |
+| `src/pylexer.rs` | Python tokeniser: docstrings, `def test_*` spans, the same metrics shape |
+| `src/sources.rs` | the `--sources` selection: languages, extensions, git pathspecs |
+| `src/git.rs` | the git helpers: repository root, `numstat` churn and history |
+| `src/authors.rs` | `git blame` attribution: per-author and per-file line shares |
 | `src/scan.rs` | discovery, glob/gitignore filtering, parallel analysis, aggregation |
 | `src/report.rs` | text, JSON, CSV and Markdown renderers |
 | `src/options.rs` | scan options shared by every renderer |
@@ -645,7 +745,7 @@ rest being directory walking and the `git ls-files` call for `.gitignore`.
 > cargo build --release      # target/release/rust-loc.exe
 > cargo build --release --bin rust-loc-gui   # target/release/rust-loc-gui.exe
 > cargo build --release --bin rust-loc-mcp   # target/release/rust-loc-mcp.exe
-> cargo test                 # 268 tests
+> cargo test                 # 320 tests
 > cargo clippy --all-targets -- -D warnings
 > cargo fmt --all
 ```
@@ -714,7 +814,10 @@ by hand).
     score~~ - shipped as `--metrics`;
 11. ~~a per-language breakdown of the whole tree~~ - shipped as `--languages`;
 12. ~~copy-paste detection: which blocks of lines were copied~~ - shipped as
-    `--duplicates`.
+    `--duplicates`;
+18. ~~who wrote the lines: git blame attribution per author and per file~~ -
+    shipped as `--authors`, with the code/comment/blank split the rest of the
+    report uses and a `--by-file` per-file breakdown.
 13. ~~watch the roots and rescan when files change~~ - shipped in `rust-loc-gui`.
 14. ~~a shareable report without HTML~~ - shipped as `--format svg`.
 15. ~~a raster export for slides and issue trackers~~ - the GUI writes the card
