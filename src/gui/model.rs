@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::baseline;
+use crate::history;
 use crate::options::{Format, Options};
 use crate::report::{FunctionRow, Report};
 use crate::scan;
@@ -936,6 +937,58 @@ fn quote_arg(value: &str) -> String {
     } else {
         value.to_string()
     }
+}
+
+/// The numbers the scan history card draws.
+#[derive(Clone)]
+pub struct Spark {
+    pub title: String,
+    pub latest: String,
+    pub delta: String,
+    /// Code lines per recorded scan, oldest first.
+    pub values: Vec<u32>,
+}
+
+/// Where the history of a root set lives: beside the settings, one file per
+/// tree, so switching projects does not splice two series together.
+pub fn history_path(roots: &[String]) -> PathBuf {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for root in roots {
+        for byte in root.trim().to_lowercase().bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash ^= u64::from(b'/');
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    if roots.is_empty() {
+        return settings_path().with_file_name("history.tsv");
+    }
+    settings_path().with_file_name(format!("history-{hash:016x}.tsv"))
+}
+
+/// The sparkline card for the recorded scans, or None while there is nothing
+/// to compare: one sample is a point, not a trend.
+pub fn history_trend(history: &history::History) -> Option<Spark> {
+    if history.samples.len() < 2 {
+        return None;
+    }
+    let values = history.series(history::Trend::Code, history::LIMIT);
+    let latest = values.last().copied().unwrap_or(0);
+    let before = values
+        .get(values.len().saturating_sub(2))
+        .copied()
+        .unwrap_or(latest);
+    Some(Spark {
+        title: format!("{} · {}", i18n::t().chart_history, i18n::t().header_code),
+        latest: human_int(u64::from(latest)),
+        delta: format!(
+            "{} {}",
+            delta_text(i64::from(latest) - i64::from(before)),
+            i18n::t().chart_history_delta
+        ),
+        values,
+    })
 }
 
 /// Persisted UI state; a tiny key=value file, no serialisation dependency.

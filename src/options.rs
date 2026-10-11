@@ -87,6 +87,8 @@ pub struct Options {
     pub snapshot: Option<PathBuf>,
     /// Compare the scan with this previously written snapshot.
     pub baseline: Option<baseline::Snapshot>,
+    /// Append this scan to a history file and chart the series.
+    pub history: Option<PathBuf>,
     /// 0 means "use every available core".
     pub jobs: usize,
 }
@@ -130,6 +132,7 @@ impl Default for Options {
             config: None,
             snapshot: None,
             baseline: None,
+            history: None,
             jobs: 0,
         }
     }

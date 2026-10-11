@@ -213,6 +213,35 @@ taken from another directory still lines up. A file that does not start with
 `# rust-loc snapshot v1`, or a row that is not `path` TAB `lines` TAB `code`
 TAB `complexity` TAB `smells`, is refused with the line number.
 
+### Scan history and trend
+
+`--snapshot` compares two points; `--history <PATH>` keeps a series. Every
+run appends one tab separated row - unix seconds, files, lines, blank,
+comment, code, complexity, smells - and the report prints the newest values as
+a sparkline with the change since the previous scan:
+
+```console
+> rust-loc --history ci/history.tsv
+History written: ci/history.tsv
+Scan history - 12 scans (2026-08-14 09:12 -> 2026-10-11 12:04)
+  files                 ▁▁▄          34          +1
+  lines                 ▁▅█      15,133        +345
+  blank                 ▁▄█         825          +7
+  comment               ▁▃▇         884         +28
+  code                  ▁▅█      13,431        +317
+  complexity            ▁▅█       1,806         +36
+  smells                ▁▁▄           6          +3
+```
+
+The file keeps the newest 120 rows and the sparkline draws the newest 32, so it
+stays small and reads well in a diff; timestamps are UTC. `--format json` adds
+a `history` object (`path`, `samples`, `span`, and a `series` plus a
+`sparkline` per counter) and `--format markdown` a `### Scan history` table.
+A file without the `# rust-loc history v1` header, or a row that is not eight
+tab separated numbers, is refused with the line number. The window keeps its
+own history per root set under `%APPDATA%\rust-loc\` and draws the same
+trend as a card above the table.
+
 ### Git hotspots
 
 `--hotspots` ranks files by `complexity x churn` (the way `scc --hotspots`
@@ -430,6 +459,7 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--cocomo-params <a,b,c,d>` | custom COCOMO coefficients |
 | `--fail-if <spec>` | exit 1 when `metric op value` fails (repeatable) |
 | `--ci` | print gate failures as GitHub annotations on the file/line to blame |
+| `--history <path>` | append this scan to a history file and chart the series |
 | `--jobs <n>` | analysis threads (default: every core) |
 
 Exit code is `0` on success, `1` when a `--fail-if` gate fails, and `2` for a
@@ -448,6 +478,7 @@ usage error.
 > rust-loc --fail-if "code>100000" --fail-if "unsafe>0" --ci
 > rust-loc --config ci/.rustloc.toml --format json
 > rust-loc --snapshot ci/baseline.txt
+> rust-loc --history ci/history.tsv
 > rust-loc --baseline ci/baseline.txt --by-file --sort code
 > rust-loc --hotspots --top 10
 > rust-loc --metrics --by-file --sort cognitive --top 10
@@ -477,6 +508,12 @@ Every scan is compared with the one before it, so the KPI strip grows a
 needed:
 
 ![rust-loc-gui, delta column and vs-last-scan card](docs/ui-delta.png)
+
+Every scan is also remembered per root set, so a *Scan history* strip draws the
+code lines of the recent runs as a sparkline and names the change since the
+last one:
+
+![rust-loc-gui, scan history sparkline](docs/ui-history.png)
 
 While a scan runs, a veil and a progress bar cover the shell:
 
@@ -639,3 +676,6 @@ by hand).
     and `--format json`. An MCP server is deliberately out of scope: the crate
     links no dependencies, so one would need a hand rolled JSON reader to answer
     a query a shell and `--format json` already answer.
+17. ~~a documented trend between scans~~ - shipped as `--history`, the history
+    block of `--format json` / `--format markdown`, and the window's scan
+    history card.

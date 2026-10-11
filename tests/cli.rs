@@ -701,6 +701,70 @@ fn a_broken_baseline_stops_the_run() {
 }
 
 #[test]
+fn history_records_a_sample_and_charts_it() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let first = workspace.run(&["--history", "history.tsv"]);
+    assert!(first.contains("History written: history.tsv"), "{}", first);
+    assert!(first.contains("Scan history - 1 scan"), "{}", first);
+
+    let second = workspace.run(&["--history", "history.tsv"]);
+    assert!(second.contains("Scan history - 2 scans"), "{}", second);
+    assert!(second.contains("code"), "{}", second);
+
+    let text = std::fs::read_to_string(workspace.path.join("history.tsv")).unwrap();
+    assert!(text.starts_with("# rust-loc history v1\n"), "{}", text);
+    assert_eq!(text.lines().count(), 1 + 1 + 2, "{}", text);
+}
+
+#[test]
+fn a_broken_history_stops_the_run() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    workspace.write("history.tsv", "not a history\n");
+    let args: Vec<String> = vec![
+        workspace.path.display().to_string(),
+        "--no-gitignore".to_string(),
+        "--history".to_string(),
+        "history.tsv".to_string(),
+    ];
+    let error = cli::run(&args, &workspace.path).unwrap_err();
+    assert!(error.contains("history.tsv:1"), "{}", error);
+    assert!(
+        error.contains("missing the # rust-loc history v1 header"),
+        "{}",
+        error
+    );
+}
+
+#[test]
+fn history_json_carries_the_series() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    workspace.document(&["--history", "history.tsv"]);
+    let raw = workspace.run(&["--format", "json", "--history", "history.tsv"]);
+    assert!(raw.contains("\"sparkline\""), "{}", raw);
+    assert!(raw.contains("\u{2584}\u{2584}"), "{}", raw);
+
+    let document = json::parse(&raw);
+    let history = document.get("history").unwrap();
+    assert_eq!(history.get("path").unwrap().text(), "history.tsv");
+    assert_eq!(history.get("samples").unwrap().integer(), 2);
+    let code = history.get("series").unwrap().get("code").unwrap();
+    assert_eq!(code.items().len(), 2);
+    assert_eq!(code.items()[0].integer(), 3);
+}
+
+#[test]
+fn history_stays_out_of_the_report_without_the_switch() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let out = workspace.run(&[]);
+    assert!(!out.contains("Scan history"), "{}", out);
+    assert!(!out.contains("history.tsv"), "{}", out);
+}
+
+#[test]
 fn help_flag_documents_every_switch() {
     let workspace = Workspace::new();
     let out = workspace.run(&["--help"]);

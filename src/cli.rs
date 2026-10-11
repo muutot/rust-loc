@@ -12,6 +12,7 @@ use crate::baseline;
 use crate::cocomo;
 use crate::config;
 use crate::gate;
+use crate::history;
 use crate::options::{Format, Options};
 use crate::{report, scan};
 
@@ -30,6 +31,7 @@ OPTIONS:
     --no-config              ignore any .rustloc.toml
     --snapshot <PATH>        save this scan for a later --baseline diff
     --baseline <PATH>        compare with a snapshot from --snapshot
+    --history <PATH>         append this scan to a history file and chart it
     --format <FORMAT>        output format: text, json, csv, markdown, svg [default: text]
     --json                   alias for --format json
     --badge                  print a README badge instead of a report
@@ -146,11 +148,12 @@ fn config_request(arguments: &[String]) -> Result<(Option<String>, bool), String
 
 /// Flags that eat the argument after them, so the pre-pass can tell a scan
 /// root apart from a flag value.
-const VALUE_FLAGS: [&str; 18] = [
+const VALUE_FLAGS: [&str; 19] = [
     "--badge-metric",
     "--badge-label",
     "--snapshot",
     "--baseline",
+    "--history",
     "--root",
     "--config",
     "--format",
@@ -277,6 +280,10 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                 let value = take(arguments, &mut index, "--baseline")?;
                 options.baseline = Some(baseline::Snapshot::load(&resolve_path(&value, cwd))?);
             }
+            "--history" => {
+                let value = take(arguments, &mut index, "--history")?;
+                options.history = Some(resolve_path(&value, cwd));
+            }
             "--by-file" | "--per-file" => options.by_file = true,
             "--by-module" => options.by_module = true,
             "--show-excluded" => options.show_excluded = true,
@@ -382,6 +389,10 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                     badge::Metric::parse(value)
                         .ok_or_else(|| format!("--badge needs a known figure, got {}", value))?,
                 );
+            }
+            other if other.starts_with("--history=") => {
+                let value = &other["--history=".len()..];
+                options.history = Some(resolve_path(value, cwd));
             }
             other if other.starts_with("--format=") => {
                 let value = &other["--format=".len()..];
@@ -490,9 +501,15 @@ pub fn run_checked(arguments: &[String], cwd: &Path) -> Result<(String, String, 
         Action::Help => Ok((format!("{}\n", USAGE), String::new(), 0)),
         Action::Version => Ok((format!("rust-loc {}\n", crate::VERSION), String::new(), 0)),
         Action::Report => {
-            let report = report::scan(&invocation.roots, &invocation.options, cwd, None);
+            let mut report = report::scan(&invocation.roots, &invocation.options, cwd, None);
             if let Some(path) = &invocation.options.snapshot {
                 baseline::Snapshot::of(&report, cwd).save(path)?;
+            }
+            if let Some(path) = &invocation.options.history {
+                let mut history = history::History::load(path)?;
+                history.record(history::Sample::of(&report, history::now()));
+                history.save()?;
+                report.history = Some(history);
             }
             let mut rendered = match invocation.options.badge {
                 Some(metric) => {

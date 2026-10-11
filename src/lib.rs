@@ -15,6 +15,7 @@ pub mod generated;
 pub mod git;
 #[cfg(windows)]
 pub mod gui;
+pub mod history;
 pub mod languages;
 pub mod lexer;
 pub mod metrics;

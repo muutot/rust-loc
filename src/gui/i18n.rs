@@ -175,6 +175,8 @@ catalog! {
     button_scan => ("Scan  (F5)", "开始扫描  (F5)"),
     button_export => ("Export…", "导出…"),
     // -- charts ------------------------------------------------------------
+    chart_history => ("Scan history", "扫描历史"),
+    chart_history_delta => ("since the last scan", "较上次扫描"),
     chart_composition => ("Line composition", "行构成"),
     chart_modules => ("Top modules by code", "代码量最大的模块"),
     chart_empty_composition => ("Run a scan to see the line mix", "运行扫描后显示行构成"),

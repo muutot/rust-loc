@@ -332,6 +332,7 @@ struct Metrics {
     primary: i32,
     chart: i32,
     card: i32,
+    spark: i32,
     tab: i32,
 }
 
@@ -351,6 +352,7 @@ impl Metrics {
             primary: px(30),
             chart: px(150),
             card: px(64),
+            spark: px(76),
             tab: px(30),
         }
     }
@@ -365,11 +367,22 @@ fn label(area: RECT, text: &str, ink: paint::Ink) -> paint::Label {
 }
 
 fn layout(hwnd: HWND) {
+    with_state(|state| layout_state(hwnd, state));
+}
+
+/// Lay the shell out for a caller that already holds the state: a timer or a
+/// message dispatched inside `with_state` cannot re-enter it.
+pub fn layout_state(hwnd: HWND, state: &mut app::AppState) {
     let mut client = RECT::default();
     unsafe { GetClientRect(hwnd, &mut client) };
     let width = client.right;
     let height = client.bottom;
-    with_state(|state| {
+    layout_rects(state, width, height);
+}
+
+/// Place every control for a client of `width` x `height`.
+fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
+    {
         let px = |value: i32| state.theme.px(value);
         let metrics = Metrics::new(px);
         let header = rect(0, 0, width, metrics.header);
@@ -402,7 +415,19 @@ fn layout(hwnd: HWND) {
             panel_right,
             cards_top + metrics.card * card_rows + metrics.gap * (card_rows - 1),
         );
-        let table_top = cards.bottom + metrics.gap;
+        // The history card only exists once two scans can be compared; until
+        // then the table keeps the space.
+        let mut table_top = cards.bottom + metrics.gap;
+        let mut spark = rect(0, 0, 0, 0);
+        if state.spark.is_some() {
+            spark = rect(
+                panel_left,
+                table_top,
+                panel_right,
+                table_top + metrics.spark,
+            );
+            table_top = spark.bottom + metrics.gap;
+        }
         let table = rect(panel_left, table_top, panel_right, panel_bottom);
 
         unsafe {
@@ -664,6 +689,7 @@ fn layout(hwnd: HWND) {
         state.header_rect = header;
         state.sidebar_rect = sidebar;
         state.table_rect = table;
+        state.spark_rect = spark;
         state.tab_rects = tab_rects;
         state.table_title_rect = rect(
             table.left + px(12),
@@ -698,7 +724,7 @@ fn layout(hwnd: HWND) {
             )
         };
         reconfigure_list(state);
-    });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2017,6 +2043,14 @@ unsafe extern "system" fn main_proc(
                     })
                     .collect();
                     let summary = model::header_summary(state.report.as_ref());
+                    let spark = state.spark.as_ref().map(|data| paint::Spark {
+                        area: state.spark_rect,
+                        title: &data.title,
+                        latest: &data.latest,
+                        delta: &data.delta,
+                        tone: theme::COLOR_CODE,
+                        values: &data.values,
+                    });
                     let version = format!("v{}", crate::VERSION);
                     let spec = paint::Shell {
                         brand: "rust-loc",
@@ -2026,6 +2060,7 @@ unsafe extern "system" fn main_proc(
                         header: state.header_rect,
                         sidebar: state.sidebar_rect,
                         labels: &labels,
+                        spark,
                         table: state.table_rect,
                         tabs: &tabs,
                     };

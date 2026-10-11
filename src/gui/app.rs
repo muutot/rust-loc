@@ -8,6 +8,7 @@ use std::time::Instant;
 use crate::baseline;
 use crate::gui::sys::*;
 use crate::gui::{i18n, model, paint, scan, theme, watch, window};
+use crate::history;
 use crate::options::{Format, Options};
 use crate::report::Report;
 
@@ -89,6 +90,10 @@ pub struct AppState {
     /// Business files of the previous scan, so the next one can show what
     /// changed since.
     pub previous: Option<baseline::Snapshot>,
+    /// Scans of this root set, newest last, for the history card.
+    pub history: history::History,
+    /// The sparkline card's numbers, empty until two scans agree on a tree.
+    pub spark: Option<model::Spark>,
     pub rows: Vec<model::Row>,
     pub visible: Vec<usize>,
     pub columns: Vec<model::Column>,
@@ -120,6 +125,7 @@ pub struct AppState {
     pub header_rect: RECT,
     pub sidebar_rect: RECT,
     pub table_rect: RECT,
+    pub spark_rect: RECT,
     pub table_title_rect: RECT,
     pub table_hint_rect: RECT,
     pub tab_rects: [RECT; 5],
@@ -153,6 +159,13 @@ impl AppState {
             ..Options::default()
         };
         let theme = theme::Theme::new(hwnd);
+        // One history file per root set, so switching projects does not splice
+        // two series together.
+        let history_path = model::history_path(&roots);
+        let history = history::History::load(&history_path).unwrap_or_else(|_| history::History {
+            path: history_path,
+            samples: Vec::new(),
+        });
         let card_brush = unsafe { CreateSolidBrush(theme::CARD_BG) };
         let view = model::View::from_index(settings.view);
         // The saved column only means something on the file and module tabs;
@@ -171,6 +184,8 @@ impl AppState {
             roots,
             report: None,
             previous: None,
+            history,
+            spark: None,
             rows: Vec::new(),
             visible: Vec::new(),
             columns: Vec::new(),
@@ -198,6 +213,7 @@ impl AppState {
             header_rect: RECT::default(),
             sidebar_rect: RECT::default(),
             table_rect: RECT::default(),
+            spark_rect: RECT::default(),
             table_title_rect: RECT::default(),
             table_hint_rect: RECT::default(),
             tab_rects: [RECT::default(); 5],
@@ -307,6 +323,15 @@ impl AppState {
             return;
         }
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // A different root set keeps its own history, so reload it here.
+        let history_path = model::history_path(&self.roots);
+        if history_path != self.history.path {
+            self.history =
+                history::History::load(&history_path).unwrap_or_else(|_| history::History {
+                    path: history_path,
+                    samples: Vec::new(),
+                });
+        }
         self.settings.roots = self.roots.join(";");
         self.settings.gitignore = self.options.gitignore;
         self.settings.default_ignores = window::checked(self.control(ID_DEFAULT_IGNORES));
@@ -353,6 +378,7 @@ impl AppState {
                             .as_ref()
                             .map(|snapshot| baseline::Diff::of(&report, snapshot, &cwd));
                         self.previous = Some(baseline::Snapshot::of(&report, &cwd));
+                        self.record_history(&report);
                         self.report = Some(report);
                         finished = true;
                         break;
@@ -379,6 +405,7 @@ impl AppState {
         window::set_busy(self, false);
         window::show_veil(self, false);
         self.rebuild();
+        window::layout_state(hwnd, self);
         window::reconfigure_list(self);
         window::refresh_status(self);
         window::repaint(self, hwnd);
@@ -388,6 +415,13 @@ impl AppState {
     /// Recompute columns, rows, cards, charts and the table hint.
     pub fn rebuild(&mut self) {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // The trend belongs to a scan: with no report the strip stays hidden
+        // and the table keeps the space.
+        self.spark = if self.report.is_some() {
+            model::history_trend(&self.history)
+        } else {
+            None
+        };
         let has_delta = self
             .report
             .as_ref()
@@ -433,6 +467,17 @@ impl AppState {
             self.sort_column,
             self.sort_descending,
         );
+    }
+
+    /// Add this scan to the history, unless nothing moved since the last one;
+    /// a watched tree then grows a point per real change, not per tick.
+    fn record_history(&mut self, report: &Report) {
+        let sample = history::Sample::of(report, history::now());
+        if self.history.latest().map(history::Sample::counters) == Some(sample.counters()) {
+            return;
+        }
+        self.history.record(sample);
+        let _ = self.history.save();
     }
 
     /// Switch the interface language and remember the choice.

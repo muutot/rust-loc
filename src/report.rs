@@ -6,6 +6,7 @@ use crate::baseline;
 use crate::clones;
 use crate::cocomo;
 use crate::git;
+use crate::history;
 use crate::metrics;
 use crate::options::{Format, Options};
 use crate::scan::{self, Entry, FileFacts, Progress, Totals};
@@ -108,6 +109,8 @@ pub struct Report {
     pub diff: Option<baseline::Diff>,
     /// Files ranked by complexity and git churn, when asked for.
     pub hotspots: Vec<HotspotRow>,
+    /// Recorded scans, when `--history` asked for the series.
+    pub history: Option<history::History>,
     /// Cognitive complexity, Halstead volume and the MI score, when asked for.
     pub metrics: Option<MetricsRow>,
     /// Every language in the scanned tree, largest first.
@@ -327,6 +330,7 @@ pub fn scan(
         cocomo: cocomo_row,
         diff: None,
         hotspots,
+        history: None,
         metrics: metrics_row,
         languages,
         duplicates,
@@ -578,6 +582,35 @@ fn render_baseline_text(diff: &baseline::Diff, cwd: &Path, out: &mut Vec<String>
     out.push(String::new());
 }
 
+/// The "how the tree grew" block the text report prints for `--history`.
+fn render_history_text(history: &history::History, out: &mut Vec<String>) {
+    let count = history.samples.len();
+    out.push(format!(
+        "Scan history - {} scan{} ({})",
+        group(count as u32),
+        if count == 1 { "" } else { "s" },
+        history.span()
+    ));
+    for trend in history::Trend::all() {
+        let series = history.series(*trend, history::SPARK_WIDTH);
+        let latest = series.last().copied().unwrap_or(0);
+        let before = if series.len() < 2 {
+            latest
+        } else {
+            series[series.len() - 2]
+        };
+        out.push(
+            pad(&format!("  {}", trend.as_str()), 24)
+                + &history::sparkline(&series)
+                + "  "
+                + &number(latest, 10)
+                + "  "
+                + &delta_cell(latest as i64 - before as i64),
+        );
+    }
+    out.push(String::new());
+}
+
 pub fn render(report: &Report, cwd: &Path) -> String {
     render_with(report, &report.options, cwd)
 }
@@ -673,6 +706,9 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
     if let Some(path) = &options.snapshot {
         out.push("Snapshot written: ".to_string() + &scan::relative(path, cwd));
     }
+    if let Some(path) = &options.history {
+        out.push("History written: ".to_string() + &scan::relative(path, cwd));
+    }
     out.push(format!(
         "Scope: {}, {} ignored directory names",
         if options.gitignore {
@@ -729,6 +765,10 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
 
     if let Some(diff) = &report.diff {
         render_baseline_text(diff, cwd, &mut out);
+    }
+
+    if let Some(history) = &report.history {
+        render_history_text(history, &mut out);
     }
 
     if options.smells {
@@ -1096,6 +1136,29 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
         ));
         out.push(String::new());
     }
+    if let Some(history) = &report.history {
+        out.push(format!("### Scan history ({})", history.span()));
+        out.push(String::new());
+        out.push("| Metric | Latest | Change | Trend |".to_string());
+        out.push("| --- | ---: | ---: | :--- |".to_string());
+        for trend in history::Trend::all() {
+            let series = history.series(*trend, history::SPARK_WIDTH);
+            let latest = series.last().copied().unwrap_or(0);
+            let before = if series.len() < 2 {
+                latest
+            } else {
+                series[series.len() - 2]
+            };
+            out.push(format!(
+                "| {} | {} | {} | {} |",
+                trend.label(),
+                group(latest),
+                delta_plain(latest as i64 - before as i64),
+                history::sparkline(&series)
+            ));
+        }
+        out.push(String::new());
+    }
     if let Some(row) = &report.metrics {
         out.push("### Maintainability".to_string());
         out.push(String::new());
@@ -1425,6 +1488,50 @@ fn json_array(items: &[String], indent: usize) -> String {
     format!("[\n{}\n{}]", body.join(",\n"), " ".repeat(indent))
 }
 
+/// The history block of the JSON report: the series and its sparklines.
+fn json_history(history: &history::History, cwd: &Path, width: usize) -> String {
+    let series: Vec<String> = history::Trend::all()
+        .iter()
+        .map(|trend| {
+            let values: Vec<String> = history
+                .series(*trend, width)
+                .iter()
+                .map(|value| value.to_string())
+                .collect();
+            format!("      \"{}\": {}", trend.as_str(), json_array(&values, 6))
+        })
+        .collect();
+    let sparks: Vec<String> = history::Trend::all()
+        .iter()
+        .map(|trend| {
+            format!(
+                "      \"{}\": {}",
+                trend.as_str(),
+                json_string(&history::sparkline(&history.series(*trend, width)))
+            )
+        })
+        .collect();
+    let mut out = String::new();
+    out.push_str("  \"history\": {\n");
+    out.push_str(&format!(
+        "    \"path\": {},\n",
+        json_string(&scan::relative(&history.path, cwd))
+    ));
+    out.push_str(&format!("    \"samples\": {},\n", history.samples.len()));
+    out.push_str(&format!(
+        "    \"span\": {},\n",
+        json_string(&history.span())
+    ));
+    out.push_str("    \"series\": {\n");
+    out.push_str(&series.join(",\n"));
+    out.push_str("\n    },\n");
+    out.push_str("    \"sparkline\": {\n");
+    out.push_str(&sparks.join(",\n"));
+    out.push_str("\n    }\n");
+    out.push_str("  },\n");
+    out
+}
+
 fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
     let roots: Vec<String> = report
         .roots
@@ -1651,6 +1758,9 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push_str("    },\n");
         out.push_str(&format!("    \"files\": {}\n", json_array(&items, 4)));
         out.push_str("  },\n");
+    }
+    if let Some(history) = &report.history {
+        out.push_str(&json_history(history, cwd, history::SPARK_WIDTH));
     }
     let mut rows: Vec<String> = Vec::with_capacity(report.entries.len());
     for entry in &report.entries {

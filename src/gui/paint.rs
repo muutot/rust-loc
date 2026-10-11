@@ -533,6 +533,133 @@ pub struct Label {
     pub ink: Ink,
 }
 
+/// The scan history card's data: one bar per recorded scan.
+pub struct Spark<'a> {
+    pub area: RECT,
+    pub title: &'a str,
+    pub latest: &'a str,
+    pub delta: &'a str,
+    pub tone: u32,
+    pub values: &'a [u32],
+}
+
+// ---------------------------------------------------------------------------
+// Scan history
+// ---------------------------------------------------------------------------
+
+/// The history card: the newest code count with its change on the left, one
+/// bar per recorded scan on the right.
+fn spark_card(hdc: HDC, spark: &Spark, theme: &theme::Theme) {
+    let area = spark.area;
+    if area.right - area.left < theme.px(140) || area.bottom - area.top < theme.px(40) {
+        return;
+    }
+    card(
+        hdc,
+        &area,
+        theme.px(10),
+        theme::CARD_BG,
+        Some(theme::BORDER),
+    );
+    let pad = theme.px(12);
+    let column = theme.px(150).min((area.right - area.left) / 2);
+    let right = area.left + pad + column;
+    let mut title = rect(
+        area.left + pad,
+        area.top + theme.px(7),
+        right,
+        area.top + theme.px(23),
+    );
+    text(
+        hdc,
+        spark.title,
+        &mut title,
+        theme::MUTED,
+        theme.fonts.label,
+        DT_LEFT | DT_SINGLELINE,
+    );
+    let mut value = rect(
+        area.left + pad,
+        area.top + theme.px(23),
+        right,
+        area.top + theme.px(53),
+    );
+    text(
+        hdc,
+        spark.latest,
+        &mut value,
+        spark.tone,
+        theme.fonts.value,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER,
+    );
+    let mut change = rect(
+        area.left + pad,
+        area.bottom - theme.px(20),
+        right,
+        area.bottom - theme.px(6),
+    );
+    text(
+        hdc,
+        spark.delta,
+        &mut change,
+        theme::MUTED,
+        theme.fonts.hint,
+        DT_LEFT | DT_SINGLELINE,
+    );
+    let plot = rect(
+        right + theme.px(10),
+        area.top + theme.px(12),
+        area.right - pad,
+        area.bottom - theme.px(12),
+    );
+    bars(hdc, &plot, spark.values, spark.tone, theme);
+}
+
+/// One bar per value, scaled to the box; a series that never moves draws
+/// even stubs so the chart still reads as a series.
+fn bars(hdc: HDC, area: &RECT, values: &[u32], tone: u32, theme: &theme::Theme) {
+    let width = area.right - area.left;
+    let height = area.bottom - area.top;
+    if values.is_empty() || width < theme.px(24) || height < theme.px(16) {
+        return;
+    }
+    fill(
+        hdc,
+        &rect(area.left, area.bottom - 1, area.right, area.bottom),
+        theme::BORDER,
+    );
+    let min = *values.iter().min().unwrap();
+    let max = *values.iter().max().unwrap();
+    let span = max - min;
+    let floor = theme.px(2);
+    // A short series stays a readable column chart instead of stretching into
+    // a wall; a long one packs the bars together.
+    let slot = (width / values.len() as i32)
+        .min(theme.px(26))
+        .max(theme.px(2));
+    let gap = theme.px(3).min(slot / 4);
+    let bar = (slot - gap).max(theme.px(2));
+    let usable = height - theme.px(4);
+    for (index, value) in values.iter().enumerate() {
+        let scaled = if span == 0 {
+            usable / 2
+        } else {
+            usable * (value - min) as i32 / span as i32
+        };
+        let left = area.left + index as i32 * slot;
+        fill(
+            hdc,
+            &rect(
+                left,
+                area.bottom - scaled.max(floor),
+                left + bar,
+                area.bottom,
+            ),
+            tone,
+        );
+    }
+}
+
 /// Everything the main window paints behind its child controls.
 pub struct Shell<'a> {
     pub brand: &'a str,
@@ -542,6 +669,7 @@ pub struct Shell<'a> {
     pub header: RECT,
     pub sidebar: RECT,
     pub labels: &'a [Label],
+    pub spark: Option<Spark<'a>>,
     pub table: RECT,
     pub tabs: &'a [(RECT, &'a str, bool)],
 }
@@ -644,6 +772,10 @@ pub fn shell(hdc: HDC, area: &RECT, spec: &Shell, theme: &theme::Theme) {
         theme::CARD_BG,
         Some(theme::BORDER),
     );
+
+    if let Some(spark) = &spec.spark {
+        spark_card(hdc, spark, theme);
+    }
 
     for label in spec.labels {
         let mut bounds = label.area;
