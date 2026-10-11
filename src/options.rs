@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::generated;
 use crate::scan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,12 @@ pub struct Options {
     pub functions: bool,
     /// Rows kept in the ranked function list; 0 keeps every function.
     pub top_functions: usize,
+    /// Drop detected generated/minified files from the business scope.
+    pub exclude_generated: bool,
+    /// Tag file listings with (gen)/(min) instead of dropping them.
+    pub mark_generated: bool,
+    /// Average line length that marks a file minified; 0 disables the check.
+    pub min_gen_line_length: usize,
     pub format: Format,
     /// 0 means "use every available core".
     pub jobs: usize,
@@ -65,6 +72,9 @@ impl Default for Options {
             complexity: true,
             functions: false,
             top_functions: DEFAULT_TOP_FUNCTIONS,
+            exclude_generated: false,
+            mark_generated: false,
+            min_gen_line_length: generated::DEFAULT_MIN_LINE_LENGTH,
             format: Format::Text,
             jobs: 0,
         }
@@ -102,5 +112,15 @@ impl Options {
         std::thread::available_parallelism()
             .map(|count| count.get())
             .unwrap_or(1)
+    }
+
+    /// The per-file work `scan::collect_files` should do for this run.
+    pub fn read_options(&self) -> scan::ReadOptions {
+        scan::ReadOptions {
+            uloc: self.uloc,
+            functions: self.functions,
+            include_tests: self.include_tests,
+            min_gen_line_length: self.min_gen_line_length,
+        }
     }
 }

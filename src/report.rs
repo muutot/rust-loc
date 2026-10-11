@@ -10,6 +10,8 @@ pub struct Excluded {
     pub file_lines: u32,
     pub item_lines: u32,
     pub paths: Vec<(String, u32)>,
+    pub generated_files: usize,
+    pub generated_lines: u32,
 }
 
 /// One function in the ranked list, flattened across every scanned file.
@@ -84,9 +86,7 @@ pub fn scan(
         facts.extend(scan::collect_files(
             root,
             files,
-            options.uloc,
-            options.functions,
-            options.include_tests,
+            options.read_options(),
             options.worker_count(),
             forward.as_deref(),
         ));
@@ -101,10 +101,14 @@ pub fn scan(
         })
         .collect();
 
+    let drop_generated =
+        |entry: &Entry| options.exclude_generated && entry.stats.generated.is_some();
     let business: Vec<usize> = entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| options.include_tests || !entry.stats.forced_test)
+        .filter(|(_, entry)| {
+            (options.include_tests || !entry.stats.forced_test) && !drop_generated(entry)
+        })
         .map(|(index, _)| index)
         .collect();
     let excluded_entries: Vec<usize> = entries
@@ -126,6 +130,19 @@ pub fn scan(
         None
     };
     let all_lines = entries.iter().map(|entry| entry.stats.physical).sum();
+    let generated_refs: Vec<&Entry> = if options.exclude_generated {
+        entries
+            .iter()
+            .filter(|entry| entry.stats.generated.is_some() && !entry.stats.forced_test)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let generated_files = generated_refs.len();
+    let generated_lines: u32 = generated_refs
+        .iter()
+        .map(|entry| entry.stats.physical)
+        .sum();
     let mut paths: Vec<(String, u32)> = excluded_refs
         .iter()
         .map(|entry| (scan::relative(entry.path(), cwd), entry.stats.physical))
@@ -134,12 +151,10 @@ pub fn scan(
     let excluded = Excluded {
         files: excluded_refs.len(),
         file_lines: excluded_refs.iter().map(|entry| entry.stats.physical).sum(),
-        item_lines: entries
-            .iter()
-            .filter(|entry| !entry.stats.forced_test)
-            .map(|entry| entry.stats.test)
-            .sum(),
+        item_lines: business_refs.iter().map(|entry| entry.stats.test).sum(),
         paths,
+        generated_files,
+        generated_lines,
     };
 
     let mut function_count = 0usize;
@@ -216,6 +231,15 @@ fn pad(text: &str, width: usize) -> String {
     format!("{:<width$}", text, width = width)
 }
 
+/// A file path for a listing, tagged when generated code is only marked.
+fn file_label(entry: &Entry, options: &Options, cwd: &Path) -> String {
+    let mut label = scan::relative(entry.path(), cwd);
+    if options.mark_generated {
+        label.push_str(entry.stats.generated.tag());
+    }
+    label
+}
+
 fn number(value: u32, width: usize) -> String {
     format!("{:>width$}", group(value), width = width)
 }
@@ -257,7 +281,7 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         }
         let labels: Vec<String> = ordered
             .iter()
-            .map(|entry| scan::relative(entry.path(), cwd))
+            .map(|entry| file_label(entry, options, cwd))
             .collect();
         let width = label_width(&labels, "File");
         let mut head = pad("File", width);
@@ -375,6 +399,15 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
     }
     out.push(String::new());
     out.push(pad("All Rust lines", 22) + &number(report.all_lines, 12));
+    if options.exclude_generated {
+        out.push(String::new());
+        out.push("Excluded generated code".to_string());
+        out.push(format!(
+            "  Generated files          {:>6} file(s), {} lines",
+            group(report.excluded.generated_files as u32),
+            group(report.excluded.generated_lines)
+        ));
+    }
     if options.show_excluded && !report.excluded.paths.is_empty() {
         out.push(String::new());
         out.push("Excluded test-only files".to_string());
@@ -530,7 +563,7 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
             let values: Vec<String> = columns.iter().map(|key| group(entry.column(key))).collect();
             out.push(format!(
                 "| `{}` | {} |",
-                scan::relative(entry.path(), cwd),
+                file_label(entry, options, cwd),
                 values.join(" | ")
             ));
         }
@@ -738,6 +771,12 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
             report.excluded.files, report.excluded.file_lines, report.excluded.item_lines
         ));
     }
+    if options.exclude_generated {
+        out.push_str(&format!(
+            "  \"generated_excluded\": {{\"files\": {}, \"lines\": {}}},\n",
+            report.excluded.generated_files, report.excluded.generated_lines
+        ));
+    }
     out.push_str(&format!("  \"all_rust_lines\": {},\n", report.all_lines));
     if options.functions {
         out.push_str(&format!(
@@ -769,6 +808,12 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
             json_string(&scan::relative(entry.path(), cwd))
         ));
         row.push_str(&format!("      \"test_only\": {},\n", stats.forced_test));
+        if options.mark_generated {
+            row.push_str(&format!(
+                "      \"generated\": {},\n",
+                json_string(stats.generated.label())
+            ));
+        }
         row.push_str(&format!("      \"lines\": {},\n", stats.lines));
         row.push_str(&format!("      \"blank\": {},\n", stats.blank));
         row.push_str(&format!("      \"comment\": {},\n", stats.comment));

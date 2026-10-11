@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+use crate::generated::{self, Generated};
 use crate::lexer::{self, Analysis, FunctionInfo, Metrics};
 use crate::options::Options;
 
@@ -334,6 +335,28 @@ pub struct FileFacts {
     pub metrics_all: Metrics,
     pub unique: Option<HashSet<Box<str>>>,
     pub functions: Vec<FunctionInfo>,
+    pub generated: Generated,
+}
+
+/// What one file read should compute beyond the line classes.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadOptions {
+    pub uloc: bool,
+    pub functions: bool,
+    pub include_tests: bool,
+    /// 0 disables the minified-line heuristic.
+    pub min_gen_line_length: usize,
+}
+
+impl Default for ReadOptions {
+    fn default() -> Self {
+        ReadOptions {
+            uloc: false,
+            functions: false,
+            include_tests: false,
+            min_gen_line_length: generated::DEFAULT_MIN_LINE_LENGTH,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -350,6 +373,7 @@ pub struct Stats {
     pub test_fns: u32,
     pub uloc: Option<u32>,
     pub forced_test: bool,
+    pub generated: Generated,
 }
 
 #[derive(Debug)]
@@ -403,13 +427,7 @@ pub fn is_test_file(path: &Path) -> bool {
 }
 
 /// Read and analyse one file, reducing it to facts.
-fn read_facts(
-    path: &Path,
-    root: &Path,
-    want_uloc: bool,
-    want_functions: bool,
-    include_tests: bool,
-) -> Option<FileFacts> {
+fn read_facts(path: &Path, root: &Path, read: ReadOptions) -> Option<FileFacts> {
     let bytes = std::fs::read(path).ok()?;
     let bytes = match bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
         Some(rest) => rest,
@@ -418,6 +436,7 @@ fn read_facts(
     let text = String::from_utf8_lossy(bytes);
     let text = lexer::normalize_newlines(&text);
     let analysis: Analysis = lexer::analyze(&text);
+    let generated_kind = generated::detect(&text, &analysis, read.min_gen_line_length);
 
     let mut all = Counts::default();
     let mut test_only = Counts::default();
@@ -457,9 +476,9 @@ fn read_facts(
                 test_only.blank += 1;
             }
         }
-        if want_uloc {
+        if read.uloc {
             let stripped = raw.trim();
-            if !stripped.is_empty() && (include_tests || !is_test) {
+            if !stripped.is_empty() && (read.include_tests || !is_test) {
                 unique.insert(stripped.into());
             }
         }
@@ -477,12 +496,13 @@ fn read_facts(
         test_only,
         metrics: analysis.metrics,
         metrics_all: analysis.metrics_all,
-        unique: if want_uloc { Some(unique) } else { None },
-        functions: if want_functions {
+        unique: if read.uloc { Some(unique) } else { None },
+        functions: if read.functions {
             analysis.functions
         } else {
             Vec::new()
         },
+        generated: generated_kind,
     })
 }
 
@@ -490,9 +510,7 @@ fn read_facts(
 pub fn collect_files(
     root: &Path,
     files: &[PathBuf],
-    want_uloc: bool,
-    want_functions: bool,
-    include_tests: bool,
+    read: ReadOptions,
     jobs: usize,
     progress: Option<&Progress<'_>>,
 ) -> Vec<FileFacts> {
@@ -504,7 +522,7 @@ pub fn collect_files(
     if worker_count <= 1 || total < 8 {
         let mut facts = Vec::with_capacity(total);
         for (index, path) in files.iter().enumerate() {
-            if let Some(item) = read_facts(path, root, want_uloc, want_functions, include_tests) {
+            if let Some(item) = read_facts(path, root, read) {
                 facts.push(item);
             }
             if let Some(callback) = progress {
@@ -525,9 +543,7 @@ pub fn collect_files(
                     break;
                 }
                 let path = &files[index];
-                if let Some(facts) =
-                    read_facts(path, root, want_uloc, want_functions, include_tests)
-                {
+                if let Some(facts) = read_facts(path, root, read) {
                     if let Ok(mut slot) = slots[index].lock() {
                         *slot = Some(facts);
                     }
@@ -586,6 +602,7 @@ pub fn summarize(facts: &FileFacts, siblings: &HashSet<PathBuf>, include_tests: 
             Some(set) => Some(set.len() as u32),
         },
         forced_test,
+        generated: facts.generated,
     }
 }
 

@@ -38,6 +38,9 @@ OPTIONS:
     --no-complexity          hide the complexity estimate
     --functions              list functions ranked by complexity
     --top-functions <N>      rows in the function list [default: 20, 0 = all]
+    --exclude-generated      drop generated/minified files from the totals
+    --mark-generated         tag listings with (gen)/(min) instead
+    --min-gen-line-length <N>  average line length that marks a file minified
     --jobs <N>               analysis threads [default: all cores]
     -h, --help               print this help
     -V, --version            print the version
@@ -122,6 +125,15 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
             "--uloc" => options.uloc = true,
             "--no-complexity" => options.complexity = false,
             "--functions" => options.functions = true,
+            "--exclude-generated" | "--no-gen" => options.exclude_generated = true,
+            "--mark-generated" => options.mark_generated = true,
+            "--min-gen-line-length" => {
+                let value = take(arguments, &mut index, "--min-gen-line-length")?;
+                options.min_gen_line_length = value
+                    .parse::<i64>()
+                    .map_err(|_| format!("--min-gen-line-length needs a number, got {}", value))?
+                    .max(0) as usize;
+            }
             "--top-functions" => {
                 let value = take(arguments, &mut index, "--top-functions")?;
                 options.top_functions = value
@@ -192,6 +204,13 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                     .map_err(|_| format!("--top-functions needs a number, got {}", value))?
                     .max(0) as usize;
                 options.functions = true;
+            }
+            other if other.starts_with("--min-gen-line-length=") => {
+                let value = &other["--min-gen-line-length=".len()..];
+                options.min_gen_line_length = value
+                    .parse::<i64>()
+                    .map_err(|_| format!("--min-gen-line-length needs a number, got {}", value))?
+                    .max(0) as usize;
             }
             other if other.starts_with('-') && other != "-" => {
                 return Err(format!("unknown option: {}", other));
@@ -329,6 +348,29 @@ mod tests {
                 .options
                 .top_functions,
             3
+        );
+    }
+
+    #[test]
+    fn generated_switches_default_to_off() {
+        let bare = parse_in(&[]).unwrap().options;
+        assert!(!bare.exclude_generated);
+        assert!(!bare.mark_generated);
+        assert_eq!(
+            bare.min_gen_line_length,
+            crate::generated::DEFAULT_MIN_LINE_LENGTH
+        );
+        let marked = parse_in(&["--exclude-generated", "--mark-generated"])
+            .unwrap()
+            .options;
+        assert!(marked.exclude_generated);
+        assert!(marked.mark_generated);
+        assert_eq!(
+            parse_in(&["--no-gen", "--min-gen-line-length=40"])
+                .unwrap()
+                .options
+                .min_gen_line_length,
+            40
         );
     }
 }

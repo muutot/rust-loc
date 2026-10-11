@@ -5,6 +5,7 @@
 //! counters and render the result as text, JSON, CSV or Markdown.
 
 pub mod cli;
+pub mod generated;
 #[cfg(windows)]
 pub mod gui;
 pub mod lexer;
