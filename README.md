@@ -565,13 +565,13 @@ While a scan runs, a veil and a progress bar cover the shell:
 | Piece | Detail |
 | --- | --- |
 | Bindings | `windows-sys` (the `windows-rs` project), feature-gated to exactly the API surface used; still nothing beyond the system DLLs at run time |
-| Rendering | GDI double buffering; the shell, the KPI cards, the stacked composition bar, the module chart and the scan veil are custom child windows, so nothing flickers. Cards, pills and bars are rounded through a clipped region, and the active tab is a pill rather than an underline |
+| Rendering | GDI double buffering; the shell, the KPI cards, the stacked composition bar, the module chart and the scan veil are custom child windows, so nothing flickers. Cards, pills and bars are rounded through a clipped region, and the active tab is a pill rather than an underline. Text fields, the scan-root list and the selectors each sit in a rounded frame window of their own whose hairline turns accent while the control holds the focus |
 | Reports | `SysListView32` with owner-drawn sort headers, 28px rows ruled by hairlines, a soft accent selection, a live path filter, Files / Modules / Functions / Smells / Excluded views - every tab opens on its natural sort - and a placeholder KPI strip before the first scan |
 | Smells tab | the files that carry `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`#[allow]`, one row per file, ranked by the total |
 | Since the last scan | each scan diffs itself against the previous one in the same window: a *vs last scan* card with the code change, the added and deleted counts, and a `Delta` column on the Files tab |
 | Report options | `REPORT OPTIONS` keeps generated / minified files out of the totals and adds the COCOMO estimate; the KPI strip grows a row to hold the cost, effort, staffing and schedule cards |
 | Live watch | `ReadDirectoryChangesW` follows the roots on background threads, so a file added, edited or removed rescans by itself (debounced, and churn under `target`, `node_modules`, `.git`, `dist` and `build` is ignored) |
-| Chrome | owner-drawn accent buttons, `SHBrowseForFolderW` / `GetSaveFileNameW` dialogs (no COM, no extra crates), clipboard paste of folder paths, accelerators, a row context menu and chart tooltips |
+| Chrome | owner-drawn buttons - an accent fill for the primary action, a filled chip that darkens under the pointer for the rest - and equally hand-drawn scan-root rows with an accent pill on the selected root; `SHBrowseForFolderW` / `GetSaveFileNameW` dialogs (no COM, no extra crates), clipboard paste of folder paths, accelerators, a row context menu and chart tooltips |
 | Language | English and Chinese, chosen from the system UI language on first run and switchable at any time |
 | Settings | `%APPDATA%\rust-loc\ui.ini`, read at start-up and written on close |
 | Footprint | after a scan, 3 MB private bytes / 14 MB working set on this repo and 6 MB / 17 MB on the 228k-line tree, with handles and threads flat across repeated scans (measured with `Get-Process`) |
