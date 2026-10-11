@@ -1247,6 +1247,10 @@ fn place_combo(
         }
     }
     invalidate(frame);
+    // A selector repaints its closed field as soon as it is moved, and that
+    // notification lands while the caller still holds the state, so the draw is
+    // refused and never asked for again. The extra pass puts the choice back.
+    invalidate(control);
 }
 
 /// Lay a framed field out: the frame takes the whole area and the control
