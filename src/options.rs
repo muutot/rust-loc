@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use crate::badge;
 use crate::baseline;
 use crate::cocomo;
 use crate::gate;
@@ -76,6 +77,10 @@ pub struct Options {
     /// Print gate failures as GitHub annotations.
     pub ci: bool,
     pub format: Format,
+    /// Print a README badge instead of a report.
+    pub badge: Option<badge::Metric>,
+    /// Caption to use instead of the metric name.
+    pub badge_label: Option<String>,
     /// Repository config the run started from, when one was found.
     pub config: Option<PathBuf>,
     /// Write this snapshot of the business files after scanning.
@@ -120,6 +125,8 @@ impl Default for Options {
             fail_if: Vec::new(),
             ci: false,
             format: Format::Text,
+            badge: None,
+            badge_label: None,
             config: None,
             snapshot: None,
             baseline: None,

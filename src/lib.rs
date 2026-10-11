@@ -4,6 +4,7 @@
 //! discover Rust files, analyse them in parallel, reduce them to business-code
 //! counters and render the result as text, JSON, CSV or Markdown.
 
+pub mod badge;
 pub mod baseline;
 pub mod cli;
 pub mod clones;

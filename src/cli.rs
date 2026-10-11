@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use crate::badge;
 use crate::baseline;
 use crate::cocomo;
 use crate::config;
@@ -31,6 +32,11 @@ OPTIONS:
     --baseline <PATH>        compare with a snapshot from --snapshot
     --format <FORMAT>        output format: text, json, csv, markdown, svg [default: text]
     --json                   alias for --format json
+    --badge                  print a README badge instead of a report
+    --badge-metric <NAME>    figure the badge shows: code, lines, files,
+                             comment, blank, tests, complexity, unsafe,
+                             smells, uloc, mi [default: code]
+    --badge-label <TEXT>     caption to use instead of the metric name
     --by-file, --per-file    per-file breakdown
     --by-module              per-module breakdown
     --sort <KEY>             sort key for listings [default: code]
@@ -139,7 +145,9 @@ fn config_request(arguments: &[String]) -> Result<(Option<String>, bool), String
 
 /// Flags that eat the argument after them, so the pre-pass can tell a scan
 /// root apart from a flag value.
-const VALUE_FLAGS: [&str; 16] = [
+const VALUE_FLAGS: [&str; 18] = [
+    "--badge-metric",
+    "--badge-label",
     "--snapshot",
     "--baseline",
     "--root",
@@ -245,6 +253,16 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                 })
             }
             "--json" => json_alias = true,
+            "--badge" => options.badge = Some(badge::Metric::Code),
+            "--badge-metric" => {
+                let value = take(arguments, &mut index, "--badge-metric")?;
+                options.badge = Some(badge::Metric::parse(&value).ok_or_else(|| {
+                    format!("--badge-metric needs a known figure, got {}", value)
+                })?);
+            }
+            "--badge-label" => {
+                options.badge_label = Some(take(arguments, &mut index, "--badge-label")?);
+            }
             "--config" => {
                 let _ = take(arguments, &mut index, "--config")?;
             }
@@ -357,6 +375,13 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
             "--ignore-dir" => {
                 ignore_dirs_given.insert(take(arguments, &mut index, "--ignore-dir")?);
             }
+            other if other.starts_with("--badge=") => {
+                let value = &other["--badge=".len()..];
+                options.badge = Some(
+                    badge::Metric::parse(value)
+                        .ok_or_else(|| format!("--badge needs a known figure, got {}", value))?,
+                );
+            }
             other if other.starts_with("--format=") => {
                 let value = &other["--format=".len()..];
                 options.format =
@@ -421,6 +446,9 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
     if json_alias && !format_given {
         options.format = Format::Json;
     }
+    if let Some(metric) = options.badge {
+        badge_needs(metric, &mut options);
+    }
     options.ignore_dirs = if no_ignore_dirs {
         ignore_dirs_given
     } else {
@@ -465,13 +493,28 @@ pub fn run_checked(arguments: &[String], cwd: &Path) -> Result<(String, String, 
             if let Some(path) = &invocation.options.snapshot {
                 baseline::Snapshot::of(&report, cwd).save(path)?;
             }
-            let mut rendered = report::render(&report, cwd);
-            if invocation.options.format != Format::Csv {
+            let mut rendered = match invocation.options.badge {
+                Some(metric) => {
+                    badge::render(&report, metric, invocation.options.badge_label.as_deref())
+                }
+                None => report::render(&report, cwd),
+            };
+            if invocation.options.badge.is_some() || invocation.options.format != Format::Csv {
                 rendered.push('\n');
             }
             let (gate_text, status) = check_gates(&invocation.options, &report)?;
             Ok((rendered, gate_text, status))
         }
+    }
+}
+
+/// Turn on whatever the badge figure needs, so it never reads a bare zero.
+fn badge_needs(metric: badge::Metric, options: &mut Options) {
+    match metric {
+        badge::Metric::Smells => options.smells = true,
+        badge::Metric::Uloc => options.uloc = true,
+        badge::Metric::Index => options.metrics = true,
+        _ => {}
     }
 }
 

@@ -363,6 +363,25 @@ is an ordinary PNG a few tens of kilobytes large, with no image crate linked in:
 After a layout change, regenerate that image with
 `cargo test --lib write_the_documented_card -- --ignored`.
 
+### README badge
+
+`--badge` prints one small SVG shield instead of a report, so a repository can
+show its figures without a badge service and without a single network call:
+
+```console
+rust-loc . --badge > docs/lines.svg
+rust-loc . --badge-metric smells --badge-label smell > docs/smells.svg
+```
+
+The figure is one of `code`, `lines`, `files`, `comment`, `blank`, `tests`,
+`complexity`, `unsafe`, `smells`, `uloc` or `mi`, and whatever it needs to have a
+number - `--smells`, `--uloc`, `--metrics` - is turned on for it.
+`--badge-label` replaces the caption, and the caption is escaped on the way out.
+
+Nothing here talks to a server: the badge is a local SVG, and `--format json`
+is the machine endpoint for a dashboard or an agent that wants the same numbers
+as one document per run.
+
 ## Usage
 
 ```text
@@ -372,6 +391,9 @@ rust-loc [OPTIONS] [ROOTS]...
 | Option | Effect |
 | --- | --- |
 | `--format <text\|json\|csv\|markdown\|svg>` | output format (default `text`) |
+| `--badge` | print one README badge SVG instead of a report |
+| `--badge-metric <NAME>` | figure the badge shows (default `code`) |
+| `--badge-label <TEXT>` | caption to use instead of the metric name |
 | `--config <PATH>` | read this `.rustloc.toml` instead of searching |
 | `--no-config` | ignore any `.rustloc.toml` |
 | `--snapshot <PATH>` | save the business files for a later `--baseline` |
@@ -610,3 +632,7 @@ by hand).
 14. ~~a shareable report without HTML~~ - shipped as `--format svg`.
 15. ~~a raster export for slides and issue trackers~~ - the GUI writes the card
     as a PNG.
+16. ~~a README badge and a machine readable endpoint~~ - shipped as `--badge`
+    and `--format json`. An MCP server is deliberately out of scope: the crate
+    links no dependencies, so one would need a hand rolled JSON reader to answer
+    a query a shell and `--format json` already answer.

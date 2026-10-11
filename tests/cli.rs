@@ -1468,3 +1468,55 @@ fn svg_stays_out_of_the_other_formats() {
         Format::Svg
     );
 }
+
+#[test]
+fn a_badge_is_one_svg_line_sized_to_its_text() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let out = workspace.run(&["--badge"]);
+    assert!(out.starts_with("<svg "), "{}", out);
+    assert!(out.ends_with("</svg>\n"), "{}", out);
+    assert_eq!(out.matches('\n').count(), 1, "{}", out);
+    assert!(out.contains("code lines"), "{}", out);
+    assert!(!out.contains("<html"), "{}", out);
+}
+
+#[test]
+fn the_badge_figure_matches_the_report() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let code = workspace.summary(&[]).get("code").unwrap().integer();
+    let out = workspace.run(&["--badge=code"]);
+    assert!(out.contains(&format!("code lines: {code}")), "{}", out);
+}
+
+#[test]
+fn a_badge_label_can_be_replaced_and_is_escaped() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", BASIC);
+    let out = workspace.run(&["--badge-metric", "files", "--badge-label", "a<b"]);
+    assert!(out.contains("a&lt;b: 1"), "{}", out);
+    assert!(!out.contains("a<b"), "{}", out);
+}
+
+#[test]
+fn a_smells_badge_turns_the_smell_count_on() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "src/lib.rs",
+        "fn a() {\n    let x = Option::<u8>::None.unwrap();\n}\n",
+    );
+    let out = workspace.run(&["--badge-metric", "smells"]);
+    assert!(out.contains("smells: 1"), "{}", out);
+}
+
+#[test]
+fn an_unknown_badge_figure_is_an_error() {
+    let workspace = Workspace::new();
+    let args: Vec<String> = vec![
+        workspace.path.display().to_string(),
+        "--badge=nope".to_string(),
+    ];
+    let error = cli::parse(&args, &workspace.path).unwrap_err();
+    assert!(error.contains("known figure"), "{}", error);
+}
