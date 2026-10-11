@@ -293,6 +293,7 @@ catalog! {
     col_delta => ("Delta", "变化"),
     filter_label => ("Filter", "筛选"),
     filter_cue => ("Filter paths…", "按路径筛选…"),
+    filter_cue_author => ("Filter authors…", "按作者筛选…"),
     top_label => ("Top", "上限"),
     top_all => ("All", "全部"),
     hint_sorted => ("sorted by {column} {arrow}", "按 {column} 排序 {arrow}"),

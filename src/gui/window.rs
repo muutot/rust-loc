@@ -1880,6 +1880,7 @@ fn set_view(state: &mut app::AppState, view: model::View) {
     state.view = view;
     state.group = view.group();
     state.group_views[state.group.index()] = view;
+    set_cue(state.control(app::ID_FILTER), view.filter_cue());
     let (column, descending) = model::default_sort(view);
     state.sort_column = column;
     state.sort_descending = descending;
@@ -1900,6 +1901,7 @@ fn set_group(state: &mut app::AppState, group: model::Group) {
         state.sort_column = column;
         state.sort_descending = descending;
     }
+    set_cue(state.control(app::ID_FILTER), state.view.filter_cue());
     state.rebuild();
     reconfigure_list(state);
 }
@@ -2136,7 +2138,7 @@ fn apply_language(hwnd: HWND) {
         set_text(state.control(app::ID_AUTHORS), i18n::t().opt_authors);
         set_text(state.control(app::ID_SCAN), i18n::t().button_scan);
         set_text(state.control(app::ID_EXPORT), i18n::t().button_export);
-        set_cue(state.control(app::ID_FILTER), i18n::t().filter_cue);
+        set_cue(state.control(app::ID_FILTER), state.view.filter_cue());
         let top = state.control(app::ID_TOP);
         let selected = combo_index(top).min(3);
         send(top, CB_RESETCONTENT, 0, 0);
@@ -2194,7 +2196,7 @@ fn on_create(hwnd: HWND) {
         set_text(state.control(app::ID_EXCLUDE), &settings.exclude);
         set_text(state.control(app::ID_EXTRA_DIRS), &settings.extra_dirs);
         set_text(state.control(app::ID_FILTER), &settings.filter);
-        set_cue(state.control(app::ID_FILTER), i18n::t().filter_cue);
+        set_cue(state.control(app::ID_FILTER), state.view.filter_cue());
         fill_top_combo(state);
         combo_choose(state.control(app::ID_TOP), settings.top.min(3));
         fill_language_combo(state);

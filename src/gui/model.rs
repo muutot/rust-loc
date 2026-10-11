@@ -174,6 +174,15 @@ impl View {
         }
     }
 
+    /// Cue text for the filter box. Every table filters on a path except the
+    /// author tally, whose first column is the author name.
+    pub fn filter_cue(self) -> &'static str {
+        match self {
+            View::AuthorTotals => i18n::t().filter_cue_author,
+            _ => i18n::t().filter_cue,
+        }
+    }
+
     pub fn from_index(index: usize) -> View {
         *View::ALL.get(index).unwrap_or(&View::Files)
     }
@@ -1780,6 +1789,21 @@ mod tests {
         // The authors tab reads by file, not by counter.
         assert_eq!(default_sort(View::Authors), (-1, false));
         assert_eq!(default_sort(View::AuthorTotals), (1, true));
+    }
+
+    /// The author tally filters on the name in its first column, so its cue
+    /// must not promise a path filter.
+    #[test]
+    fn the_filter_cue_names_what_the_view_filters_on() {
+        i18n::set_lang(i18n::Lang::En);
+        assert_eq!(View::AuthorTotals.filter_cue(), "Filter authors…");
+        i18n::set_lang(i18n::Lang::Zh);
+        assert_eq!(View::AuthorTotals.filter_cue(), "按作者筛选…");
+        for view in View::ALL {
+            if view != View::AuthorTotals {
+                assert_eq!(view.filter_cue(), i18n::t().filter_cue, "{view:?}");
+            }
+        }
     }
 
     #[test]
