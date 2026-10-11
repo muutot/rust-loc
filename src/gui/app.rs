@@ -80,6 +80,21 @@ pub const CHART_ROWS: usize = 12;
 pub const CARD_COLUMNS: i32 = 5;
 /// Function rows the GUI keeps; the table filters and sorts them in place.
 pub const GUI_TOP_FUNCTIONS: usize = 200;
+/// The owner drawn check boxes, in the order the sidebar lays them out.
+pub const CHECK_BOXES: [i32; 7] = [
+    ID_GITIGNORE,
+    ID_DEFAULT_IGNORES,
+    ID_TESTS,
+    ID_COMPLEXITY,
+    ID_ULOC,
+    ID_EXCLUDE_GENERATED,
+    ID_COCOMO,
+];
+
+/// The slot an owner drawn check box fills in the state check table.
+fn check_slot(id: i32) -> Option<usize> {
+    CHECK_BOXES.iter().position(|candidate| *candidate == id)
+}
 
 /// A framed input: `frame` paints the rounded surface and `control` sits
 /// inset above it, so the field keeps the native behaviour of whatever
@@ -145,6 +160,9 @@ pub struct AppState {
     /// The control the pointer rests on; owner drawn buttons read it to
     /// light up, since they get no hover state of their own.
     pub hot: i32,
+    /// The owner drawn check boxes. A box keeps no state of its own, so the
+    /// app carries the flag its painter reads back.
+    pub checks: [bool; CHECK_BOXES.len()],
 }
 
 impl AppState {
@@ -236,6 +254,7 @@ impl AppState {
             tab_rects: [RECT::default(); 5],
             fields: Vec::new(),
             hot: 0,
+            checks: [false; CHECK_BOXES.len()],
         }
     }
 
@@ -275,15 +294,31 @@ impl AppState {
             .unwrap_or(std::ptr::null_mut())
     }
 
-    /// Read every scope widget back into the scan options.
+    /// Whether one owner drawn check box is on.
+    pub fn check(&self, id: i32) -> bool {
+        check_slot(id)
+            .map(|slot| self.checks[slot])
+            .unwrap_or(false)
+    }
+
+    /// Set the flag one owner drawn check box draws from.
+    pub fn set_check(&mut self, id: i32, value: bool) {
+        if let Some(slot) = check_slot(id) {
+            self.checks[slot] = value;
+        }
+    }
+
+    /// Read every scope widget back into the scan options. The check boxes
+    /// draw themselves, so their flags come from the app rather than from the
+    /// control.
     pub fn sync_options(&mut self) {
-        self.options.include_tests = window::checked(self.control(ID_TESTS));
-        self.options.complexity = window::checked(self.control(ID_COMPLEXITY));
-        self.options.uloc = window::checked(self.control(ID_ULOC));
-        self.options.exclude_generated = window::checked(self.control(ID_EXCLUDE_GENERATED));
-        self.options.cocomo = window::checked(self.control(ID_COCOMO));
-        self.options.gitignore = window::checked(self.control(ID_GITIGNORE));
-        let defaults = window::checked(self.control(ID_DEFAULT_IGNORES));
+        self.options.include_tests = self.check(ID_TESTS);
+        self.options.complexity = self.check(ID_COMPLEXITY);
+        self.options.uloc = self.check(ID_ULOC);
+        self.options.exclude_generated = self.check(ID_EXCLUDE_GENERATED);
+        self.options.cocomo = self.check(ID_COCOMO);
+        self.options.gitignore = self.check(ID_GITIGNORE);
+        let defaults = self.check(ID_DEFAULT_IGNORES);
         let extra = model::parse_list(&window::get_text(self.control(ID_EXTRA_DIRS)));
         let mut dirs: BTreeSet<String> = if defaults {
             crate::scan::default_ignore_dirs()
@@ -377,7 +412,7 @@ impl AppState {
         }
         self.settings.roots = self.roots.join(";");
         self.settings.gitignore = self.options.gitignore;
-        self.settings.default_ignores = window::checked(self.control(ID_DEFAULT_IGNORES));
+        self.settings.default_ignores = self.check(ID_DEFAULT_IGNORES);
         self.settings.include_tests = self.options.include_tests;
         self.settings.complexity = self.options.complexity;
         self.settings.uloc = self.options.uloc;

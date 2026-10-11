@@ -66,14 +66,6 @@ pub fn set_text(hwnd: HWND, text: &str) {
     unsafe { SetWindowTextW(hwnd, buffer.as_ptr()) };
 }
 
-pub fn checked(hwnd: HWND) -> bool {
-    send(hwnd, BM_GETCHECK, 0, 0) as usize == BST_CHECKED as usize
-}
-
-pub fn set_checked(hwnd: HWND, value: bool) {
-    send(hwnd, BM_SETCHECK, if value { 1 } else { 0 }, 0);
-}
-
 pub fn combo_index(hwnd: HWND) -> usize {
     let index = send(hwnd, CB_GETCURSEL, 0, 0);
     if index < 0 {
@@ -235,6 +227,74 @@ unsafe extern "system" fn button_subclass(
         _ => {}
     }
     DefSubclassProc(hwnd, message, wparam, lparam)
+}
+
+/// Frame the dropdown list of a selector in the app palette.
+///
+/// The system frames the list in the accent colour while the combo holds the
+/// focus, which reads as somebody else's window; the frame is repainted in the
+/// hairline the closed field wears.
+unsafe extern "system" fn dropdown_subclass(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _ref: usize,
+) -> LRESULT {
+    let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    if message == WM_PAINT || message == WM_NCPAINT {
+        frame_dropdown(hwnd);
+    }
+    result
+}
+
+/// Draw the one pixel frame over whatever the list just painted.
+fn frame_dropdown(hwnd: HWND) {
+    let mut area = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut area) } == 0 {
+        return;
+    }
+    let width = area.right - area.left;
+    let height = area.bottom - area.top;
+    if width < 4 || height < 4 {
+        return;
+    }
+    let dc = unsafe { GetWindowDC(hwnd) };
+    if dc.is_null() {
+        return;
+    }
+    let edge = with_state(|state| state.theme.px(1)).unwrap_or(1);
+    for line in [
+        rect(0, 0, width, edge),
+        rect(0, height - edge, width, height),
+        rect(0, 0, edge, height),
+        rect(width - edge, 0, width, height),
+    ] {
+        paint::fill(dc, &line, theme::FIELD_BORDER);
+    }
+    unsafe { ReleaseDC(hwnd, dc) };
+}
+
+/// Subclass the dropdown list a selector pops up, when it has one yet.
+fn track_dropdown(combo: HWND) {
+    if combo.is_null() {
+        return;
+    }
+    let mut info = COMBOBOXINFO {
+        cbSize: std::mem::size_of::<COMBOBOXINFO>() as u32,
+        ..Default::default()
+    };
+    let ok = send(
+        combo,
+        CB_GETCOMBOBOXINFO,
+        0,
+        &mut info as *mut COMBOBOXINFO as isize,
+    );
+    if ok == 0 || info.hwndList.is_null() {
+        return;
+    }
+    unsafe { SetWindowSubclass(info.hwndList, Some(dropdown_subclass), 0, 0) };
 }
 
 /// Let an owner drawn button light up under the pointer.
@@ -1008,7 +1068,10 @@ pub fn set_busy(state: &app::AppState, busy: bool) {
     ] {
         let control = state.control(id);
         if !control.is_null() {
-            unsafe { EnableWindow(control, if busy { 0 } else { 1 }) };
+            let was_disabled = unsafe { EnableWindow(control, if busy { 0 } else { 1 }) } != 0;
+            if was_disabled != busy {
+                invalidate(control);
+            }
         }
     }
 }
@@ -1221,8 +1284,18 @@ fn create_controls(parent: HWND) -> (Vec<(i32, HWND)>, Vec<app::Field>) {
     let mut fields: Vec<app::Field> = Vec::new();
     let edit = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32;
     let button = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32;
-    let check = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32;
-    let combo = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32;
+    // Owner drawn: a check box keeps no toggle of its own and the shell
+    // paints the box itself, so the click handler flips the state.
+    let check = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW as u32;
+    // The entries are drawn by hand too, so the selectors have to keep their
+    // strings for the painter to read back.
+    let combo = WS_CHILD
+        | WS_VISIBLE
+        | WS_TABSTOP
+        | WS_VSCROLL
+        | CBS_DROPDOWNLIST as u32
+        | CBS_HASSTRINGS as u32
+        | CBS_OWNERDRAWFIXED as u32;
     let mut add = |id: i32, hwnd: HWND| {
         if !hwnd.is_null() {
             controls.push((id, hwnd));
@@ -1488,6 +1561,9 @@ fn create_controls(parent: HWND) -> (Vec<(i32, HWND)>, Vec<app::Field>) {
             app::ID_SCAN | app::ID_EXPORT | app::ID_ADD_FOLDER | app::ID_ADD_PATH | app::ID_REMOVE
         ) {
             track_button(*hwnd, *id);
+        }
+        if matches!(*id, app::ID_LANG | app::ID_TOP) {
+            track_dropdown(*hwnd);
         }
     }
     (controls, fields)
@@ -1853,21 +1929,17 @@ fn on_create(hwnd: HWND) {
             state.remember_field(field.frame, field.control);
         }
         apply_fonts(state);
-        state.sync_options();
         let settings = state.settings.clone();
-        set_checked(state.control(app::ID_GITIGNORE), settings.gitignore);
-        set_checked(
-            state.control(app::ID_DEFAULT_IGNORES),
-            settings.default_ignores,
-        );
-        set_checked(state.control(app::ID_TESTS), settings.include_tests);
-        set_checked(state.control(app::ID_COMPLEXITY), settings.complexity);
-        set_checked(state.control(app::ID_ULOC), settings.uloc);
-        set_checked(
-            state.control(app::ID_EXCLUDE_GENERATED),
-            settings.exclude_generated,
-        );
-        set_checked(state.control(app::ID_COCOMO), settings.cocomo);
+        // Seed the boxes before the options are read back, so the first paint
+        // and the first scan agree on the flags.
+        state.set_check(app::ID_GITIGNORE, settings.gitignore);
+        state.set_check(app::ID_DEFAULT_IGNORES, settings.default_ignores);
+        state.set_check(app::ID_TESTS, settings.include_tests);
+        state.set_check(app::ID_COMPLEXITY, settings.complexity);
+        state.set_check(app::ID_ULOC, settings.uloc);
+        state.set_check(app::ID_EXCLUDE_GENERATED, settings.exclude_generated);
+        state.set_check(app::ID_COCOMO, settings.cocomo);
+        state.sync_options();
         set_text(state.control(app::ID_EXCLUDE), &settings.exclude);
         set_text(state.control(app::ID_EXTRA_DIRS), &settings.extra_dirs);
         set_text(state.control(app::ID_FILTER), &settings.filter);
@@ -2143,6 +2215,11 @@ unsafe extern "system" fn main_proc(
                 | app::ID_COCOMO => {
                     if code == BN_CLICKED {
                         with_state(|state| {
+                            // An owner drawn box has no automatic toggle, so
+                            // the click flips the state the painter reads.
+                            let on = state.check(id);
+                            state.set_check(id, !on);
+                            invalidate(state.control(id));
                             state.sync_options();
                             state.rebuild();
                             reconfigure_list(state);
@@ -2224,6 +2301,28 @@ unsafe extern "system" fn main_proc(
                 with_state(|state| paint::list_item((*item).hDC, &*item, &state.theme));
                 return 1;
             }
+            if (*item).CtlType == ODT_COMBOBOX {
+                with_state(|state| paint::combo_item((*item).hDC, &*item, &state.theme));
+                return 1;
+            }
+            if (*item).CtlType == ODT_BUTTON
+                && matches!(
+                    (*item).CtlID as i32,
+                    app::ID_GITIGNORE
+                        | app::ID_DEFAULT_IGNORES
+                        | app::ID_TESTS
+                        | app::ID_COMPLEXITY
+                        | app::ID_ULOC
+                        | app::ID_EXCLUDE_GENERATED
+                        | app::ID_COCOMO
+                )
+            {
+                with_state(|state| {
+                    let on = state.check((*item).CtlID as i32);
+                    paint::checkbox((*item).hDC, &*item, on, &state.theme);
+                });
+                return 1;
+            }
             with_state(|state| {
                 let style = match (*item).CtlID as i32 {
                     app::ID_SCAN => Some(paint::ButtonStyle::Accent),
@@ -2247,9 +2346,23 @@ unsafe extern "system" fn main_proc(
             // The scan-root list draws its own rows, so it asks for that
             // height once and again after a DPI change.
             let measure = lparam as *mut MEASUREITEMSTRUCT;
-            if !measure.is_null() && (*measure).CtlType == ODT_LISTBOX {
-                with_state(|state| (*measure).itemHeight = state.theme.px(24) as u32);
-                return 1;
+            if !measure.is_null() {
+                match (*measure).CtlType {
+                    ODT_LISTBOX => {
+                        with_state(|state| (*measure).itemHeight = state.theme.px(24) as u32);
+                        return 1;
+                    }
+                    ODT_COMBOBOX => {
+                        // An entry as tall as a field, so the closed box and
+                        // the rows under it line up.
+                        let height =
+                            with_state(|state| Metrics::new(|value| state.theme.px(value)).control)
+                                .unwrap_or(24);
+                        (*measure).itemHeight = height as u32;
+                        return 1;
+                    }
+                    _ => {}
+                }
             }
             DefWindowProcW(hwnd, message, wparam, lparam)
         }
@@ -2483,13 +2596,13 @@ fn persist(hwnd: HWND) {
     with_state(|state| {
         let mut settings = state.settings.clone();
         settings.roots = state.roots.join(";");
-        settings.gitignore = checked(state.control(app::ID_GITIGNORE));
-        settings.default_ignores = checked(state.control(app::ID_DEFAULT_IGNORES));
-        settings.include_tests = checked(state.control(app::ID_TESTS));
-        settings.complexity = checked(state.control(app::ID_COMPLEXITY));
-        settings.uloc = checked(state.control(app::ID_ULOC));
-        settings.exclude_generated = checked(state.control(app::ID_EXCLUDE_GENERATED));
-        settings.cocomo = checked(state.control(app::ID_COCOMO));
+        settings.gitignore = state.check(app::ID_GITIGNORE);
+        settings.default_ignores = state.check(app::ID_DEFAULT_IGNORES);
+        settings.include_tests = state.check(app::ID_TESTS);
+        settings.complexity = state.check(app::ID_COMPLEXITY);
+        settings.uloc = state.check(app::ID_ULOC);
+        settings.exclude_generated = state.check(app::ID_EXCLUDE_GENERATED);
+        settings.cocomo = state.check(app::ID_COCOMO);
         settings.exclude = get_text(state.control(app::ID_EXCLUDE));
         settings.extra_dirs = get_text(state.control(app::ID_EXTRA_DIRS));
         settings.view = state.view.index();

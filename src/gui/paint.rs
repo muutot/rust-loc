@@ -1111,6 +1111,189 @@ pub fn list_item(hdc: HDC, item: &DRAWITEMSTRUCT, theme: &theme::Theme) {
     );
 }
 
+/// The text of a control the shell draws by hand, so a painter can render
+/// its own label without reaching into the window helpers.
+fn window_text(hwnd: HWND) -> String {
+    if hwnd.is_null() {
+        return String::new();
+    }
+    let length = unsafe { GetWindowTextLengthW(hwnd) };
+    if length <= 0 {
+        return String::new();
+    }
+    let mut buffer = vec![0u16; length as usize + 1];
+    let read = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+    if read <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..read as usize])
+}
+
+/// The check glyph: one polyline of a white pen inside the box.
+fn tick(hdc: HDC, box_area: &RECT, theme: &theme::Theme) {
+    let width = box_area.right - box_area.left;
+    let at = |x: f64, y: f64| POINT {
+        x: box_area.left + (width as f64 * x / 15.0) as i32,
+        y: box_area.top + (width as f64 * y / 15.0) as i32,
+    };
+    let points = [at(4.0, 8.2), at(6.6, 10.7), at(11.0, 4.6)];
+    let pen = unsafe { CreatePen(PS_SOLID, theme.px(2).max(1), theme::FIELD_BG) };
+    if pen.is_null() {
+        return;
+    }
+    let previous = unsafe { SelectObject(hdc, pen as HGDIOBJ) };
+    unsafe { Polyline(hdc, points.as_ptr(), points.len() as i32) };
+    unsafe {
+        SelectObject(hdc, previous);
+        DeleteObject(pen as HGDIOBJ);
+    }
+}
+
+/// Paint one owner drawn check box: a small rounded box that fills with the
+/// accent when it is on, with the label beside it. The box has no toggle and
+/// no check state of its own, so the caller passes the flag to draw.
+pub fn checkbox(hdc: HDC, item: &DRAWITEMSTRUCT, on: bool, theme: &theme::Theme) {
+    let bounds = item.rcItem;
+    fill(hdc, &bounds, theme::CARD_BG);
+    if item.hwndItem.is_null() {
+        return;
+    }
+    let disabled = item.itemState & ODS_DISABLED != 0;
+    let focused = item.itemState & ODS_FOCUS != 0;
+    let side = theme.px(15);
+    let top = bounds.top + (bounds.bottom - bounds.top - side) / 2;
+    let area = rect(bounds.left, top, bounds.left + side, top + side);
+    let mark = theme.px(theme::R_MARK);
+    if on {
+        let color = if disabled {
+            theme::FIELD_BORDER
+        } else if focused {
+            theme::ACCENT_DARK
+        } else {
+            theme::ACCENT
+        };
+        card(hdc, &area, mark, color, None);
+        tick(hdc, &area, theme);
+    } else {
+        let border = if focused {
+            theme::ACCENT
+        } else {
+            theme::FIELD_BORDER
+        };
+        card(hdc, &area, mark, theme::FIELD_BG, Some(border));
+    }
+    let mut label = rect(
+        area.right + theme.px(8),
+        bounds.top,
+        bounds.right,
+        bounds.bottom,
+    );
+    let color = if disabled { theme::MUTED } else { theme::TEXT };
+    text(
+        hdc,
+        &window_text(item.hwndItem),
+        &mut label,
+        color,
+        theme.fonts.base,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+    );
+}
+
+/// The text of one entry of an owner drawn selector.
+fn combo_text(hwnd: HWND, index: i32) -> String {
+    let length = unsafe { SendMessageW(hwnd, CB_GETLBTEXTLEN, index as usize, 0) };
+    if length <= 0 {
+        return String::new();
+    }
+    let mut buffer = vec![0u16; length as usize + 1];
+    let read = unsafe {
+        SendMessageW(
+            hwnd,
+            CB_GETLBTEXT,
+            index as usize,
+            buffer.as_mut_ptr() as isize,
+        )
+    };
+    if read <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buffer[..read as usize])
+}
+
+/// Paint one row of an owner drawn selector, or its closed field. The row the
+/// keyboard or the pointer rests on gets the washed accent the scan-root list
+/// uses, rather than the solid system highlight.
+pub fn combo_item(hdc: HDC, item: &DRAWITEMSTRUCT, theme: &theme::Theme) {
+    let bounds = item.rcItem;
+    fill(hdc, &bounds, theme::FIELD_BG);
+    if item.hwndItem.is_null() {
+        return;
+    }
+    let index = item.itemID as i32;
+    // A negative index is the closed field, which shows the current choice.
+    let slot = if index < 0 {
+        (unsafe { SendMessageW(item.hwndItem, CB_GETCURSEL, 0, 0) }) as i32
+    } else {
+        index
+    };
+    if slot < 0 {
+        return;
+    }
+    let value = combo_text(item.hwndItem, slot);
+    if index < 0 {
+        let mut area = rect(
+            bounds.left + theme.px(4),
+            bounds.top,
+            (bounds.right - theme.px(4)).max(bounds.left),
+            bounds.bottom,
+        );
+        text(
+            hdc,
+            &value,
+            &mut area,
+            theme::TEXT,
+            theme.fonts.base,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+        );
+        return;
+    }
+    let selected = item.itemState & ODS_SELECTED != 0;
+    let pill = rect(
+        bounds.left + theme.px(2),
+        bounds.top + theme.px(1),
+        bounds.right - theme.px(2),
+        bounds.bottom - theme.px(1),
+    );
+    if selected {
+        card(
+            hdc,
+            &pill,
+            theme.px(theme::R_MARK),
+            theme::ACCENT_SOFT,
+            None,
+        );
+    }
+    let color = if selected {
+        theme::ACCENT_DARK
+    } else {
+        theme::TEXT
+    };
+    let mut area = rect(
+        pill.left + theme.px(8),
+        bounds.top,
+        pill.right - theme.px(6),
+        bounds.bottom,
+    );
+    text(
+        hdc,
+        &value,
+        &mut area,
+        color,
+        theme.fonts.base,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
+    );
+}
+
 /// Paint the scan overlay: scrim, card, progress track and caption.
 pub fn overlay(hdc: HDC, area: &RECT, done: usize, total: usize, path: &str, theme: &theme::Theme) {
     let width = area.right - area.left;
