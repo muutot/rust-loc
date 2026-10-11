@@ -26,7 +26,10 @@ pub struct Lines {
     pub comment: u32,
     pub doc: u32,
     pub code: u32,
-    /// Lines inside test items; zero once `--include-tests` folds them in.
+    /// Lines inside test items, always counted on their own so the author
+    /// tables can show test code as a column. With `--include-tests` they are
+    /// also part of the class counters above, so there they read as a share of
+    /// the totals rather than as a class beside them.
     pub test: u32,
 }
 
@@ -36,9 +39,15 @@ impl Lines {
         self.blank + self.comment + self.code
     }
 
-    /// Every line the blame covered, test code included.
-    pub fn physical(&self) -> u32 {
-        self.business() + self.test
+    /// The weight a share or a row is ranked by: every line the blame covered.
+    /// With `include_tests` the class counters already carry the test lines, so
+    /// this only adds the ones the split left out.
+    pub fn physical(&self, include_tests: bool) -> u32 {
+        if include_tests {
+            self.business()
+        } else {
+            self.business() + self.test
+        }
     }
 
     fn add(&mut self, other: Lines) {
@@ -109,7 +118,7 @@ impl Authors {
                 None => {}
             }
         }
-        let rows = fold(&files);
+        let rows = fold(&files, options.include_tests);
         Authors {
             available,
             untracked,
@@ -244,20 +253,7 @@ fn blame_file(top: &Path, entry: &Entry, options: &Options) -> Blamed {
         let Some(class) = classes.get(position) else {
             break;
         };
-        let mut lines = Lines::default();
-        if class.is_test && !options.include_tests {
-            lines.test = 1;
-        } else {
-            match class.kind {
-                Kind::Blank => lines.blank = 1,
-                Kind::Comment => lines.comment = 1,
-                Kind::Doc => {
-                    lines.comment = 1;
-                    lines.doc = 1;
-                }
-                Kind::Code => lines.code = 1,
-            }
-        }
+        let lines = line_counters(*class, options.include_tests);
         let key = identity(name, email);
         let slot = match index.get(&key) {
             Some(slot) => *slot,
@@ -273,7 +269,7 @@ fn blame_file(top: &Path, entry: &Entry, options: &Options) -> Blamed {
         };
         shares[slot].lines.add(lines);
     }
-    sort_shares(&mut shares);
+    sort_shares(&mut shares, options.include_tests);
     Blamed {
         repo: true,
         shares: Some(shares),
@@ -321,6 +317,30 @@ fn classify(path: &Path, lang: Lang) -> Vec<Line> {
         });
     }
     out
+}
+
+/// The counters one blamed line adds to its author's share.
+///
+/// A line inside a test item is always counted as a test line, so the author
+/// tables can show test code as its own column. With `include_tests` it also
+/// lands in the class counters, the way the file summary counts it.
+fn line_counters(class: Line, include_tests: bool) -> Lines {
+    let mut lines = Lines::default();
+    if class.is_test {
+        lines.test = 1;
+    }
+    if !class.is_test || include_tests {
+        match class.kind {
+            Kind::Blank => lines.blank = 1,
+            Kind::Comment => lines.comment = 1,
+            Kind::Doc => {
+                lines.comment = 1;
+                lines.doc = 1;
+            }
+            Kind::Code => lines.code = 1,
+        }
+    }
+    lines
 }
 
 /// Parse `git blame --incremental` into one pair per blamed line.
@@ -392,12 +412,12 @@ fn identity(name: &str, email: &str) -> String {
     }
 }
 
-fn sort_shares(shares: &mut [Share]) {
+fn sort_shares(shares: &mut [Share], include_tests: bool) {
     shares.sort_by(|left, right| {
         right
             .lines
-            .physical()
-            .cmp(&left.lines.physical())
+            .physical(include_tests)
+            .cmp(&left.lines.physical(include_tests))
             .then_with(|| left.name.cmp(&right.name))
     });
 }
@@ -407,7 +427,7 @@ fn sort_shares(shares: &mut [Share]) {
 /// A file counts for an author once, however many of its lines are theirs, so
 /// the tally adds `files` per share rather than per line. Blame already folds
 /// the identical spellings of one address together, so one share is one author.
-fn fold(files: &[FileShare]) -> Vec<AuthorRow> {
+fn fold(files: &[FileShare], include_tests: bool) -> Vec<AuthorRow> {
     let mut rows: Vec<AuthorRow> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for file in files {
@@ -433,8 +453,8 @@ fn fold(files: &[FileShare]) -> Vec<AuthorRow> {
     rows.sort_by(|left, right| {
         right
             .lines
-            .physical()
-            .cmp(&left.lines.physical())
+            .physical(include_tests)
+            .cmp(&left.lines.physical(include_tests))
             .then_with(|| left.name.cmp(&right.name))
     });
     rows
@@ -526,7 +546,7 @@ mod tests {
                 authors: vec![ada(5, 2)],
             },
         ];
-        let rows = fold(&files);
+        let rows = fold(&files, false);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].name, "Ada");
         assert_eq!(rows[0].files, 2);
@@ -535,5 +555,40 @@ mod tests {
         assert_eq!(rows[0].lines.business(), 10);
         assert_eq!(rows[1].name, "Bob");
         assert_eq!(rows[1].files, 1);
+    }
+
+    #[test]
+    fn a_test_line_is_counted_on_its_own_and_folded_when_asked() {
+        let code = Line {
+            kind: Kind::Code,
+            is_test: true,
+        };
+        let kept_out = line_counters(code, false);
+        assert_eq!(kept_out.test, 1);
+        assert_eq!(kept_out.business(), 0);
+        let folded = line_counters(code, true);
+        assert_eq!(folded.test, 1);
+        assert_eq!(folded.code, 1);
+
+        let plain = line_counters(
+            Line {
+                kind: Kind::Comment,
+                is_test: false,
+            },
+            true,
+        );
+        assert_eq!(plain.test, 0);
+        assert_eq!(plain.comment, 1);
+    }
+
+    #[test]
+    fn the_ranking_weight_counts_a_test_line_once() {
+        let lines = Lines {
+            code: 3,
+            test: 2,
+            ..Lines::default()
+        };
+        assert_eq!(lines.physical(false), 5);
+        assert_eq!(lines.physical(true), 3);
     }
 }

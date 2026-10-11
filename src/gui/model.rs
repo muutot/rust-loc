@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::authors::AuthorRow;
+use crate::authors::{AuthorRow, Share};
 use crate::baseline;
 use crate::history;
 use crate::options::{Format, Options};
@@ -319,6 +319,10 @@ pub fn view_columns(view: View, options: &Options, has_delta: bool) -> Vec<Colum
                 key: "blank",
                 width: 70,
             },
+            Column {
+                key: "test",
+                width: 70,
+            },
         ],
         View::Authors => vec![
             Column {
@@ -339,6 +343,10 @@ pub fn view_columns(view: View, options: &Options, has_delta: bool) -> Vec<Colum
             },
             Column {
                 key: "blank",
+                width: 70,
+            },
+            Column {
+                key: "test",
                 width: 70,
             },
         ],
@@ -641,13 +649,10 @@ pub fn build_rows(report: &Report, view: View, columns: &[Column], cwd: &Path) -
                         }
                         rows.push(Row {
                             label: label.clone(),
-                            cells: vec![
-                                Cell::Text(share.name.clone()),
-                                Cell::Number(share.lines.business()),
-                                Cell::Number(share.lines.code),
-                                Cell::Number(share.lines.comment),
-                                Cell::Number(share.lines.blank),
-                            ],
+                            cells: columns
+                                .iter()
+                                .map(|column| share_cell(share, column.key))
+                                .collect(),
                             target: Some(file.path.display().to_string()),
                             delta: None,
                         });
@@ -755,6 +760,21 @@ fn author_cell(author: &AuthorRow, key: &str) -> Cell {
         "code" => Cell::Number(author.lines.code),
         "comment" => Cell::Number(author.lines.comment),
         "blank" => Cell::Number(author.lines.blank),
+        "test" => Cell::Number(author.lines.test),
+        _ => Cell::Number(0),
+    }
+}
+
+/// One cell of a per-file author row: the name is the text column, then the
+/// same line classes the tally shows.
+fn share_cell(share: &Share, key: &str) -> Cell {
+    match key {
+        "author" => Cell::Text(share.name.clone()),
+        "lines" => Cell::Number(share.lines.business()),
+        "code" => Cell::Number(share.lines.code),
+        "comment" => Cell::Number(share.lines.comment),
+        "blank" => Cell::Number(share.lines.blank),
+        "test" => Cell::Number(share.lines.test),
         _ => Cell::Number(0),
     }
 }
@@ -1905,7 +1925,7 @@ mod tests {
         let columns = view_columns(View::Authors, &options, false);
         assert_eq!(
             columns.iter().map(|column| column.key).collect::<Vec<_>>(),
-            ["author", "lines", "code", "comment", "blank"]
+            ["author", "lines", "code", "comment", "blank", "test"]
         );
         assert!(is_text_column("author"));
         let rows = build_rows(&report, View::Authors, &columns, &scratch.path);
@@ -1916,7 +1936,9 @@ mod tests {
         assert_eq!(rows[0].cells[2].number(), 5);
         assert_eq!(rows[0].cells[3].number(), 1);
         assert_eq!(rows[0].cells[4].number(), 2);
+        assert_eq!(rows[0].cells[5].number(), 0);
         assert_eq!(rows[1].cells[1].number(), 3);
+        assert_eq!(rows[1].cells[5].number(), 4);
         let hint = table_hint(View::Authors, Some(&report), 2, 2, -1, false);
         assert!(hint.contains("2 author(s) across 1 blamed files"), "{hint}");
         assert!(hint.contains("sorted by File ▲"), "{hint}");
@@ -1926,7 +1948,7 @@ mod tests {
         let totals = view_columns(View::AuthorTotals, &options, false);
         assert_eq!(
             totals.iter().map(|column| column.key).collect::<Vec<_>>(),
-            ["files", "lines", "code", "comment", "blank"]
+            ["files", "lines", "code", "comment", "blank", "test"]
         );
         assert_eq!(column_title("files"), i18n::t().col_files);
         let rows = build_rows(&report, View::AuthorTotals, &totals, &scratch.path);
@@ -1935,8 +1957,10 @@ mod tests {
         assert_eq!(rows[0].cells[0].number(), 1);
         assert_eq!(rows[0].cells[1].number(), 8);
         assert_eq!(rows[0].cells[2].number(), 5);
+        assert_eq!(rows[0].cells[5].number(), 0);
         assert_eq!(rows[1].label, "Bob");
         assert_eq!(rows[1].cells[1].number(), 3);
+        assert_eq!(rows[1].cells[5].number(), 4);
         assert!(rows.iter().all(|row| row.target.is_none()));
 
         // Without author data the tab says so instead of drawing nothing.
