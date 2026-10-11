@@ -574,6 +574,47 @@ fn config_roots_are_used_when_none_are_given() {
 }
 
 #[test]
+fn config_can_pick_the_source_languages() {
+    let workspace = Workspace::new();
+    workspace.write("tool/app.py", PY_SOURCE);
+    workspace.write(".rustloc.toml", "[scope]\nsources = \"python\"\n");
+
+    let args: Vec<String> = vec![
+        "--no-gitignore".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+    let document = json::parse(&cli::run(&args, &workspace.path).unwrap());
+    assert_eq!(
+        document
+            .get("scope")
+            .unwrap()
+            .get("sources")
+            .unwrap()
+            .text(),
+        "python"
+    );
+    assert_eq!(
+        document
+            .get("summary")
+            .unwrap()
+            .get("files")
+            .unwrap()
+            .integer(),
+        1
+    );
+}
+
+#[test]
+fn an_unknown_source_selection_in_the_config_is_an_error() {
+    let workspace = Workspace::new();
+    workspace.write(".rustloc.toml", "[scope]\nsources = \"cobol\"\n");
+    let args: Vec<String> = vec!["--no-gitignore".to_string()];
+    let error = cli::parse(&args, &workspace.path).unwrap_err();
+    assert!(error.contains("unknown source selection"), "{}", error);
+}
+
+#[test]
 fn the_config_is_found_beside_the_scan_root() {
     let workspace = Workspace::new();
     workspace.write("proj/src/lib.rs", "fn a() {}\n");
@@ -768,7 +809,14 @@ fn history_stays_out_of_the_report_without_the_switch() {
 fn help_flag_documents_every_switch() {
     let workspace = Workspace::new();
     let out = workspace.run(&["--help"]);
-    for flag in ["--by-file", "--by-module", "--uloc", "--jobs", "--exclude"] {
+    for flag in [
+        "--by-file",
+        "--by-module",
+        "--uloc",
+        "--jobs",
+        "--exclude",
+        "--sources",
+    ] {
         assert!(out.contains(flag), "{} missing from help", flag);
     }
 }
@@ -1597,6 +1645,9 @@ fn a_smells_badge_turns_the_smell_count_on() {
     assert!(out.contains("smells: 1"), "{}", out);
 }
 
+const PY_SOURCE: &str = "import os\n\n\ndef add(a, b):\n    return a + b\n";
+const PY_TEST: &str = "def test_add():\n    assert add(1, 2) == 3\n";
+
 #[test]
 fn an_unknown_badge_figure_is_an_error() {
     let workspace = Workspace::new();
@@ -1606,4 +1657,83 @@ fn an_unknown_badge_figure_is_an_error() {
     ];
     let error = cli::parse(&args, &workspace.path).unwrap_err();
     assert!(error.contains("known figure"), "{}", error);
+}
+
+#[test]
+fn python_files_are_left_alone_by_default() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn main() {}\n");
+    workspace.write("tool/app.py", PY_SOURCE);
+    let summary = workspace.summary(&[]);
+    assert_eq!(summary.get("files").unwrap().integer(), 1);
+    assert_eq!(summary.get("code").unwrap().integer(), 1);
+}
+
+#[test]
+fn the_python_selection_reads_a_python_tree() {
+    let workspace = Workspace::new();
+    workspace.write("tool/app.py", PY_SOURCE);
+    workspace.write("tests/test_app.py", PY_TEST);
+    let summary = workspace.summary(&["--sources", "python"]);
+    assert_eq!(summary.get("files").unwrap().integer(), 1);
+    assert_eq!(summary.get("code").unwrap().integer(), 3);
+    assert_eq!(summary.get("blank").unwrap().integer(), 2);
+    assert_eq!(summary.get("test").unwrap().integer(), 0);
+}
+
+#[test]
+fn the_all_selection_reads_both_languages() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn main() {}\n");
+    workspace.write("tool/app.py", PY_SOURCE);
+    let summary = workspace.summary(&["--sources", "all"]);
+    assert_eq!(summary.get("files").unwrap().integer(), 2);
+    assert_eq!(summary.get("code").unwrap().integer(), 4);
+}
+
+#[test]
+fn the_scope_names_the_languages_it_read() {
+    let workspace = Workspace::new();
+    workspace.write("tool/app.py", PY_SOURCE);
+    let out = workspace.run(&["--sources", "python"]);
+    assert!(
+        out.contains("Python business code (tests excluded)"),
+        "{}",
+        out
+    );
+    assert!(out.contains("Sources: Python"), "{}", out);
+    assert!(out.contains("Python metrics"), "{}", out);
+    assert!(!out.contains("Unsafe"), "{}", out);
+    let both = workspace.run(&["--sources", "all"]);
+    assert!(both.contains("Sources: Rust and Python"), "{}", both);
+    assert!(both.contains("Metrics"), "{}", both);
+    assert!(!both.contains("Rust smells"), "{}", both);
+}
+
+#[test]
+fn the_json_scope_records_the_selection() {
+    let workspace = Workspace::new();
+    workspace.write("tool/app.py", PY_SOURCE);
+    let document = workspace.document(&["--sources", "python"]);
+    assert_eq!(
+        document
+            .get("scope")
+            .unwrap()
+            .get("sources")
+            .unwrap()
+            .text(),
+        "python"
+    );
+}
+
+#[test]
+fn an_unknown_sources_value_is_an_error() {
+    let workspace = Workspace::new();
+    let args: Vec<String> = vec![
+        workspace.path.display().to_string(),
+        "--sources".to_string(),
+        "cobol".to_string(),
+    ];
+    let error = cli::parse(&args, &workspace.path).unwrap_err();
+    assert!(error.contains("rust, python or all"), "{}", error);
 }

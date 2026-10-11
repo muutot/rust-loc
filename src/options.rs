@@ -9,6 +9,7 @@ use crate::cocomo;
 use crate::gate;
 use crate::generated;
 use crate::scan;
+use crate::sources;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -39,6 +40,9 @@ pub struct Options {
     pub sort: String,
     pub top: usize,
     pub show_excluded: bool,
+    /// Which source languages the scan reads. Defaults to Rust alone, so an
+    /// existing invocation keeps the numbers it always reported.
+    pub sources: sources::Sources,
     pub include_tests: bool,
     pub exclude: Vec<String>,
     pub ignore_dirs: BTreeSet<String>,
@@ -104,6 +108,7 @@ impl Default for Options {
             sort: "code".to_string(),
             top: 0,
             show_excluded: false,
+            sources: sources::Sources::default(),
             include_tests: false,
             exclude: Vec::new(),
             ignore_dirs: scan::default_ignore_dirs(),

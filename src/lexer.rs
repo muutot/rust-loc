@@ -117,9 +117,11 @@ struct OpenFn {
 }
 
 /// Accumulates one Halstead scope while the lexer walks the file. The token
-/// slices borrow the file text, so nothing outlives `analyze`.
+/// slices borrow the file text, so nothing outlives `analyze`. The Python
+/// reader in `crate::pylexer` borrows it too, so both languages feed the
+/// volume formula the same way.
 #[derive(Default)]
-struct TokenCounter<'a> {
+pub(crate) struct TokenCounter<'a> {
     operators: u32,
     operands: u32,
     distinct_operators: HashSet<&'a [u8]>,
@@ -127,17 +129,17 @@ struct TokenCounter<'a> {
 }
 
 impl<'a> TokenCounter<'a> {
-    fn operator(&mut self, token: &'a [u8]) {
+    pub(crate) fn operator(&mut self, token: &'a [u8]) {
         self.operators += 1;
         self.distinct_operators.insert(token);
     }
 
-    fn operand(&mut self, token: &'a [u8]) {
+    pub(crate) fn operand(&mut self, token: &'a [u8]) {
         self.operands += 1;
         self.distinct_operands.insert(token);
     }
 
-    fn finish(&self) -> Halstead {
+    pub(crate) fn finish(&self) -> Halstead {
         Halstead {
             operators: self.operators,
             operands: self.operands,

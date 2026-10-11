@@ -46,6 +46,10 @@ impl Workspace {
             "tests/cli.rs",
             "#[test]\nfn works() {\n    // a test, not business code\n    assert!(true);\n}\n",
         );
+        workspace.write(
+            "tools/app.py",
+            "import os\n\n\ndef add(a, b):\n    return a + b\n",
+        );
         workspace
     }
 

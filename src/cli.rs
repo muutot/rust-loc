@@ -14,6 +14,7 @@ use crate::config;
 use crate::gate;
 use crate::history;
 use crate::options::{Format, Options};
+use crate::sources::Sources;
 use crate::{report, scan};
 
 pub const USAGE: &str = "\
@@ -45,6 +46,8 @@ OPTIONS:
     --top <N>                limit listings to N rows
     --show-excluded          list excluded test-only files
     --include-tests          count test code too
+    --sources <LANG>         source languages to read: rust, python, all
+                             [default: rust]
     --exclude <GLOB>         exclude paths (repeatable)
     --ignore-dir <NAME>      skip directories with this name (repeatable)
     --no-ignore-dirs         do not skip the default ignored directories
@@ -148,7 +151,7 @@ fn config_request(arguments: &[String]) -> Result<(Option<String>, bool), String
 
 /// Flags that eat the argument after them, so the pre-pass can tell a scan
 /// root apart from a flag value.
-const VALUE_FLAGS: [&str; 19] = [
+const VALUE_FLAGS: [&str; 20] = [
     "--badge-metric",
     "--badge-label",
     "--snapshot",
@@ -168,6 +171,7 @@ const VALUE_FLAGS: [&str; 19] = [
     "--cocomo-params",
     "--cocomo-project-type",
     "--dup-lines",
+    "--sources",
 ];
 
 /// The first scan root on the command line, used to find the config before
@@ -288,6 +292,12 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
             "--by-module" => options.by_module = true,
             "--show-excluded" => options.show_excluded = true,
             "--include-tests" => options.include_tests = true,
+            "--sources" | "--source" => {
+                let value = take(arguments, &mut index, "--sources")?;
+                options.sources = Sources::parse(&value).ok_or_else(|| {
+                    format!("--sources needs one of rust, python or all, got {}", value)
+                })?;
+            }
             "--uloc" => options.uloc = true,
             "--no-complexity" => options.complexity = false,
             "--functions" => options.functions = true,

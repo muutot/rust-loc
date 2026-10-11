@@ -59,7 +59,7 @@ fn failure(id: &Value, code: i32, message: &str) -> String {
 }
 
 /// What the client is told the server is for, in one paragraph.
-const INSTRUCTIONS: &str = "rust-loc counts Rust source lines with test code excluded. Use `scan` for a tree's counters (business code, comments, blank lines, complexity, smells, per-file rows), `gate` to check budgets such as \"code>100000\", and `history` to read the series a previous `--history` run recorded.";
+const INSTRUCTIONS: &str = "rust-loc counts source lines with test code excluded (Rust by default; set \"sources\" to \"python\" or \"all\"). Use `scan` for a tree's counters (business code, comments, blank lines, complexity, smells, per-file rows), `gate` to check budgets such as \"code>100000\", and `history` to read the series a previous `--history` run recorded.";
 
 fn initialize(params: &Value) -> String {
     // Answer with the revision the client asked for: the tools use nothing
@@ -90,6 +90,8 @@ fn initialize(params: &Value) -> String {
 const SCOPE_PROPERTIES: &str = concat!(
     "\"roots\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},",
     "\"description\":\"Directories to scan; defaults to the server working directory.\"},",
+    "\"sources\":{\"type\":\"string\",\"enum\":[\"rust\",\"python\",\"all\"],",
+    "\"description\":\"Source languages to read; Rust by default.\"},",
     "\"include_tests\":{\"type\":\"boolean\",\"description\":\"Count test code as well.\"},",
     "\"exclude\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},",
     "\"description\":\"Glob patterns to skip.\"},",
@@ -108,7 +110,7 @@ const SCOPE_PROPERTIES: &str = concat!(
     "\"cocomo\":{\"type\":\"boolean\",\"description\":\"Add a COCOMO cost estimate.\"}"
 );
 
-const SCAN_DESCRIPTION: &str = "Count the Rust business code under a directory and return the report: files, lines, blank, comment, code, test, physical, complexity, unsafe, test_fns and, when asked for, ULOC, smells, function metrics, language shares, duplicates, hotspots and an estimate. JSON by default.";
+const SCAN_DESCRIPTION: &str = "Count the business code of a directory (Rust, or Python with \"sources\") and return the report: files, lines, blank, comment, code, test, physical, complexity, unsafe, test_fns and, when asked for, ULOC, smells, function metrics, language shares, duplicates, hotspots, author shares and an estimate. JSON by default.";
 const GATE_DESCRIPTION: &str = "Check quality budgets against a scan. Every rule is written METRIC OP VALUE, for example \"code>100000\" or \"complexity>=5000\", and the answer names the file (and function) to blame for each failure.";
 const HISTORY_DESCRIPTION: &str = "Read a scan history written by `--history` or by the window and return the series, its sparkline and the change since the previous scan.";
 
@@ -296,6 +298,10 @@ fn arguments_to_argv(arguments: &Value, default_json: bool) -> Result<Vec<String
     let mut args: Vec<String> = Vec::new();
     for item in arguments.get("roots").map(Value::items).unwrap_or(&[]) {
         args.push(string_of(item, "roots")?);
+    }
+    if let Some(name) = arguments.get("sources").and_then(Value::text) {
+        args.push("--sources".to_string());
+        args.push(name.to_string());
     }
     for (key, flag) in SWITCHES {
         if arguments.get(key).and_then(Value::boolean).unwrap_or(false) {

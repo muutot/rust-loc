@@ -10,6 +10,7 @@ use crate::history;
 use crate::metrics;
 use crate::options::{Format, Options};
 use crate::scan::{self, Entry, FileFacts, Progress, Totals};
+use crate::sources::{Lang, Sources};
 
 pub struct Excluded {
     pub files: usize,
@@ -145,7 +146,12 @@ pub fn scan(
     let mut discovered: Vec<(PathBuf, Vec<PathBuf>)> = Vec::with_capacity(roots.len());
     let mut total = 0usize;
     for root in roots {
-        let files = scan::apply_gitignore(root, scan::discover(root, options), options.gitignore);
+        let files = scan::apply_gitignore(
+            root,
+            scan::discover(root, options),
+            options.gitignore,
+            options.sources,
+        );
         total += files.len();
         discovered.push((root.clone(), files));
     }
@@ -480,6 +486,67 @@ pub fn group<T: Into<u64>>(value: T) -> String {
     out
 }
 
+/// The heading a report puts over the scope it counted. Rust keeps the wording
+/// every published report already used.
+pub fn scope_title(sources: Sources, include_tests: bool) -> &'static str {
+    match (sources, include_tests) {
+        (Sources::Rust, false) => "Rust business code (tests excluded)",
+        (Sources::Rust, true) => "Rust source lines",
+        (Sources::Python, false) => "Python business code (tests excluded)",
+        (Sources::Python, true) => "Python source lines",
+        (Sources::All, false) => "Business code (tests excluded)",
+        (Sources::All, true) => "Source lines",
+    }
+}
+
+/// "Rust" while the scope is one language, and nothing when it is both, so the
+/// block titles can name the language that owns their counters.
+fn scope_word(sources: Sources) -> Option<&'static str> {
+    match sources {
+        Sources::Rust => Some("Rust"),
+        Sources::Python => Some("Python"),
+        Sources::All => None,
+    }
+}
+
+/// What the language calls the item level test code it excludes.
+fn test_item_phrase(sources: Sources) -> &'static str {
+    match sources {
+        Sources::Rust => "lines inside `#[cfg(test)]` items",
+        Sources::Python => "lines inside `def test_` items",
+        Sources::All => "lines inside test items",
+    }
+}
+
+/// The caption over the "every line, tests included" figure.
+fn all_lines_label(sources: Sources) -> &'static str {
+    match sources {
+        Sources::Rust => "All Rust lines",
+        Sources::Python => "All Python lines",
+        Sources::All => "All source lines",
+    }
+}
+
+/// The row caption for the item-level test lines in the excluded block. Rust
+/// keeps the wording published reports already use.
+fn test_item_label(sources: Sources) -> &'static str {
+    match sources {
+        Sources::Rust => "#[cfg(test)] items",
+        Sources::Python => "def test_ functions",
+        Sources::All => "in-code tests",
+    }
+}
+
+/// The smell row captions. Rust keeps the wording published reports already use;
+/// the other languages name their own items.
+fn smell_labels(sources: Sources) -> (&'static str, &'static str, &'static str) {
+    match sources {
+        Sources::Rust => ("todo!()", "unimplemented!()", "#[allow(..)]"),
+        Sources::Python => ("TODO/FIXME", "NotImplementedError", "noqa/type:ignore"),
+        Sources::All => ("todo/unimplemented", "TODO comment", "allow/ignore"),
+    }
+}
+
 /// One-decimal percentage of a base.
 pub fn share(value: usize, base: usize) -> String {
     if base == 0 {
@@ -686,14 +753,7 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push(String::new());
     }
 
-    out.push(
-        if options.include_tests {
-            "Rust source lines"
-        } else {
-            "Rust business code (tests excluded)"
-        }
-        .to_string(),
-    );
+    out.push(scope_title(options.sources, options.include_tests).to_string());
     let roots: Vec<String> = report
         .roots
         .iter()
@@ -718,6 +778,9 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         },
         options.ignore_dirs.len()
     ));
+    if options.sources != Sources::Rust {
+        out.push(format!("Sources: {}", options.sources.label()));
+    }
     out.push(String::new());
 
     let summary = &report.summary;
@@ -745,11 +808,16 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
             + &share(summary.code as usize, lines),
     );
     out.push(String::new());
-    out.push("Rust metrics".to_string());
+    out.push(match scope_word(options.sources) {
+        Some(word) => format!("{} metrics", word),
+        None => "Metrics".to_string(),
+    });
     if options.complexity {
         out.push(pad("  Complexity (est.)", 22) + &number(summary.complexity, 12));
     }
-    out.push(pad("  Unsafe", 22) + &number(summary.unsafe_kw, 12));
+    if options.sources.covers(Lang::Rust) {
+        out.push(pad("  Unsafe", 22) + &number(summary.unsafe_kw, 12));
+    }
     out.push(pad("  Test functions", 22) + &number(summary.test_fns, 12));
     if options.uloc {
         let uloc = report.uloc_total.unwrap_or(0);
@@ -772,13 +840,21 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
     }
 
     if options.smells {
-        out.push("Rust smells".to_string());
-        out.push(pad("  unwrap()", 22) + &number(summary.smells.unwrap, 12));
-        out.push(pad("  expect()", 22) + &number(summary.smells.expect, 12));
-        out.push(pad("  panic!()", 22) + &number(summary.smells.panic, 12));
-        out.push(pad("  todo!()", 22) + &number(summary.smells.todo, 12));
-        out.push(pad("  unimplemented!()", 22) + &number(summary.smells.unimplemented, 12));
-        out.push(pad("  #[allow(..)]", 22) + &number(summary.smells.allow, 12));
+        out.push(match scope_word(options.sources) {
+            Some(word) => format!("{} smells", word),
+            None => "Smells".to_string(),
+        });
+        if options.sources.covers(Lang::Rust) {
+            out.push(pad("  unwrap()", 22) + &number(summary.smells.unwrap, 12));
+            out.push(pad("  expect()", 22) + &number(summary.smells.expect, 12));
+            out.push(pad("  panic!()", 22) + &number(summary.smells.panic, 12));
+        }
+        let (todo_label, unimpl_label, allow_label) = smell_labels(options.sources);
+        out.push(pad(&format!("  {}", todo_label), 22) + &number(summary.smells.todo, 12));
+        out.push(
+            pad(&format!("  {}", unimpl_label), 22) + &number(summary.smells.unimplemented, 12),
+        );
+        out.push(pad(&format!("  {}", allow_label), 22) + &number(summary.smells.allow, 12));
         out.push(pad("  Total", 22) + &number(summary.smells.total(), 12));
         out.push(String::new());
     }
@@ -803,13 +879,14 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
             group(report.excluded.file_lines)
         ));
         out.push(format!(
-            "  #[cfg(test)] items       {:>6}          {} lines",
+            "  {:<25}{:>6}          {} lines",
+            test_item_label(options.sources),
             "",
             group(report.excluded.item_lines)
         ));
     }
     out.push(String::new());
-    out.push(pad("All Rust lines", 22) + &number(report.all_lines, 12));
+    out.push(pad(all_lines_label(options.sources), 22) + &number(report.all_lines, 12));
     if options.exclude_generated {
         out.push(String::new());
         out.push("Excluded generated code".to_string());
@@ -1066,11 +1143,7 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
     let business = report.business_entries();
     let columns = options.column_keys();
     let titles = options.column_titles();
-    let title = if options.include_tests {
-        "Rust source lines"
-    } else {
-        "Rust business code (tests excluded)"
-    };
+    let title = scope_title(options.sources, options.include_tests);
     let mut out: Vec<String> = vec![format!("### {}", title), String::new()];
     let roots: Vec<String> = report
         .roots
@@ -1199,10 +1272,12 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
     }
     if !options.include_tests {
         out.push(format!(
-            "Excluded tests: {} test-only files ({} lines), {} lines inside `#[cfg(test)]` items. All Rust lines: {}.",
+            "Excluded tests: {} test-only files ({} lines), {} {}. {}: {}.",
             group(report.excluded.files as u32),
             group(report.excluded.file_lines),
             group(report.excluded.item_lines),
+            test_item_phrase(options.sources),
+            all_lines_label(options.sources),
             group(report.all_lines)
         ));
     }
@@ -1576,6 +1651,10 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
     ));
     out.push_str("  \"scope\": {\n");
     out.push_str(&format!("    \"gitignore\": {},\n", options.gitignore));
+    out.push_str(&format!(
+        "    \"sources\": {},\n",
+        json_string(options.sources.slug())
+    ));
     out.push_str(&format!(
         "    \"ignore_dirs\": {},\n",
         json_array(&ignore_dirs, 4)

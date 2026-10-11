@@ -98,11 +98,7 @@ pub fn encode(report: &Report, options: &Options, cwd: &Path) -> Option<Vec<u8>>
 fn layout(painter: &mut dyn Painter, report: &Report, options: &Options, cwd: &Path) -> i32 {
     let summary = &report.summary;
     let mut y = PAD;
-    let heading = if options.include_tests {
-        "Rust source lines"
-    } else {
-        "Rust business code (tests excluded)"
-    };
+    let heading = crate::report::scope_title(options.sources, options.include_tests);
     painter.text(
         PAD,
         y,

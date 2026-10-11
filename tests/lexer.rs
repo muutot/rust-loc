@@ -5,6 +5,7 @@ use std::path::Path;
 
 use rust_loc::lexer::{self, Analysis};
 use rust_loc::scan;
+use rust_loc::sources::Lang;
 
 /// One compact flag string per physical line: code/comment/doc/test.
 fn classes(text: &str) -> Vec<String> {
@@ -219,7 +220,7 @@ fn test_only_file_names_are_recognised() {
         "src/foo_test.rs",
     ] {
         assert!(
-            scan::is_test_file(Path::new(name)),
+            scan::is_test_file(Path::new(name), Lang::Rust),
             "{} should be test-only",
             name
         );
@@ -231,7 +232,7 @@ fn test_only_file_names_are_recognised() {
         "src/latest.rs",
     ] {
         assert!(
-            !scan::is_test_file(Path::new(name)),
+            !scan::is_test_file(Path::new(name), Lang::Rust),
             "{} should not be test-only",
             name
         );

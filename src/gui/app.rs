@@ -36,6 +36,7 @@ pub const ID_VEIL: i32 = 1021;
 pub const ID_LANG: i32 = 1022;
 pub const ID_EXCLUDE_GENERATED: i32 = 1023;
 pub const ID_COCOMO: i32 = 1024;
+pub const ID_SOURCES: i32 = 1025;
 
 /// Commands reachable from the keyboard, dispatched through an accelerator table.
 pub const ID_ACCEL_SCAN: i32 = 1100;
@@ -189,6 +190,7 @@ impl AppState {
             exclude: model::parse_list(&settings.exclude),
             ignore_dirs: configured_ignore_dirs(&settings),
             gitignore: settings.gitignore,
+            sources: model::sources_at(settings.sources),
             format: format_at(settings.format),
             ..Options::default()
         };
@@ -318,6 +320,7 @@ impl AppState {
         self.options.exclude_generated = self.check(ID_EXCLUDE_GENERATED);
         self.options.cocomo = self.check(ID_COCOMO);
         self.options.gitignore = self.check(ID_GITIGNORE);
+        self.options.sources = model::sources_at(window::combo_index(self.control(ID_SOURCES)));
         let defaults = self.check(ID_DEFAULT_IGNORES);
         let extra = model::parse_list(&window::get_text(self.control(ID_EXTRA_DIRS)));
         let mut dirs: BTreeSet<String> = if defaults {
@@ -423,6 +426,7 @@ impl AppState {
         self.settings.view = self.view.index();
         self.settings.sort_column = self.sort_column;
         self.settings.sort_descending = self.sort_descending;
+        self.settings.sources = model::sources_index(self.options.sources);
         self.scanning = true;
         self.progress_done = 0;
         self.progress_total = 0;

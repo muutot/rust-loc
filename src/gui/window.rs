@@ -619,10 +619,15 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
         let below_roots = metrics.button
             + px(4)
             + metrics.section
+            + metrics.control
+            + px(3)
+            + px(14)
+            + px(10)
+            + metrics.section
             + metrics.check * 5
             + px(2)
             + metrics.section
-            + metrics.check * 2
+            + metrics.check * 3
             + px(2)
             + metrics.section
             + metrics.control
@@ -669,6 +674,23 @@ fn layout_rects(state: &mut app::AppState, width: i32, height: i32) {
             };
         }
         y += metrics.button + px(4);
+
+        labels.push(label(
+            rect(left, y, left + inner, y + metrics.section),
+            i18n::t().section_sources,
+            paint::Ink::Section,
+        ));
+        y += metrics.section;
+        place_combo(
+            state,
+            app::ID_SOURCES,
+            left,
+            y,
+            inner,
+            px(theme::R_CONTROL),
+            px(200),
+        );
+        y += metrics.control + px(3) + px(14) + px(10);
 
         labels.push(label(
             rect(left, y, left + inner, y + metrics.section),
@@ -1065,6 +1087,7 @@ pub fn set_busy(state: &app::AppState, busy: bool) {
         app::ID_SCAN,
         app::ID_EXPORT,
         app::ID_LANG,
+        app::ID_SOURCES,
     ] {
         let control = state.control(id);
         if !control.is_null() {
@@ -1478,6 +1501,10 @@ fn create_controls(parent: HWND) -> (Vec<(i32, HWND)>, Vec<app::Field>) {
         create_field(parent, "COMBOBOX", combo, app::ID_LANG, 200, &mut fields),
     );
     add(
+        app::ID_SOURCES,
+        create_field(parent, "COMBOBOX", combo, app::ID_SOURCES, 200, &mut fields),
+    );
+    add(
         app::ID_FILTER,
         create_field(parent, "EDIT", edit, app::ID_FILTER, 24, &mut fields),
     );
@@ -1562,7 +1589,7 @@ fn create_controls(parent: HWND) -> (Vec<(i32, HWND)>, Vec<app::Field>) {
         ) {
             track_button(*hwnd, *id);
         }
-        if matches!(*id, app::ID_LANG | app::ID_TOP) {
+        if matches!(*id, app::ID_LANG | app::ID_TOP | app::ID_SOURCES) {
             track_dropdown(*hwnd);
         }
     }
@@ -1856,6 +1883,14 @@ fn fill_top_combo(state: &app::AppState) {
     combo_add_all(state.control(app::ID_TOP), &["100", "300", "1000", all]);
 }
 
+/// The source selector offers the languages a scan can read.
+fn fill_sources_combo(state: &app::AppState) {
+    let combo = state.control(app::ID_SOURCES);
+    for sources in model::SOURCE_CHOICES {
+        combo_add_all(combo, &[model::sources_label(sources)]);
+    }
+}
+
 /// The language selector always offers each language in its own script.
 fn fill_language_combo(state: &app::AppState) {
     let combo = state.control(app::ID_LANG);
@@ -1948,6 +1983,11 @@ fn on_create(hwnd: HWND) {
         combo_choose(state.control(app::ID_TOP), settings.top.min(3));
         fill_language_combo(state);
         combo_choose(state.control(app::ID_LANG), settings.lang.min(1));
+        fill_sources_combo(state);
+        combo_choose(
+            state.control(app::ID_SOURCES),
+            settings.sources.min(model::SOURCE_CHOICES.len() - 1),
+        );
         refresh_roots(state);
         let list = state.control(app::ID_LIST);
         let extended = LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP;
@@ -2232,6 +2272,15 @@ unsafe extern "system" fn main_proc(
                 }
                 app::ID_EXCLUDE | app::ID_EXTRA_DIRS => {
                     if code == EN_CHANGE {
+                        with_state(|state| {
+                            state.sync_options();
+                            invalidate(hwnd);
+                        });
+                        schedule_rescan(hwnd);
+                    }
+                }
+                app::ID_SOURCES => {
+                    if code == CBN_SELCHANGE {
                         with_state(|state| {
                             state.sync_options();
                             invalidate(hwnd);
@@ -2532,7 +2581,7 @@ unsafe extern "system" fn main_proc(
                     let spec = paint::Shell {
                         brand: "rust-loc",
                         version: &version,
-                        subtitle: i18n::t().subtitle,
+                        subtitle: &i18n::subtitle(state.options.sources),
                         summary: &summary,
                         header: state.header_rect,
                         sidebar: state.sidebar_rect,

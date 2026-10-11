@@ -23,8 +23,10 @@ pub mod mcp;
 pub mod metrics;
 pub mod options;
 pub mod png;
+pub mod pylexer;
 pub mod report;
 pub mod scan;
+pub mod sources;
 pub mod svg;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

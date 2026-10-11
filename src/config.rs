@@ -34,6 +34,7 @@ pub struct Config {
     pub default_ignores: Option<bool>,
     pub gitignore: Option<bool>,
     pub include_tests: Option<bool>,
+    pub sources: Option<crate::sources::Sources>,
     pub exclude_generated: Option<bool>,
     pub mark_generated: Option<bool>,
     pub min_gen_line_length: Option<usize>,
@@ -69,6 +70,7 @@ impl Config {
         set!(
             gitignore,
             include_tests,
+            sources,
             exclude_generated,
             mark_generated,
             by_file,
@@ -252,6 +254,13 @@ fn apply(
         ("scope", "default_ignores") => config.default_ignores = Some(boolean()?),
         ("scope", "gitignore") => config.gitignore = Some(boolean()?),
         ("scope", "include_tests") => config.include_tests = Some(boolean()?),
+        ("scope", "sources") => {
+            let name = string()?;
+            config.sources = Some(crate::sources::Sources::parse(&name).ok_or_else(|| {
+                let message = format!("unknown source selection `{}`", name);
+                error(&path, line, &message)
+            })?);
+        }
         ("scope", "exclude_generated") => config.exclude_generated = Some(boolean()?),
         ("scope", "mark_generated") => config.mark_generated = Some(boolean()?),
         ("scope", "min_gen_line_length") => config.min_gen_line_length = Some(count()?),

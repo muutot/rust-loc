@@ -30,11 +30,7 @@ pub fn render(report: &Report, options: &Options, cwd: &Path) -> String {
     let mut canvas = Canvas::new();
     let mut y = PAD + 6;
 
-    let heading = if options.include_tests {
-        "Rust source lines"
-    } else {
-        "Rust business code (tests excluded)"
-    };
+    let heading = crate::report::scope_title(options.sources, options.include_tests);
     canvas.text(
         PAD,
         y,

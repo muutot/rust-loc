@@ -9,6 +9,8 @@ use crate::generated::{self, Generated};
 use crate::languages::{self, LineCounts};
 use crate::lexer::{self, Analysis, FunctionInfo, Halstead, Metrics, Smells};
 use crate::options::Options;
+use crate::pylexer;
+use crate::sources::Lang;
 
 pub const DEFAULT_IGNORE_DIRS: [&str; 15] = [
     ".git",
@@ -197,13 +199,12 @@ pub fn matches_exclude(path: &Path, root: &Path, patterns: &[String]) -> bool {
     false
 }
 
-/// Collect every .rs file below root that survives the ignore rules.
+/// Collect every source file below root that the scan's language selection
+/// reads and the ignore rules keep.
 pub fn discover(root: &Path, options: &Options) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = Vec::new();
     walk(root, options, &mut found, &|path| {
-        path.extension()
-            .map(|extension| extension.eq_ignore_ascii_case("rs"))
-            .unwrap_or(false)
+        options.sources.accepts(path)
     });
     sort_paths(&mut found);
     found
@@ -269,9 +270,15 @@ fn component_key(path: &Path) -> Vec<String> {
 }
 
 /// Run git to honour .gitignore rules; degrade to a no-op on any failure.
-pub fn apply_gitignore(root: &Path, files: Vec<PathBuf>, enabled: bool) -> Vec<PathBuf> {
-    // Only the Rust files are in this list, so only they need the pathspec.
-    gitignore_filter(root, files, enabled, &["*.rs"])
+pub fn apply_gitignore(
+    root: &Path,
+    files: Vec<PathBuf>,
+    enabled: bool,
+    sources: crate::sources::Sources,
+) -> Vec<PathBuf> {
+    // The listing only holds the files the walk kept, so the pathspec only has
+    // to name the languages this run reads.
+    gitignore_filter(root, files, enabled, &sources.pathspecs())
 }
 
 /// The same filter for the language walk, which is not Rust-only.
@@ -468,6 +475,8 @@ impl Counts {
 pub struct FileFacts {
     pub path: PathBuf,
     pub root: PathBuf,
+    /// Which reader classified this file.
+    pub lang: Lang,
     pub name_test: bool,
     pub crate_test: bool,
     pub sibling_targets: Vec<String>,
@@ -535,6 +544,11 @@ impl Entry {
         &self.facts.path
     }
 
+    /// The language this row was read with.
+    pub fn lang(&self) -> Lang {
+        self.facts.lang
+    }
+
     pub fn root(&self) -> &Path {
         &self.facts.root
     }
@@ -566,8 +580,10 @@ impl Entry {
     }
 }
 
-/// Test-only path heuristics: test directories and tests.rs style names.
-pub fn is_test_file(path: &Path) -> bool {
+/// Test-only path heuristics: a test directory, then the naming convention of
+/// the language. Rust writes \`tests.rs\` next to \`mod tests\`; Python writes
+/// \`test_\` in front and puts a \`conftest.py\` beside it.
+pub fn is_test_file(path: &Path, lang: Lang) -> bool {
     for part in path.components() {
         let name = part.as_os_str().to_string_lossy();
         if TEST_DIR_NAMES.contains(&name.as_ref()) {
@@ -579,13 +595,27 @@ pub fn is_test_file(path: &Path) -> bool {
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
     let stem = stem.to_lowercase();
-    stem == "test" || stem == "tests" || stem.ends_with("_test") || stem.ends_with("_tests")
+    let shared =
+        stem == "test" || stem == "tests" || stem.ends_with("_test") || stem.ends_with("_tests");
+    match lang {
+        Lang::Rust => shared,
+        Lang::Python => shared || stem.starts_with("test_") || stem == "conftest",
+    }
+}
+
+/// The language a discovered file is read with.
+pub fn language_of(path: &Path) -> Lang {
+    Lang::of(path).unwrap_or(Lang::Rust)
 }
 
 /// Read and analyse one file, reducing it to facts.
 fn read_facts(path: &Path, root: &Path, read: ReadOptions) -> Option<FileFacts> {
     let text = read_text(path)?;
-    let analysis: Analysis = lexer::analyze(&text);
+    let lang = language_of(path);
+    let analysis: Analysis = match lang {
+        Lang::Rust => lexer::analyze(&text),
+        Lang::Python => pylexer::analyze(&text),
+    };
     let generated_kind = generated::detect(&text, &analysis, read.min_gen_line_length);
 
     let mut all = Counts::default();
@@ -638,7 +668,8 @@ fn read_facts(path: &Path, root: &Path, read: ReadOptions) -> Option<FileFacts> 
     Some(FileFacts {
         path: resolve_path(path),
         root: root.to_path_buf(),
-        name_test: is_test_file(relative_path),
+        lang,
+        name_test: is_test_file(relative_path, lang),
         crate_test: analysis.crate_test,
         sibling_targets: analysis.sibling_targets,
         physical: analysis.total as u32,

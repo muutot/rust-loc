@@ -1056,6 +1056,7 @@ pub struct Settings {
     pub filter: String,
     pub sort_column: i32,
     pub sort_descending: bool,
+    pub sources: usize,
     pub window: Option<(i32, i32, i32, i32)>,
 }
 
@@ -1079,6 +1080,7 @@ impl Default for Settings {
             filter: String::new(),
             sort_column: 3,
             sort_descending: true,
+            sources: 0,
             window: None,
         }
     }
@@ -1095,6 +1097,35 @@ pub fn settings_path() -> PathBuf {
         })
         .unwrap_or_else(|| ".".to_string());
     Path::new(&base).join("rust-loc").join("ui.ini")
+}
+
+/// The source-language selector, in the order the combo offers it.
+pub const SOURCE_CHOICES: [crate::sources::Sources; 3] = [
+    crate::sources::Sources::Rust,
+    crate::sources::Sources::Python,
+    crate::sources::Sources::All,
+];
+
+/// The selection a saved index names, clamped to a known choice.
+pub fn sources_at(index: usize) -> crate::sources::Sources {
+    SOURCE_CHOICES[index.min(SOURCE_CHOICES.len() - 1)]
+}
+
+/// The index a selection sits at in the combo.
+pub fn sources_index(sources: crate::sources::Sources) -> usize {
+    SOURCE_CHOICES
+        .iter()
+        .position(|candidate| *candidate == sources)
+        .unwrap_or(0)
+}
+
+/// The label a choice shows in the combo. Proper names, so untranslated.
+pub fn sources_label(sources: crate::sources::Sources) -> &'static str {
+    match sources {
+        crate::sources::Sources::Rust => "Rust",
+        crate::sources::Sources::Python => "Python",
+        crate::sources::Sources::All => "Rust + Python",
+    }
 }
 
 pub fn load_settings() -> Settings {
@@ -1125,6 +1156,7 @@ pub fn load_settings() -> Settings {
             "filter" => settings.filter = value.trim().to_string(),
             "sort_column" => settings.sort_column = value.trim().parse().unwrap_or(3),
             "sort_descending" => settings.sort_descending = flag,
+            "sources" => settings.sources = value.trim().parse().unwrap_or(0),
             "window" => {
                 let parts: Vec<i32> = value
                     .trim()
@@ -1164,6 +1196,7 @@ pub fn save_settings(settings: &Settings) {
     text.push_str(&format!("exclude={}\n", settings.exclude));
     text.push_str(&format!("extra_dirs={}\n", settings.extra_dirs));
     text.push_str(&format!("view={}\n", settings.view));
+    text.push_str(&format!("sources={}\n", settings.sources));
     text.push_str(&format!("lang={}\n", settings.lang));
     text.push_str(&format!("top={}\n", settings.top));
     text.push_str(&format!("format={}\n", settings.format));

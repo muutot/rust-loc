@@ -54,6 +54,30 @@ pub fn lang() -> Lang {
     CURRENT.with(|cell| cell.get())
 }
 
+/// The header subtitle: it names the languages the current selection reads,
+/// so a Python-only or mixed run does not claim to have counted Rust.
+pub fn subtitle(sources: crate::sources::Sources) -> String {
+    let (en, zh) = match sources {
+        crate::sources::Sources::Rust => ("Rust business code statistics", "Rust 业务代码统计"),
+        crate::sources::Sources::Python => {
+            ("Python business code statistics", "Python 业务代码统计")
+        }
+        crate::sources::Sources::All => (
+            "Rust and Python business code statistics",
+            "Rust 与 Python 业务代码统计",
+        ),
+    };
+    let tail = match lang() {
+        Lang::En => "test code excluded",
+        Lang::Zh => "已排除测试代码",
+    };
+    let head = match lang() {
+        Lang::En => en,
+        Lang::Zh => zh,
+    };
+    format!("{} · {}", head, tail)
+}
+
 /// The catalog for the active language.
 pub fn t() -> &'static Strings {
     match lang() {
@@ -147,8 +171,7 @@ pub fn system_lang() -> Lang {
 
 catalog! {
     // -- shell -------------------------------------------------------------
-    window_title => ("rust-loc — Rust code statistics", "rust-loc — Rust 代码统计"),
-    subtitle => ("Rust business code statistics · test code excluded", "Rust 业务代码统计 · 已排除测试代码"),
+    window_title => ("rust-loc — source code statistics", "rust-loc — 代码统计"),
     no_scan_yet => ("no scan yet", "尚未扫描"),
     header_code => ("code", "代码"),
     header_comment => ("comment", "注释"),
@@ -158,6 +181,7 @@ catalog! {
     add_folder => ("Add folder…", "添加文件夹…"),
     paste_path => ("Paste path…", "粘贴路径…"),
     remove => ("Remove", "移除"),
+    section_sources => ("SOURCES", "代码来源"),
     section_scope => ("SCOPE", "统计范围"),
     opt_gitignore => ("Respect .gitignore", "遵循 .gitignore"),
     opt_default_ignores => ("Skip default ignored dirs", "跳过默认忽略目录"),
@@ -262,7 +286,7 @@ catalog! {
     hint_sorted => ("sorted by {column} {arrow}", "按 {column} 排序 {arrow}"),
     hint_showing => ("showing {shown} of {matched} rows", "显示 {shown} / {matched} 行"),
     hint_no_test_files => ("no test-only files were detected", "未发现纯测试文件"),
-    hint_excluded => ("{files} test-only files · {lines} lines · plus {inner} lines inside #[cfg(test)] items", "{files} 个纯测试文件 · {lines} 行 · 另有 {inner} 行位于 #[cfg(test)] 项内"),
+    hint_excluded => ("{files} test-only files · {lines} lines · plus {inner} lines inside test items", "{files} 个纯测试文件 · {lines} 行 · 另有 {inner} 行位于测试项内"),
     hint_functions => ("{total} functions in scope · showing the {shown} most complex", "共 {total} 个函数 · 显示其中复杂度最高的 {shown} 个"),
     hint_no_functions => ("no functions were detected", "未检测到函数"),
     hint_smells => ("{total} smells across {matched} files · showing {shown}", "{matched} 个文件共 {total} 处 · 显示 {shown}"),
@@ -294,7 +318,7 @@ catalog! {
     status_exported => ("Exported to {path}", "已导出到 {path}"),
     status_export_failed => ("Export failed: {error}", "导出失败：{error}"),
     // -- scan overlay ------------------------------------------------------
-    overlay_title => ("Scanning Rust sources", "正在扫描 Rust 源码"),
+    overlay_title => ("Scanning sources", "正在扫描源码"),
     overlay_files => ("{done} / {total} files", "{done} / {total} 个文件"),
     overlay_discovering => ("Discovering files", "正在发现文件"),
     // -- menus -------------------------------------------------------------

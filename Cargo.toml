@@ -3,9 +3,9 @@ name = "rust-loc"
 version = "0.3.0"
 edition = "2021"
 rust-version = "1.80"
-description = "Count Rust source lines with test code excluded, plus ULOC, complexity and unsafe metrics."
+description = "Count Rust (and Python) source lines with test code excluded, plus ULOC, complexity and unsafe metrics."
 license = "MIT"
-keywords = ["rust", "loc", "cloc", "tokei", "scc", "lines-of-code"]
+keywords = ["rust", "python", "loc", "cloc", "tokei", "lines-of-code"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = ["python/", "docs/"]
 
