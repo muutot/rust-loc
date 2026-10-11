@@ -4,7 +4,7 @@
 //! controls and a panel whose chrome (header band, chart cards, tab strip,
 //! KPI grid) is painted by hand. Nothing here reaches outside the system DLLs.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 
 use crate::gui::sys::*;
@@ -19,6 +19,24 @@ pub const CLASS_FIELD: &str = "RustLocField";
 
 thread_local! {
     static STATE: RefCell<Option<Box<app::AppState>>> = const { RefCell::new(None) };
+    /// The brush the native controls erase themselves with.
+    ///
+    /// A control can repaint while its caller still holds the state (a list
+    /// box redraws the moment an item is added), and that paint may not
+    /// borrow it. Keeping the handle here means the paint still gets a real
+    /// brush: a `NULL` one leaves the control's previous pixels in place.
+    static BRUSH: Cell<HBRUSH> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// Create the brush the native controls erase their background with.
+pub fn cache_brush() {
+    let brush = unsafe { CreateSolidBrush(theme::CARD_BG) };
+    BRUSH.with(|cell| cell.set(brush));
+}
+
+/// The brush a control erases itself with, never `NULL`.
+fn card_brush() -> HBRUSH {
+    BRUSH.with(|cell| cell.get())
 }
 
 /// Run `callback` with the live application state.
@@ -89,6 +107,16 @@ pub fn invalidate(hwnd: HWND) {
     }
 }
 
+/// Redraw a control from scratch, background included.
+///
+/// A control that paints only part of itself (the scan-root list draws its
+/// rows) needs the erase pass to clear the rest of its client.
+fn invalidate_background(hwnd: HWND) {
+    if !hwnd.is_null() {
+        unsafe { InvalidateRect(hwnd, std::ptr::null(), 1) };
+    }
+}
+
 pub fn start_timer(hwnd: HWND, id: usize, milliseconds: u32) {
     unsafe { SetTimer(hwnd, id, milliseconds, None) };
 }
@@ -146,7 +174,12 @@ fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
 }
 
 /// Double buffered paint helper for the custom child windows.
-fn buffered(hwnd: HWND, painter: impl FnOnce(HDC, &RECT)) {
+///
+/// `backdrop` goes down first: a paint that cannot reach the application
+/// state (a control redrawing itself while its caller still holds it) then
+/// leaves the window flat in its own colour instead of showing the freshly
+/// allocated bitmap, which reads as a black box.
+fn buffered<R>(hwnd: HWND, backdrop: u32, painter: impl FnOnce(HDC, &RECT) -> R) -> R {
     unsafe {
         let mut state = PAINTSTRUCT::default();
         let hdc = BeginPaint(hwnd, &mut state);
@@ -157,12 +190,25 @@ fn buffered(hwnd: HWND, painter: impl FnOnce(HDC, &RECT)) {
         let memory = CreateCompatibleDC(hdc);
         let bitmap = CreateCompatibleBitmap(hdc, width, height);
         let previous = SelectObject(memory, bitmap as HGDIOBJ);
-        painter(memory, &client);
+        paint::fill(memory, &client, backdrop);
+        let painted = painter(memory, &client);
         BitBlt(hdc, 0, 0, width, height, memory, 0, 0, SRCCOPY);
         SelectObject(memory, previous);
         DeleteObject(bitmap as HGDIOBJ);
         DeleteDC(memory);
         EndPaint(hwnd, &state);
+        painted
+    }
+}
+
+/// Ask for another pass when a painter could not reach the application state.
+///
+/// The dropped paint has already validated the window, so without this it
+/// would keep showing whatever was there before: the scan mask, or the bare
+/// surface behind it.
+fn repaint_when_dropped(hwnd: HWND, painted: bool) {
+    if !painted {
+        invalidate(hwnd);
     }
 }
 
@@ -175,7 +221,7 @@ unsafe extern "system" fn cards_proc(
     match message {
         WM_ERASEBKGND => 1,
         WM_PAINT => {
-            buffered(hwnd, |hdc, client| {
+            let painted = buffered(hwnd, theme::PANEL_BG, |hdc, client| {
                 with_state(|state| {
                     paint::fill(hdc, client, theme::PANEL_BG);
                     let gap = state.theme.px(8);
@@ -191,8 +237,10 @@ unsafe extern "system" fn cards_proc(
                         &state.theme,
                     );
                     state.cards = cards;
-                });
+                })
+                .is_some()
             });
+            repaint_when_dropped(hwnd, painted);
             0
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -213,14 +261,16 @@ unsafe extern "system" fn field_proc(
     match message {
         WM_ERASEBKGND => 1,
         WM_PAINT => {
-            buffered(hwnd, |hdc, client| {
+            let painted = buffered(hwnd, theme::CARD_BG, |hdc, client| {
                 with_state(|state| {
                     paint::fill(hdc, client, theme::CARD_BG);
                     let control = state.frame_control(hwnd);
                     let focused = !control.is_null() && unsafe { GetFocus() } == control;
                     paint::field(hdc, client, state.theme.px(theme::R_CONTROL), focused);
-                });
+                })
+                .is_some()
             });
+            repaint_when_dropped(hwnd, painted);
             0
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -336,6 +386,37 @@ fn track_dropdown(combo: HWND) {
     unsafe { SetWindowSubclass(info.hwndList, Some(dropdown_subclass), 0, 0) };
 }
 
+/// Keep the scan-root list's own background painted.
+///
+/// The list paints its rows and nothing else, so the space under the last
+/// row keeps whatever the window showed before: the scan mask, or the bare
+/// surface behind it, which reads as a black box. Filling the client here
+/// makes the list read like the field it sits in.
+extern "system" fn list_subclass(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _ref: usize,
+) -> LRESULT {
+    if message == WM_ERASEBKGND {
+        let hdc = wparam as HDC;
+        let mut client = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut client) };
+        paint::fill(hdc, &client, theme::FIELD_BG);
+        return 1;
+    }
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
+/// Hand the scan-root list its own background pass.
+fn track_list(hwnd: HWND) {
+    if !hwnd.is_null() {
+        unsafe { SetWindowSubclass(hwnd, Some(list_subclass), 0, 0) };
+    }
+}
+
 /// Let an owner drawn button light up under the pointer.
 fn track_button(hwnd: HWND, id: i32) {
     if !hwnd.is_null() {
@@ -369,7 +450,7 @@ fn hover_repaint(hwnd: HWND) {
 
 /// Paint one chart card and its hover tooltip.
 fn paint_chart(hwnd: HWND, chart: Chart) {
-    buffered(hwnd, |hdc, client| {
+    let painted = buffered(hwnd, theme::PANEL_BG, |hdc, client| {
         with_state(|state| {
             paint::fill(hdc, client, theme::PANEL_BG);
             let mut regions: Vec<(RECT, String)> = Vec::new();
@@ -419,8 +500,10 @@ fn paint_chart(hwnd: HWND, chart: Chart) {
                     paint::tooltip(hdc, client, &hover, &state.theme);
                 }
             }
-        });
+        })
+        .is_some()
     });
+    repaint_when_dropped(hwnd, painted);
 }
 
 /// Shared window procedure for both charts.
@@ -476,14 +559,16 @@ unsafe extern "system" fn veil_proc(
     match message {
         WM_ERASEBKGND => 1,
         WM_PAINT => {
-            buffered(hwnd, |hdc, client| {
+            let painted = buffered(hwnd, theme::VEIL_BG, |hdc, client| {
                 with_state(|state| {
                     let done = state.progress_done;
                     let total = state.progress_total;
                     let path = state.progress_path.clone();
                     paint::overlay(hdc, client, done, total, &path, &state.theme);
-                });
+                })
+                .is_some()
             });
+            repaint_when_dropped(hwnd, painted);
             0
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -1217,6 +1302,9 @@ pub fn repaint(state: &app::AppState, hwnd: HWND) {
     for field in &state.fields {
         invalidate(field.frame);
     }
+    // The row painter leaves the list's own background alone, so the list has
+    // to be asked for an erase pass as well.
+    invalidate_background(state.control(app::ID_ROOTS));
 }
 
 /// Replace the headline status text without touching the scope part.
@@ -1694,6 +1782,9 @@ fn create_controls(parent: HWND) -> (Vec<(i32, HWND)>, Vec<app::Field>) {
         if matches!(*id, app::ID_LANG | app::ID_TOP | app::ID_SOURCES) {
             track_dropdown(*hwnd);
         }
+        if *id == app::ID_ROOTS {
+            track_list(*hwnd);
+        }
     }
     (controls, fields)
 }
@@ -2071,6 +2162,9 @@ fn apply_language(hwnd: HWND) {
 // ---------------------------------------------------------------------------
 
 fn on_create(hwnd: HWND) {
+    // The controls erase themselves through this brush while the state is
+    // held by the caller that repaints them.
+    cache_brush();
     STATE.with(|cell| {
         if let Ok(mut borrow) = cell.try_borrow_mut() {
             *borrow = Some(Box::new(app::AppState::new(hwnd)));
@@ -2156,6 +2250,9 @@ fn refresh_roots(state: &mut app::AppState) {
         let text = wide(&label);
         send(list, LB_ADDSTRING, 0, text.as_ptr() as isize);
     }
+    // Populating the list can repaint it while the caller still holds the
+    // state, and that pass is refused; ask for one that is not.
+    invalidate_background(list);
 }
 
 /// Zebra striping for the report table.
@@ -2702,7 +2799,7 @@ unsafe extern "system" fn main_proc(
                 let hdc = BeginPaint(hwnd, &mut state_struct);
                 let mut client = RECT::default();
                 GetClientRect(hwnd, &mut client);
-                with_state(|state| {
+                let painted = with_state(|state| {
                     let mut labels = state.labels.clone();
                     // The overview pane has no table, so a title and a row
                     // count would have nothing to describe.
@@ -2774,7 +2871,15 @@ unsafe extern "system" fn main_proc(
                         tabs: &tabs,
                     };
                     paint::shell(hdc, &client, &spec, &state.theme);
-                });
+                })
+                .is_some();
+                if !painted {
+                    // Nothing was drawn, so the client kept whatever it showed
+                    // before: the scan mask, or the bare surface behind it.
+                    // Leave it flat and ask for a pass that can read the state.
+                    paint::fill(hdc, &client, theme::PANEL_BG);
+                    invalidate(hwnd);
+                }
                 EndPaint(hwnd, &state_struct);
             }
             0
@@ -2783,19 +2888,19 @@ unsafe extern "system" fn main_proc(
             let hdc = wparam as HDC;
             SetBkMode(hdc, 1);
             SetTextColor(hdc, theme::TEXT);
-            with_state(|state| state.card_brush as isize).unwrap_or(0)
+            card_brush() as isize
         }
         WM_CTLCOLOREDIT => {
             let hdc = wparam as HDC;
             SetBkColor(hdc, theme::CARD_BG);
             SetTextColor(hdc, theme::TEXT);
-            with_state(|state| state.card_brush as isize).unwrap_or(0)
+            card_brush() as isize
         }
         WM_CTLCOLORLISTBOX => {
             let hdc = wparam as HDC;
             SetBkColor(hdc, theme::FIELD_BG);
             SetTextColor(hdc, theme::TEXT);
-            with_state(|state| state.card_brush as isize).unwrap_or(0)
+            card_brush() as isize
         }
         WM_CLOSE => {
             persist(hwnd);
@@ -3172,5 +3277,18 @@ pub fn run() -> i32 {
             }
         }
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_control_brush_is_always_a_real_handle() {
+        // A `NULL` brush leaves a control's previous pixels in place, which
+        // is how a scan mask frame used to end up as a black box.
+        cache_brush();
+        assert!(!card_brush().is_null());
     }
 }

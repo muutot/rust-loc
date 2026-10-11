@@ -151,7 +151,6 @@ pub struct AppState {
     /// list actually changes.
     pub watched: Vec<String>,
     pub controls: Vec<(i32, HWND)>,
-    pub card_brush: HBRUSH,
     /// The one pixel image list that sets the report row height.
     pub row_images: HIMAGELIST,
     pub status: String,
@@ -215,7 +214,6 @@ impl AppState {
             path: history_path,
             samples: Vec::new(),
         });
-        let card_brush = unsafe { CreateSolidBrush(theme::CARD_BG) };
         // A table belongs to a pane, so the saved tab is only honoured when it
         // sits in the pane that is about to be shown.
         let saved = model::View::from_index(settings.view);
@@ -268,7 +266,6 @@ impl AppState {
             watcher: None,
             watched: Vec::new(),
             controls: Vec::new(),
-            card_brush,
             row_images: 0,
             status: i18n::t().status_ready.to_string(),
             table_title,
