@@ -1351,25 +1351,31 @@ pub fn combo_item(hdc: HDC, item: &DRAWITEMSTRUCT, theme: &theme::Theme) {
     );
 }
 
-/// What the mask says while it is up: the caption over the bar, the stage the
-/// counters belong to, and the file that stage is reading.
+/// What the mask says while it is up: the caption over the bar, the stages the
+/// job runs in order, the counters of the stage it is on, and the file that
+/// stage is reading.
 #[derive(Clone, Copy)]
 pub struct Progress<'a> {
     pub title: &'a str,
+    pub plan: &'a [crate::scan::Stage],
     pub stage: Option<crate::scan::Stage>,
     pub done: usize,
     pub total: usize,
     pub path: &'a str,
 }
 
-/// Paint the scan overlay: scrim, card, progress track and caption. The stage
-/// names the work the numbers belong to, so a bar that has just filled up
-/// reads as "next: blaming" rather than as a scan that is somehow stuck. The
-/// caption over it comes from the caller: a save that has to read the authors
-/// before it can write says so.
+/// Paint the scan overlay: scrim, card, progress track and caption. The bar is
+/// cut into one segment per stage the job runs, so a save that reads the tree
+/// before it blames it shows both: a full segment is a stage that finished, the
+/// partly filled one is the stage running now, and the empty ones are what is
+/// still to come. The stage names the work the numbers belong to, so a bar that
+/// has just filled up reads as "next: blaming" rather than as a scan that is
+/// somehow stuck. The caption over it comes from the caller: a save that has to
+/// read the authors before it can write says so.
 pub fn overlay(hdc: HDC, area: &RECT, progress: &Progress<'_>, theme: &theme::Theme) {
     let Progress {
         title,
+        plan,
         stage,
         done,
         total,
@@ -1421,11 +1427,12 @@ pub fn overlay(hdc: HDC, area: &RECT, progress: &Progress<'_>, theme: &theme::Th
         theme.fonts.title,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER,
     );
-    let share = if total > 0 {
-        format!("{:.0}%", done as f64 / total as f64 * 100.0)
-    } else {
-        "0%".to_string()
-    };
+    // Where the job stands across its stages: whole stages behind it, plus the
+    // share of the stage it is on. A job with one stage is the plain bar it
+    // always was.
+    let segments = plan.len().max(1);
+    let current = stage_index(plan, stage);
+    let share = format!("{:.0}%", stage_share(plan, stage, done, total) * 100.0);
     let mut counter = rect(
         left + padding,
         top + theme.px(18),
@@ -1455,22 +1462,57 @@ pub fn overlay(hdc: HDC, area: &RECT, progress: &Progress<'_>, theme: &theme::Th
         None,
     );
     let track_width = (track.right - track.left).max(1) as u64;
-    let span = (done as u64)
-        .saturating_mul(track_width)
-        .checked_div(total as u64)
-        .unwrap_or(0) as i32;
-    if span > 0 {
-        let filled = rect(
-            track.left,
-            track.top,
-            (track.left + span).min(track.right),
-            track.bottom,
-        );
+    // Where each stage begins along the track, so the segments line up with the
+    // share the caption reports.
+    let edge = |index: usize| -> i32 {
+        track.left + (track_width * index as u64 / segments as u64) as i32
+    };
+    let started = edge(current);
+    let finished = edge(current + 1);
+    if started > track.left {
+        // The stages behind it are done, so they read as solid.
         card(
             hdc,
-            &filled,
+            &rect(track.left, track.top, started, track.bottom),
             theme.px(theme::R_MARK),
             theme::VEIL_ACCENT,
+            None,
+        );
+    }
+    if total > 0 {
+        let span = ((finished - started) as u64 * done as u64 / total as u64) as i32;
+        if span > 0 {
+            // The stage in hand is paler than the ones behind it, so a bar
+            // that has filled up still says which stage it was filling. With a
+            // single stage there is nothing to tell apart, and it stays solid.
+            let tone = if segments > 1 {
+                theme::VEIL_ACCENT_SOFT
+            } else {
+                theme::VEIL_ACCENT
+            };
+            card(
+                hdc,
+                &rect(
+                    started,
+                    track.top,
+                    (started + span).min(finished),
+                    track.bottom,
+                ),
+                theme.px(theme::R_MARK),
+                tone,
+                None,
+            );
+        }
+    }
+    // Notches on the stage boundaries keep the count of stages readable once
+    // the bar has run past them.
+    for index in 1..segments {
+        let x = edge(index);
+        card(
+            hdc,
+            &rect(x - theme.px(1), track.top, x + theme.px(1), track.bottom),
+            theme.px(theme::R_MARK),
+            theme::VEIL_TRACK,
             None,
         );
     }
@@ -1488,14 +1530,27 @@ pub fn overlay(hdc: HDC, area: &RECT, progress: &Progress<'_>, theme: &theme::Th
     } else {
         i18n::t().overlay_discovering.to_string()
     };
-    let counter = match stage {
-        Some(crate::scan::Stage::Blame) => {
-            format!("{} · {counter}", i18n::t().overlay_stage_blame)
-        }
-        Some(crate::scan::Stage::Files) => {
-            format!("{} · {counter}", i18n::t().overlay_stage_files)
-        }
-        None => counter,
+    let named = match stage {
+        Some(crate::scan::Stage::Blame) => i18n::t().overlay_stage_blame,
+        Some(crate::scan::Stage::Files) => i18n::t().overlay_stage_files,
+        None => "",
+    };
+    let counter = if named.is_empty() {
+        counter
+    } else if segments > 1 {
+        // With more than one stage the caption says which one is running, so
+        // the two halves of a save are told apart at a glance.
+        let staged = i18n::fill(
+            i18n::t().overlay_stage_of,
+            &[
+                ("stage", named.to_string()),
+                ("index", (current + 1).to_string()),
+                ("count", segments.to_string()),
+            ],
+        );
+        format!("{staged} · {counter}")
+    } else {
+        format!("{named} · {counter}")
     };
     let caption_text = if path.is_empty() {
         counter
@@ -1510,4 +1565,88 @@ pub fn overlay(hdc: HDC, area: &RECT, progress: &Progress<'_>, theme: &theme::Th
         theme.fonts.base,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS,
     );
+}
+
+/// Which stage of `plan` the counters belong to, as an index into the segments
+/// the bar draws. A stage that is not in the plan - a counter left over from the
+/// job before - reads as the first one, so a stale number can never push the bar
+/// past a boundary it has not reached.
+fn stage_index(plan: &[crate::scan::Stage], stage: Option<crate::scan::Stage>) -> usize {
+    let segments = plan.len().max(1);
+    plan.iter()
+        .position(|candidate| Some(*candidate) == stage)
+        .unwrap_or(0)
+        .min(segments - 1)
+}
+
+/// How far a job has come across its stages, in `0.0..=1.0`: the stages behind
+/// it count whole, and the stage it is on counts by its own share of the work,
+/// so a save that has just read the tree and has the blame ahead reads as half.
+fn stage_share(
+    plan: &[crate::scan::Stage],
+    stage: Option<crate::scan::Stage>,
+    done: usize,
+    total: usize,
+) -> f64 {
+    let segments = plan.len().max(1);
+    // Counters no stage in the plan owns move nothing: a total left over from
+    // the job before must not read as progress on this one.
+    let Some(index) = plan.iter().position(|candidate| Some(*candidate) == stage) else {
+        return 0.0;
+    };
+    let mut share = index.min(segments - 1) as f64;
+    if total > 0 {
+        share += (done as f64 / total as f64).clamp(0.0, 1.0);
+    }
+    share / segments as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{stage_index, stage_share};
+    use crate::scan::Stage;
+
+    /// The two stages a save runs when the report has no blame yet.
+    const BOTH: &[Stage] = &[Stage::Files, Stage::Blame];
+
+    fn near(got: f64, want: f64) -> bool {
+        (got - want).abs() < 1e-9
+    }
+
+    #[test]
+    fn a_single_stage_bar_fills_from_end_to_end() {
+        assert!(near(
+            stage_share(&[Stage::Files], Some(Stage::Files), 1, 4),
+            0.25
+        ));
+        assert!(near(
+            stage_share(&[Stage::Files], Some(Stage::Files), 4, 4),
+            1.0
+        ));
+    }
+
+    #[test]
+    fn the_second_of_two_stages_starts_where_the_first_ended() {
+        assert!(near(stage_share(BOTH, Some(Stage::Files), 4, 4), 0.5));
+        assert!(near(stage_share(BOTH, Some(Stage::Blame), 0, 4), 0.5));
+        assert!(near(stage_share(BOTH, Some(Stage::Blame), 1, 4), 0.625));
+        assert!(near(stage_share(BOTH, Some(Stage::Blame), 4, 4), 1.0));
+    }
+
+    #[test]
+    fn a_stage_with_nothing_counted_yet_holds_at_its_start() {
+        // Discovery reports no total at all, so the bar must not move.
+        assert_eq!(stage_index(BOTH, None), 0);
+        assert!(near(stage_share(BOTH, None, 0, 0), 0.0));
+    }
+
+    #[test]
+    fn a_stage_outside_the_plan_counts_from_the_start() {
+        // A counter left over from the scan must not push a blame-only bar on.
+        assert_eq!(stage_index(&[Stage::Blame], Some(Stage::Files)), 0);
+        assert!(near(
+            stage_share(&[Stage::Blame], Some(Stage::Files), 9, 9),
+            0.0
+        ));
+    }
 }

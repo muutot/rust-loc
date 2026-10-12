@@ -87,6 +87,14 @@ pub enum Resume {
     Scan,
 }
 
+/// The stages a job runs, in the order the mask draws them as segments: one for
+/// a plain scan, one for a save that only has to read the authors, and both for
+/// a save that has to read the tree before it can blame it.
+pub const STAGES_SCAN: &[crate::scan::Stage] = &[crate::scan::Stage::Files];
+pub const STAGES_BLAME: &[crate::scan::Stage] = &[crate::scan::Stage::Blame];
+pub const STAGES_SCAN_BLAME: &[crate::scan::Stage] =
+    &[crate::scan::Stage::Files, crate::scan::Stage::Blame];
+
 /// How many bars the module chart draws at most.
 pub const CHART_ROWS: usize = 12;
 /// KPI cards per row in the strip.
@@ -167,6 +175,9 @@ pub struct AppState {
     /// The save waiting for the worker, as an index into `FORMATS`, held
     /// until the report it needs has been read.
     pub pending_export: Option<usize>,
+    /// The stages the job behind the mask runs, in order, so the bar can show
+    /// how much of it is behind and how much is still to come.
+    pub plan: &'static [crate::scan::Stage],
     /// Watches the roots so the report refreshes when files change.
     pub watcher: Option<watch::Watcher>,
     /// The roots the watcher was started for, so it restarts only when the
@@ -289,6 +300,7 @@ impl AppState {
             authors_running: false,
             exporting: false,
             pending_export: None,
+            plan: STAGES_SCAN,
             watcher: None,
             watched: Vec::new(),
             controls: Vec::new(),
@@ -489,6 +501,13 @@ impl AppState {
         self.started = Some(Instant::now());
         self.status = i18n::t().status_scanning.to_string();
         self.authors_running = false;
+        // A plain scan runs one stage; a save that queued one runs its blame
+        // behind it, and the mask says so from the start.
+        self.plan = if self.pending_export.is_some() && self.options.authors {
+            STAGES_SCAN_BLAME
+        } else {
+            STAGES_SCAN
+        };
         // The author pass is not part of the scan. It is asked for by the pane
         // that shows it, so no other pane waits on a `git blame`.
         let mut options = self.options.clone();
@@ -515,7 +534,7 @@ impl AppState {
     /// listings never pay for it.
     pub fn maybe_start_authors(&mut self, hwnd: HWND) {
         if matches!(self.view, model::View::Authors | model::View::AuthorTotals) {
-            self.start_authors(hwnd, false);
+            self.start_authors(hwnd);
         }
     }
 
@@ -530,10 +549,16 @@ impl AppState {
         if !format_at(index).carries_authors() {
             return Resume::Now;
         }
+        let blame = self.options.authors;
         if self.scanning || self.authors_running {
             // Something is reading already: queue behind it, and put the mask
             // up now that somebody is waiting for a file.
             self.pending_export = Some(index);
+            self.plan = match (self.scanning, blame) {
+                (true, true) => STAGES_SCAN_BLAME,
+                (true, false) => STAGES_SCAN,
+                (false, _) => STAGES_BLAME,
+            };
             self.mask_for_export();
             return Resume::Wait;
         }
@@ -542,18 +567,25 @@ impl AppState {
             // the first half of the bar, the blame the rest.
             self.pending_export = Some(index);
             self.exporting = true;
+            self.plan = if blame {
+                STAGES_SCAN_BLAME
+            } else {
+                STAGES_SCAN
+            };
             return Resume::Scan;
         }
         if !self.wants_authors() {
             return Resume::Now;
         }
         self.pending_export = Some(index);
-        self.start_authors(hwnd, true);
+        self.plan = STAGES_BLAME;
+        self.start_authors(hwnd);
         if !self.authors_running {
             // Nothing to blame: the report is as complete as it gets.
             self.pending_export = None;
             return Resume::Now;
         }
+        self.mask_for_export();
         Resume::Wait
     }
 
@@ -571,10 +603,18 @@ impl AppState {
         window::show_veil(self, true);
     }
 
+    /// Take the mask down and hand the window back to the user.
+    fn unmask(&mut self) {
+        self.exporting = false;
+        window::set_busy(self, false);
+        window::show_veil(self, false);
+    }
+
     /// Blame the business files off the UI thread, unless that is already
-    /// running, already done, or switched off. A masked pass is one a save is
-    /// waiting on, and it wears the overlay for it.
-    fn start_authors(&mut self, hwnd: HWND, masked: bool) {
+    /// running, already done, or switched off. Whoever asks for the pass owns
+    /// the mask: one behind a pane leaves the window in the user's hands, one a
+    /// save is waiting on wears the overlay.
+    fn start_authors(&mut self, hwnd: HWND) {
         if self.scanning || self.authors_running || !self.options.authors {
             return;
         }
@@ -604,9 +644,6 @@ impl AppState {
         self.refresh_hint();
         self.receiver = Some(scan::start_authors(targets, options));
         window::start_timer(hwnd, TIMER_PROGRESS, 60);
-        if masked {
-            self.mask_for_export();
-        }
     }
 
     /// The caption the author pass moves while it runs. It carries the only
@@ -701,9 +738,7 @@ impl AppState {
         // the scan it just waited for.
         let waiting = self.pending_export.is_some() && self.wants_authors();
         if (scanned || self.exporting) && !waiting {
-            self.exporting = false;
-            window::set_busy(self, false);
-            window::show_veil(self, false);
+            self.unmask();
         }
         self.rebuild();
         window::layout_state(hwnd, self);
@@ -717,12 +752,15 @@ impl AppState {
             self.maybe_start_authors(hwnd);
         }
         if self.pending_export.is_some() && self.wants_authors() {
-            // The save is what asked for this pass, so it wears the mask.
-            self.start_authors(hwnd, true);
+            // The save is what asked for this pass, so the mask stays up for
+            // it: the plan the bar is drawn from was set when it went up.
+            self.start_authors(hwnd);
             if self.authors_running {
                 self.mask_for_export();
                 return None;
             }
+            // Nothing to blame after all, so nothing is left to wait for.
+            self.unmask();
         }
         self.pending_export.take()
     }

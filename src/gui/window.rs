@@ -581,6 +581,7 @@ unsafe extern "system" fn veil_proc(
                     };
                     let progress = paint::Progress {
                         title,
+                        plan: state.plan,
                         stage: state.progress_stage,
                         done: state.progress_done,
                         total: state.progress_total,

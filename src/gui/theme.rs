@@ -68,6 +68,8 @@ pub const VEIL_TEXT: u32 = rgb(0x111827);
 pub const VEIL_MUTED: u32 = rgb(0x667085);
 pub const VEIL_TRACK: u32 = rgb(0xEDF1F7);
 pub const VEIL_ACCENT: u32 = rgb(0x2563EB);
+/// The stage in hand, paler than the ones already done.
+pub const VEIL_ACCENT_SOFT: u32 = rgb(0x9DBAF6);
 
 const FW_SEMIBOLD: i32 = 600;
 const DEFAULT_CHARSET: u8 = 1;

@@ -481,9 +481,11 @@ The GUI *Export* menu offers the same SVG next to text, JSON, CSV and Markdown,
 and adds *Export as PNG*: the identical card rasterised through GDI into a 32-bit
 bitmap and written by the small encoder in `src/png.rs`. A save that has to carry
 the author tables reads them first when they are missing, behind the same mask a
-scan shows, and the bar covers the read and the blame in turn - what a report
-skips there it skips on purpose, not because the pane was never opened. The encoder is hand
-written - row filters, a fixed-Huffman deflate, the chunk CRCs - so the export
+scan shows, and the bar is cut into one segment per stage - reading the tree,
+then blaming it - so the two halves of a save are told apart at a glance; what a
+report skips there it skips on purpose, not because the pane was never opened.
+The encoder is hand written - row filters, a fixed-Huffman deflate, the chunk
+CRCs - so the export
 is an ordinary PNG a few tens of kilobytes large, with no image crate linked in:
 
 ![rust-loc PNG report](docs/report.png)
@@ -681,7 +683,9 @@ last one:
 
 ![rust-loc-gui, scan history sparkline](docs/ui-history.png)
 
-While a scan runs, a veil and a progress bar cover the shell:
+While a scan runs, a veil and a progress bar cover the shell. The bar is cut into
+one segment per stage, so a save that reads the tree before it blames it shows
+both at once, and a plain scan keeps the single bar it always had:
 
 ![rust-loc-gui, scan in progress](docs/ui-scan-overlay.png)
 
