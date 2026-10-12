@@ -1351,18 +1351,30 @@ pub fn combo_item(hdc: HDC, item: &DRAWITEMSTRUCT, theme: &theme::Theme) {
     );
 }
 
+/// What the mask says while it is up: the caption over the bar, the stage the
+/// counters belong to, and the file that stage is reading.
+#[derive(Clone, Copy)]
+pub struct Progress<'a> {
+    pub title: &'a str,
+    pub stage: Option<crate::scan::Stage>,
+    pub done: usize,
+    pub total: usize,
+    pub path: &'a str,
+}
+
 /// Paint the scan overlay: scrim, card, progress track and caption. The stage
 /// names the work the numbers belong to, so a bar that has just filled up
-/// reads as "next: blaming" rather than as a scan that is somehow stuck.
-pub fn overlay(
-    hdc: HDC,
-    area: &RECT,
-    stage: Option<crate::scan::Stage>,
-    done: usize,
-    total: usize,
-    path: &str,
-    theme: &theme::Theme,
-) {
+/// reads as "next: blaming" rather than as a scan that is somehow stuck. The
+/// caption over it comes from the caller: a save that has to read the authors
+/// before it can write says so.
+pub fn overlay(hdc: HDC, area: &RECT, progress: &Progress<'_>, theme: &theme::Theme) {
+    let Progress {
+        title,
+        stage,
+        done,
+        total,
+        path,
+    } = *progress;
     let width = area.right - area.left;
     let height = area.bottom - area.top;
     if width <= 0 || height <= 0 {
@@ -1395,7 +1407,7 @@ pub fn overlay(
         Some(theme::VEIL_BORDER),
     );
     let padding = theme.px(26);
-    let mut title = rect(
+    let mut heading = rect(
         left + padding,
         top + theme.px(18),
         bounds.right - padding,
@@ -1403,8 +1415,8 @@ pub fn overlay(
     );
     text(
         hdc,
-        i18n::t().overlay_title,
-        &mut title,
+        title,
+        &mut heading,
         theme::VEIL_TEXT,
         theme.fonts.title,
         DT_LEFT | DT_SINGLELINE | DT_VCENTER,

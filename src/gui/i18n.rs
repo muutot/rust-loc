@@ -392,6 +392,7 @@ catalog! {
     status_export_failed => ("Export failed: {error}", "导出失败：{error}"),
     // -- scan overlay ------------------------------------------------------
     overlay_title => ("Scanning sources", "正在扫描源码"),
+    overlay_title_export => ("Exporting the report", "正在导出报告"),
     overlay_files => ("{done} / {total} files", "{done} / {total} 个文件"),
     overlay_discovering => ("Discovering files", "正在发现文件"),
     overlay_stage_files => ("Reading sources", "读取源码"),

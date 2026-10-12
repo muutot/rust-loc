@@ -76,6 +76,17 @@ pub const FORMATS: [(&str, Format); 5] = [
     ("SVG", Format::Svg),
 ];
 
+/// What a save still has to wait for before it can write its file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resume {
+    /// Nothing is missing: write from what the app holds.
+    Now,
+    /// A worker is reading what the report still needs.
+    Wait,
+    /// There is no report yet, so the tree has to be read first.
+    Scan,
+}
+
 /// How many bars the module chart draws at most.
 pub const CHART_ROWS: usize = 12;
 /// KPI cards per row in the strip.
@@ -150,6 +161,12 @@ pub struct AppState {
     /// Whether the author pass is running on its own thread, after the scan
     /// that asked for it has already been rendered.
     pub authors_running: bool,
+    /// True while the mask is up for a save that is still reading, so the
+    /// overlay says it is exporting rather than scanning.
+    pub exporting: bool,
+    /// The save waiting for the worker, as an index into `FORMATS`, held
+    /// until the report it needs has been read.
+    pub pending_export: Option<usize>,
     /// Watches the roots so the report refreshes when files change.
     pub watcher: Option<watch::Watcher>,
     /// The roots the watcher was started for, so it restarts only when the
@@ -270,6 +287,8 @@ impl AppState {
             elapsed: 0.0,
             receiver: None,
             authors_running: false,
+            exporting: false,
+            pending_export: None,
             watcher: None,
             watched: Vec::new(),
             controls: Vec::new(),
@@ -479,6 +498,16 @@ impl AppState {
         window::show_veil(self, false);
     }
 
+    /// Whether the report in hand could still gain its author tables: the flag
+    /// is on, and nothing has blamed the files yet.
+    fn wants_authors(&self) -> bool {
+        self.options.authors
+            && self
+                .report
+                .as_ref()
+                .is_some_and(|report| report.authors.is_none())
+    }
+
     /// Ask for the author pass when the pane in front is the one it fills.
     ///
     /// The pane is what makes the data worth collecting: one `git blame` per
@@ -486,13 +515,66 @@ impl AppState {
     /// listings never pay for it.
     pub fn maybe_start_authors(&mut self, hwnd: HWND) {
         if matches!(self.view, model::View::Authors | model::View::AuthorTotals) {
-            self.start_authors(hwnd);
+            self.start_authors(hwnd, false);
         }
     }
 
-    /// Blame the business files in the background, unless that is already
-    /// running, already done, or switched off.
-    fn start_authors(&mut self, hwnd: HWND) {
+    /// Run whatever a save still needs, and say what the caller has to wait for.
+    ///
+    /// A save is the one action that may not leave the author tables out, and
+    /// the one place the whole job is asked for in one go: with no report yet
+    /// it reads the tree first, then blames it, and the bar in the mask covers
+    /// both stages. A format that carries no blame writes from what is in
+    /// hand.
+    pub fn begin_export(&mut self, hwnd: HWND, index: usize) -> Resume {
+        if !format_at(index).carries_authors() {
+            return Resume::Now;
+        }
+        if self.scanning || self.authors_running {
+            // Something is reading already: queue behind it, and put the mask
+            // up now that somebody is waiting for a file.
+            self.pending_export = Some(index);
+            self.mask_for_export();
+            return Resume::Wait;
+        }
+        if self.report.is_none() {
+            // Nothing has been read yet, so the save reads it: the scan takes
+            // the first half of the bar, the blame the rest.
+            self.pending_export = Some(index);
+            self.exporting = true;
+            return Resume::Scan;
+        }
+        if !self.wants_authors() {
+            return Resume::Now;
+        }
+        self.pending_export = Some(index);
+        self.start_authors(hwnd, true);
+        if !self.authors_running {
+            // Nothing to blame: the report is as complete as it gets.
+            self.pending_export = None;
+            return Resume::Now;
+        }
+        Resume::Wait
+    }
+
+    /// Drop a save that can no longer run - a scan that had nothing to read.
+    pub fn cancel_export(&mut self) {
+        self.pending_export = None;
+        self.exporting = false;
+    }
+
+    /// Put the mask up over a save that is still reading, so the overlay names
+    /// the export rather than a scan nobody asked for.
+    fn mask_for_export(&mut self) {
+        self.exporting = true;
+        window::set_busy(self, true);
+        window::show_veil(self, true);
+    }
+
+    /// Blame the business files off the UI thread, unless that is already
+    /// running, already done, or switched off. A masked pass is one a save is
+    /// waiting on, and it wears the overlay for it.
+    fn start_authors(&mut self, hwnd: HWND, masked: bool) {
         if self.scanning || self.authors_running || !self.options.authors {
             return;
         }
@@ -522,6 +604,9 @@ impl AppState {
         self.refresh_hint();
         self.receiver = Some(scan::start_authors(targets, options));
         window::start_timer(hwnd, TIMER_PROGRESS, 60);
+        if masked {
+            self.mask_for_export();
+        }
     }
 
     /// The caption the author pass moves while it runs. It carries the only
@@ -536,8 +621,10 @@ impl AppState {
         );
     }
 
-    /// Drain worker messages; returns true when the overlay needs a repaint.
-    pub fn poll(&mut self, hwnd: HWND) {
+    /// Drain worker messages. Returns the save that may run now, if one was
+    /// waiting: its dialog pumps messages of its own, so it cannot run while
+    /// the state is held.
+    pub fn poll(&mut self, hwnd: HWND) -> Option<usize> {
         let mut finished = false;
         if let Some(receiver) = &self.receiver {
             loop {
@@ -588,15 +675,16 @@ impl AppState {
             }
         }
         if !finished {
-            // A scan masks the window while it runs. The author pass leaves it
-            // usable, so only the caption above its table moves.
-            if self.authors_running {
+            // A scan, and a pass a save is waiting on, mask the window, so the
+            // bar is what moves. The pane's own pass leaves the window usable:
+            // only the caption above its table moves.
+            if self.authors_running && !self.exporting {
                 self.refresh_hint();
                 window::invalidate_hint(self, hwnd);
             } else {
                 window::invalidate(self.control(ID_VEIL));
             }
-            return;
+            return None;
         }
         if let Some(started) = self.started.take() {
             self.elapsed = started.elapsed().as_secs_f64();
@@ -609,7 +697,11 @@ impl AppState {
         let scanned = self.scanning;
         self.scanning = false;
         self.authors_running = false;
-        if scanned {
+        // A save that is still waiting keeps the mask up for the pass behind
+        // the scan it just waited for.
+        let waiting = self.pending_export.is_some() && self.wants_authors();
+        if (scanned || self.exporting) && !waiting {
+            self.exporting = false;
             window::set_busy(self, false);
             window::show_veil(self, false);
         }
@@ -624,6 +716,15 @@ impl AppState {
             // the blame behind it.
             self.maybe_start_authors(hwnd);
         }
+        if self.pending_export.is_some() && self.wants_authors() {
+            // The save is what asked for this pass, so it wears the mask.
+            self.start_authors(hwnd, true);
+            if self.authors_running {
+                self.mask_for_export();
+                return None;
+            }
+        }
+        self.pending_export.take()
     }
 
     /// Recompute columns, rows, cards, charts and the table hint.

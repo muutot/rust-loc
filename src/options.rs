@@ -21,6 +21,12 @@ pub enum Format {
 }
 
 impl Format {
+    /// Whether the renderer draws the author tables. The SVG card is a summary
+    /// of the counters, so it carries no blame and never waits for one.
+    pub fn carries_authors(self) -> bool {
+        !matches!(self, Format::Svg)
+    }
+
     pub fn parse(value: &str) -> Option<Format> {
         match value {
             "text" => Some(Format::Text),
@@ -212,5 +218,18 @@ impl Options {
                 .fail_if
                 .iter()
                 .any(|rule| rule.metric.collects_functions())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Format;
+
+    #[test]
+    fn every_format_but_the_card_carries_the_authors() {
+        for format in [Format::Text, Format::Json, Format::Csv, Format::Markdown] {
+            assert!(format.carries_authors(), "{format:?} drops the authors");
+        }
+        assert!(!Format::Svg.carries_authors());
     }
 }

@@ -571,11 +571,22 @@ unsafe extern "system" fn veil_proc(
         WM_PAINT => {
             let painted = buffered(hwnd, theme::VEIL_BG, |hdc, client| {
                 with_state(|state| {
-                    let stage = state.progress_stage;
-                    let done = state.progress_done;
-                    let total = state.progress_total;
                     let path = state.progress_path.clone();
-                    paint::overlay(hdc, client, stage, done, total, &path, &state.theme);
+                    // A save that had to read the authors first names itself, so
+                    // the bar does not look like a scan nobody asked for.
+                    let title = if state.exporting {
+                        i18n::t().overlay_title_export
+                    } else {
+                        i18n::t().overlay_title
+                    };
+                    let progress = paint::Progress {
+                        title,
+                        stage: state.progress_stage,
+                        done: state.progress_done,
+                        total: state.progress_total,
+                        path: &path,
+                    };
+                    paint::overlay(hdc, client, &progress, &state.theme);
                 })
                 .is_some()
             });
@@ -2448,7 +2459,7 @@ fn schedule_rescan(hwnd: HWND) {
     start_timer(hwnd, app::TIMER_RESCAN, 600);
 }
 
-fn start_scan(hwnd: HWND) {
+pub fn start_scan(hwnd: HWND) {
     with_state(|state| {
         state.begin_scan();
         if state.scanning {
@@ -2833,8 +2844,13 @@ unsafe extern "system" fn main_proc(
         WM_TIMER => {
             match wparam {
                 app::TIMER_PROGRESS => {
-                    with_state(|state| state.poll(hwnd));
+                    let queued = with_state(|state| state.poll(hwnd)).flatten();
                     layout(hwnd);
+                    // A save that was waiting on the worker runs once the state
+                    // borrow has ended: its dialog pumps messages of its own.
+                    if let Some(index) = queued {
+                        write_export(hwnd, index);
+                    }
                 }
                 app::TIMER_VEIL => {
                     stop_timer(hwnd, app::TIMER_VEIL);
@@ -3141,7 +3157,31 @@ fn copy_command(hwnd: HWND) {
     report_status(hwnd, message);
 }
 
+/// Write the report as `index` in `FORMATS`, after asking where to put it.
+///
+/// A save that still needs the authors does not write a report without them:
+/// it queues behind the pass that reads them, and the timer picks the thread
+/// back up with `write_export` once they have landed.
 fn export(hwnd: HWND, index: usize) {
+    with_state(|state| {
+        state.options.format = app::format_at(index);
+        state.settings.format = index;
+    });
+    match with_state(|state| state.begin_export(hwnd, index)).unwrap_or(app::Resume::Now) {
+        app::Resume::Now => write_export(hwnd, index),
+        app::Resume::Wait => {}
+        app::Resume::Scan => {
+            start_scan(hwnd);
+            if !with_state(|state| state.scanning).unwrap_or(false) {
+                // Nothing to read, and the status bar already says why.
+                with_state(|state| state.cancel_export());
+            }
+        }
+    }
+}
+
+/// Render the report and ask where to put it.
+pub fn write_export(hwnd: HWND, index: usize) {
     let payload = with_state(|state| {
         let format = app::format_at(index);
         let cwd = std::env::current_dir().unwrap_or_default();
