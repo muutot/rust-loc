@@ -107,6 +107,16 @@ pub fn invalidate(hwnd: HWND) {
     }
 }
 
+/// Repaint the caption above the table on its own. The author pass moves that
+/// line while it runs, and repainting the whole window for it would be waste.
+pub fn invalidate_hint(state: &app::AppState, hwnd: HWND) {
+    let area = state.table_hint_rect;
+    if hwnd.is_null() || area.right <= area.left {
+        return;
+    }
+    unsafe { InvalidateRect(hwnd, &area, 0) };
+}
+
 /// Redraw a control from scratch, background included.
 ///
 /// A control that paints only part of itself (the scan-root list draws its
@@ -1922,6 +1932,8 @@ fn cycle_view(hwnd: HWND) {
         };
         set_view(state, next);
     });
+    // Landing on the author pane is what asks for the blame behind it.
+    with_state(|state| state.maybe_start_authors(hwnd));
     invalidate(hwnd);
 }
 
@@ -2780,6 +2792,7 @@ unsafe extern "system" fn main_proc(
             match with_state(|state| tab_hit(state, x, y)).flatten() {
                 Some(TabHit::Group(group)) => {
                     with_state(|state| set_group(state, group));
+                    with_state(|state| state.maybe_start_authors(hwnd));
                     // Each pane brings its own controls with it, so the layout
                     // has to run before the repaint looks for them.
                     layout(hwnd);
@@ -2787,6 +2800,7 @@ unsafe extern "system" fn main_proc(
                 }
                 Some(TabHit::View(view)) => {
                     with_state(|state| set_view(state, view));
+                    with_state(|state| state.maybe_start_authors(hwnd));
                     invalidate(hwnd);
                 }
                 None => {}

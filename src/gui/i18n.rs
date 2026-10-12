@@ -362,6 +362,7 @@ catalog! {
     hint_no_smells => ("no panic-shaped calls or lint escapes found", "未发现恐慌式调用或 lint 逃逸"),
     hint_authors => ("{authors} author(s) across {files} blamed files · showing {shown}", "{files} 个文件、{authors} 位作者 · 显示 {shown}"),
     hint_no_authors => ("no author data - turn on Author blame and scan", "暂无作者数据 — 请打开作者归属后重新扫描"),
+    hint_authors_reading => ("reading authors… {done} / {total} files", "正在统计作者… {done} / {total} 个文件"),
     table_empty => ("no rows yet — run a scan", "暂无数据 — 请先运行扫描"),
     // -- status bar --------------------------------------------------------
     scope_root_one => ("{n} root", "{n} 个根目录"),

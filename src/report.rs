@@ -130,6 +130,16 @@ impl Report {
             .collect()
     }
 
+    /// What the author pass blames: the business files, ready to be handed to a
+    /// thread of its own. The entries stay here, so a report can render its
+    /// other panes while the blame runs.
+    pub fn blame_targets(&self) -> Vec<crate::authors::Target> {
+        self.business_entries()
+            .into_iter()
+            .map(crate::authors::Target::of)
+            .collect()
+    }
+
     /// Re-render this report in another format without scanning again.
     pub fn render_as(&self, format: Format, cwd: &Path) -> String {
         let mut options = self.options.clone();

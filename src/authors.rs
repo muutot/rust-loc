@@ -7,8 +7,9 @@
 //! prints. Each file is blamed in the repository it lives in, so one tree
 //! reports the same authors from wherever the process was started.
 //!
-//! Nothing here runs unless the flag is given: one `git blame` per file costs
-//! far more than the scan itself.
+//! Nothing here runs unless the flag is given, and one `git blame` per file
+//! costs far more than the scan itself, so the GUI asks for this pass of its
+//! own accord, from the pane that shows it, long after the scan has been drawn.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -97,6 +98,28 @@ pub struct Authors {
     pub rows: Vec<AuthorRow>,
 }
 
+/// One file the author pass blames: what the blame needs from an entry, and
+/// nothing else. A pass can then run off a list of these, on another thread,
+/// long after the entries it was taken from are gone.
+#[derive(Debug, Clone)]
+pub struct Target {
+    /// The scan root the progress caption names the file from.
+    pub root: PathBuf,
+    pub path: PathBuf,
+    pub lang: Lang,
+}
+
+impl Target {
+    /// The file one business entry asks to be blamed.
+    pub fn of(entry: &Entry) -> Target {
+        Target {
+            root: entry.root().to_path_buf(),
+            path: entry.path().to_path_buf(),
+            lang: entry.lang(),
+        }
+    }
+}
+
 impl Authors {
     /// Blame every entry and fold the result per author and per file.
     ///
@@ -107,15 +130,26 @@ impl Authors {
         options: &Options,
         progress: Option<&Progress<'_>>,
     ) -> Authors {
-        let tops = repo_tops(entries);
-        let blamed = blame_all(&tops, entries, options, progress);
+        let targets: Vec<Target> = entries.iter().map(|entry| Target::of(entry)).collect();
+        Authors::collect_targets(&targets, options, progress)
+    }
+
+    /// Blame a list of files, the way `collect` blames a scan. This is the
+    /// half the GUI runs on its own thread, from a copy of the file list.
+    pub fn collect_targets(
+        targets: &[Target],
+        options: &Options,
+        progress: Option<&Progress<'_>>,
+    ) -> Authors {
+        let tops = repo_tops(targets);
+        let blamed = blame_all(&tops, targets, options, progress);
         let available = blamed.iter().any(|result| result.repo);
         let mut files: Vec<FileShare> = Vec::new();
         let mut untracked = 0usize;
-        for (entry, result) in entries.iter().zip(blamed) {
+        for (target, result) in targets.iter().zip(blamed) {
             match result.shares {
                 Some(authors) => files.push(FileShare {
-                    path: entry.path().to_path_buf(),
+                    path: target.path.clone(),
                     authors,
                 }),
                 None if available => untracked += 1,
@@ -130,6 +164,7 @@ impl Authors {
             rows,
         }
     }
+
     /// The rows a listing shows, after `--top` truncation.
     pub fn shown(&self, top: usize) -> &[AuthorRow] {
         if top == 0 || top >= self.rows.len() {
@@ -165,25 +200,25 @@ impl Blamed {
 
 /// The repository every entry lives in, asked once per directory so a tree
 /// costs one `rev-parse` per folder instead of one per file.
-fn repo_tops(entries: &[&Entry]) -> Vec<Option<PathBuf>> {
+fn repo_tops(targets: &[Target]) -> Vec<Option<PathBuf>> {
     let mut roots: Vec<PathBuf> = Vec::new();
     let mut asked: HashMap<PathBuf, Option<PathBuf>> = HashMap::new();
-    entries
+    targets
         .iter()
-        .map(|entry| {
+        .map(|target| {
             if let Some(root) = roots
                 .iter()
-                .find(|root| entry.path().starts_with(root.as_path()))
+                .find(|root| target.path.starts_with(root.as_path()))
             {
                 return Some(root.clone());
             }
-            let dir = entry.path().parent()?;
+            let dir = target.path.parent()?;
             if let Some(known) = asked.get(dir) {
                 return known.clone();
             }
             let found = scan::run_git(dir, &["rev-parse", "--show-toplevel"])
                 .map(|text| PathBuf::from(text.trim()))
-                .filter(|root| root.is_dir() && entry.path().starts_with(root));
+                .filter(|root| root.is_dir() && target.path.starts_with(root));
             if let Some(root) = &found {
                 roots.push(root.clone());
             }
@@ -195,8 +230,8 @@ fn repo_tops(entries: &[&Entry]) -> Vec<Option<PathBuf>> {
 
 /// Report one blamed file, named from the scan root the way the tables name
 /// files rather than from the drive the process happens to run on.
-fn report_blame(callback: &Progress<'_>, entry: &Entry, done: usize, total: usize) {
-    let shown = scan::relative(entry.path(), entry.root());
+fn report_blame(callback: &Progress<'_>, target: &Target, done: usize, total: usize) {
+    let shown = scan::relative(&target.path, &target.root);
     callback(Stage::Blame, done, total, Path::new(&shown));
 }
 
@@ -205,18 +240,18 @@ fn report_blame(callback: &Progress<'_>, entry: &Entry, done: usize, total: usiz
 /// filled the bar before it.
 fn blame_all(
     tops: &[Option<PathBuf>],
-    entries: &[&Entry],
+    targets: &[Target],
     options: &Options,
     progress: Option<&Progress<'_>>,
 ) -> Vec<Blamed> {
-    let total = entries.len();
+    let total = targets.len();
     let blame = |index: usize| -> Blamed {
         match &tops[index] {
-            Some(top) => blame_file(top, entries[index], options),
+            Some(top) => blame_file(top, &targets[index], options),
             None => Blamed::plain(),
         }
     };
-    let mut results: Vec<Blamed> = entries.iter().map(|_| Blamed::plain()).collect();
+    let mut results: Vec<Blamed> = targets.iter().map(|_| Blamed::plain()).collect();
     if total == 0 {
         return results;
     }
@@ -225,7 +260,7 @@ fn blame_all(
         for (index, slot) in results.iter_mut().enumerate() {
             *slot = blame(index);
             if let Some(callback) = progress {
-                report_blame(callback, entries[index], index + 1, total);
+                report_blame(callback, &targets[index], index + 1, total);
             }
         }
         return results;
@@ -248,7 +283,7 @@ fn blame_all(
                 }
                 let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 if let Some(callback) = progress {
-                    report_blame(callback, entries[index], finished, total);
+                    report_blame(callback, &targets[index], finished, total);
                 }
             });
         }
@@ -260,8 +295,8 @@ fn blame_all(
 }
 
 /// Blame one file and split its lines across the authors that wrote them.
-fn blame_file(top: &Path, entry: &Entry, options: &Options) -> Blamed {
-    let Some(relative) = git::repo_relative(entry.path(), top) else {
+fn blame_file(top: &Path, target: &Target, options: &Options) -> Blamed {
+    let Some(relative) = git::repo_relative(&target.path, top) else {
         return Blamed::plain();
     };
     let Some(blame) = scan::run_git(top, &["blame", "--incremental", "--", &relative]) else {
@@ -272,7 +307,7 @@ fn blame_file(top: &Path, entry: &Entry, options: &Options) -> Blamed {
         };
     };
     let authors: Vec<(String, String)> = parse_blame(&blame);
-    let classes = classify(entry.path(), entry.lang());
+    let classes = classify(&target.path, target.lang);
     let mut shares: Vec<Share> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for (position, (name, email)) in authors.iter().enumerate() {

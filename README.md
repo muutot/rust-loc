@@ -647,7 +647,10 @@ space:
 The *Authors* pane carries the `git blame` tables: *Per file* lists every author
 whose lines still live in a file, and *Per author* folds the same blame into one
 row per person - files, lines, code, comment and blank, largest first. Both need
-*Author blame* turned on, and neither needs a second tool:
+*Author blame* turned on, and neither needs a second tool. The blame is the one
+slow pass in the tool, so the window leaves it out of the scan: it starts when
+this pane is opened, on a thread of its own, and the caption above the table
+counts the files as they are read while the rest of the window stays usable:
 
 ![rust-loc-gui, authors pane](docs/ui-authors.png)
 

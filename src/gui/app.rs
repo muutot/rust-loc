@@ -147,6 +147,9 @@ pub struct AppState {
     pub started: Option<Instant>,
     pub elapsed: f64,
     pub receiver: Option<Receiver<scan::Msg>>,
+    /// Whether the author pass is running on its own thread, after the scan
+    /// that asked for it has already been rendered.
+    pub authors_running: bool,
     /// Watches the roots so the report refreshes when files change.
     pub watcher: Option<watch::Watcher>,
     /// The roots the watcher was started for, so it restarts only when the
@@ -266,6 +269,7 @@ impl AppState {
             started: None,
             elapsed: 0.0,
             receiver: None,
+            authors_running: false,
             watcher: None,
             watched: Vec::new(),
             controls: Vec::new(),
@@ -465,10 +469,71 @@ impl AppState {
         self.progress_stage = None;
         self.started = Some(Instant::now());
         self.status = i18n::t().status_scanning.to_string();
-        let options = self.options.clone();
+        self.authors_running = false;
+        // The author pass is not part of the scan. It is asked for by the pane
+        // that shows it, so no other pane waits on a `git blame`.
+        let mut options = self.options.clone();
+        options.authors = false;
         self.receiver = Some(scan::start(roots, options, cwd));
         window::set_busy(self, true);
         window::show_veil(self, false);
+    }
+
+    /// Ask for the author pass when the pane in front is the one it fills.
+    ///
+    /// The pane is what makes the data worth collecting: one `git blame` per
+    /// file costs more than the whole scan, so the overview and the code
+    /// listings never pay for it.
+    pub fn maybe_start_authors(&mut self, hwnd: HWND) {
+        if matches!(self.view, model::View::Authors | model::View::AuthorTotals) {
+            self.start_authors(hwnd);
+        }
+    }
+
+    /// Blame the business files in the background, unless that is already
+    /// running, already done, or switched off.
+    fn start_authors(&mut self, hwnd: HWND) {
+        if self.scanning || self.authors_running || !self.options.authors {
+            return;
+        }
+        let Some(report) = &self.report else {
+            return;
+        };
+        if report.authors.is_some() {
+            return;
+        }
+        let targets = report.blame_targets();
+        let options = report.options.clone();
+        if targets.is_empty() {
+            // Nothing to blame is still an answer, and the pane can say so.
+            if let Some(report) = &mut self.report {
+                report.options.authors = true;
+                report.authors = Some(crate::authors::Authors::default());
+            }
+            self.rebuild();
+            window::repaint(self, hwnd);
+            return;
+        }
+        self.progress_stage = Some(crate::scan::Stage::Blame);
+        self.progress_done = 0;
+        self.progress_total = targets.len();
+        self.progress_path.clear();
+        self.authors_running = true;
+        self.refresh_hint();
+        self.receiver = Some(scan::start_authors(targets, options));
+        window::start_timer(hwnd, TIMER_PROGRESS, 60);
+    }
+
+    /// The caption the author pass moves while it runs. It carries the only
+    /// sign of the pass, because the window stays in the user's hands.
+    fn refresh_hint(&mut self) {
+        self.table_hint = i18n::fill(
+            i18n::t().hint_authors_reading,
+            &[
+                ("done", self.progress_done.to_string()),
+                ("total", self.progress_total.to_string()),
+            ],
+        );
     }
 
     /// Drain worker messages; returns true when the overlay needs a repaint.
@@ -503,6 +568,17 @@ impl AppState {
                         finished = true;
                         break;
                     }
+                    Ok(scan::Msg::Authors(authors)) => {
+                        if let Some(report) = &mut self.report {
+                            // The report holds what `--authors` asks for now, so
+                            // an export taken from it carries the author tables.
+                            report.options.authors = true;
+                            report.authors = Some(*authors);
+                        }
+                        self.authors_running = false;
+                        finished = true;
+                        break;
+                    }
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         finished = true;
@@ -512,24 +588,42 @@ impl AppState {
             }
         }
         if !finished {
-            window::invalidate(self.control(ID_VEIL));
+            // A scan masks the window while it runs. The author pass leaves it
+            // usable, so only the caption above its table moves.
+            if self.authors_running {
+                self.refresh_hint();
+                window::invalidate_hint(self, hwnd);
+            } else {
+                window::invalidate(self.control(ID_VEIL));
+            }
             return;
         }
         if let Some(started) = self.started.take() {
             self.elapsed = started.elapsed().as_secs_f64();
         }
         self.receiver = None;
-        self.scanning = false;
         window::stop_timer(hwnd, TIMER_PROGRESS);
         window::stop_timer(hwnd, TIMER_VEIL);
-        window::set_busy(self, false);
-        window::show_veil(self, false);
+        // Only a scan gated the toolbar and masked the window; the author pass
+        // ran behind a window the user kept.
+        let scanned = self.scanning;
+        self.scanning = false;
+        self.authors_running = false;
+        if scanned {
+            window::set_busy(self, false);
+            window::show_veil(self, false);
+        }
         self.rebuild();
         window::layout_state(hwnd, self);
         window::reconfigure_list(self);
         window::refresh_status(self);
         window::repaint(self, hwnd);
-        self.watch_roots(hwnd);
+        if scanned {
+            self.watch_roots(hwnd);
+            // A scan that ran with the author pane in front is what asks for
+            // the blame behind it.
+            self.maybe_start_authors(hwnd);
+        }
     }
 
     /// Recompute columns, rows, cards, charts and the table hint.
@@ -587,6 +681,9 @@ impl AppState {
             self.sort_column,
             self.sort_descending,
         );
+        if self.authors_running {
+            self.refresh_hint();
+        }
     }
 
     /// Add this scan to the history, unless nothing moved since the last one;
