@@ -15,8 +15,12 @@ use crate::{cli, history, report, scan};
 pub const PROTOCOL: &str = "2024-11-05";
 
 /// One line of input in, one JSON-RPC answer out. `None` means the message was
-/// a notification, which is acted on but never answered.
+/// a notification, which is acted on but never answered. The working directory
+/// is canonicalised for the same reason the CLI resolves its own: the scan
+/// spells every path long-form, so a cwd carrying an 8.3 short name would
+/// never cut into a relative label.
 pub fn handle(line: &str, cwd: &Path) -> Option<String> {
+    let cwd = &scan::resolve_path(cwd);
     let request = match json::parse(line) {
         Ok(value) => value,
         Err(error) => {
