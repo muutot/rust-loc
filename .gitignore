@@ -13,3 +13,8 @@ node_modules/
 .idea/
 .vscode/
 .trae/
+
+# release exes restored locally for daily use; download them from GitHub Releases
+/rust-loc.exe
+/rust-loc-web.exe
+/rust-loc-mcp.exe
