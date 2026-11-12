@@ -50,6 +50,11 @@ pub fn with_state<R>(callback: impl FnOnce(&mut app::AppState) -> R) -> Option<R
     })
 }
 
+/// The window handle of one control, read without holding the state.
+fn state_of(id: i32) -> HWND {
+    with_state(|state| state.control(id)).unwrap_or(std::ptr::null_mut())
+}
+
 pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -794,29 +799,11 @@ fn layout_rects(hwnd: HWND, state: &mut app::AppState, width: i32, height: i32) 
         ));
         y += metrics.section;
         // Everything the sidebar stacks between the roots list and the
-        // language block, so the list can take whatever is left over.
-        let below_roots = metrics.button
-            + px(4)
-            + metrics.section
-            + metrics.control
-            + px(3)
-            + px(14)
-            + px(10)
-            + metrics.section
-            + metrics.check * 5
-            + px(2)
-            + metrics.section
-            + metrics.check * 3
-            + px(2)
-            + metrics.section
-            + metrics.control
-            + px(3)
-            + px(14)
-            + px(10)
-            + metrics.section
-            + metrics.control
-            + px(3)
-            + px(14);
+        // language block, so the list can take whatever is left over. The
+        // scope and report switches now live on panes of their own, so the
+        // summary is all the sidebar reports.
+        let below_roots =
+            metrics.button + px(4) + metrics.section + metrics.control + px(3) + px(14) + px(10);
         // The list takes whatever the sections below it leave, so the
         // sidebar has no dead space under the roots.
         let roots_height = (language_top - px(16) - (y + below_roots)).max(px(72));
@@ -856,89 +843,21 @@ fn layout_rects(hwnd: HWND, state: &mut app::AppState, width: i32, height: i32) 
 
         labels.push(label(
             rect(left, y, left + inner, y + metrics.section),
-            i18n::t().section_sources,
+            i18n::t().section_languages,
             paint::Ink::Section,
         ));
         y += metrics.section;
-        place_combo(
-            state,
-            app::ID_SOURCES,
-            left,
-            y,
-            inner,
-            px(theme::R_CONTROL),
-            px(200),
-        );
-        y += metrics.control + px(3) + px(14) + px(10);
-
+        // The sidebar only reports the selection: the languages themselves are
+        // ticked on their own pane, which has the room thirty two of them need.
         labels.push(label(
-            rect(left, y, left + inner, y + metrics.section),
-            i18n::t().section_scope,
-            paint::Ink::Section,
-        ));
-        y += metrics.section;
-        for id in [
-            app::ID_GITIGNORE,
-            app::ID_DEFAULT_IGNORES,
-            app::ID_TESTS,
-            app::ID_COMPLEXITY,
-            app::ID_ULOC,
-        ] {
-            unsafe { MoveWindow(state.control(id), left, y, inner, metrics.check, 1) };
-            y += metrics.check;
-        }
-        y += px(2);
-
-        labels.push(label(
-            rect(left, y, left + inner, y + metrics.section),
-            i18n::t().section_report,
-            paint::Ink::Section,
-        ));
-        y += metrics.section;
-        for id in [app::ID_EXCLUDE_GENERATED, app::ID_COCOMO, app::ID_AUTHORS] {
-            unsafe { MoveWindow(state.control(id), left, y, inner, metrics.check, 1) };
-            y += metrics.check;
-        }
-        y += px(2);
-
-        labels.push(label(
-            rect(left, y, left + inner, y + metrics.section),
-            i18n::t().section_exclude,
-            paint::Ink::Section,
-        ));
-        y += metrics.section;
-        place_field(
-            state,
-            app::ID_EXCLUDE,
             rect(left, y, left + inner, y + metrics.control),
-            px(theme::R_CONTROL),
-            true,
-        );
+            &state.options.sources.label(),
+            paint::Ink::Title,
+        ));
         y += metrics.control + px(3);
         labels.push(label(
             rect(left, y, left + inner, y + px(14)),
-            i18n::t().hint_exclude,
-            paint::Ink::Note,
-        ));
-        y += px(14) + px(10);
-
-        labels.push(label(
-            rect(left, y, left + inner, y + metrics.section),
-            i18n::t().section_extra_dirs,
-            paint::Ink::Section,
-        ));
-        y += metrics.section;
-        place_field(
-            state,
-            app::ID_EXTRA_DIRS,
-            rect(left, y, left + inner, y + metrics.control),
-            px(theme::R_CONTROL),
-            true,
-        );
-        y += metrics.control + px(3);
-        labels.push(label(
-            rect(left, y, left + inner, y + px(14)),
-            i18n::t().hint_extra_dirs,
+            i18n::t().source_summary_hint,
             paint::Ink::Note,
         ));
 
@@ -980,11 +899,347 @@ fn layout_rects(hwnd: HWND, state: &mut app::AppState, width: i32, height: i32) 
             );
         }
 
+        // ---- settings screen ---------------------------------------------
+        // A settings screen of its own: the second-level grouping runs down
+        // the left, the page in front fills the right, and a page that grows
+        // gets room instead of pushing the sidebar apart.
+        let settings_pane = state.group == model::Group::Settings;
+        // The page in front owns the whole content area, so every control that
+        // belongs to another page is hidden before this page draws its own.
+        if settings_pane {
+            for index in 0..model::SOURCE_LANGS.len() {
+                set_visible(state, app::source_box_id(index), false);
+            }
+            show_field(state, app::ID_SOURCE_FILTER, false);
+            set_visible(state, app::ID_SOURCE_ALL, false);
+            set_visible(state, app::ID_SOURCE_NONE, false);
+            for id in [
+                app::ID_GITIGNORE,
+                app::ID_DEFAULT_IGNORES,
+                app::ID_TESTS,
+                app::ID_COMPLEXITY,
+                app::ID_ULOC,
+                app::ID_EXCLUDE_GENERATED,
+                app::ID_COCOMO,
+                app::ID_AUTHORS,
+            ] {
+                set_visible(state, id, false);
+            }
+            for id in [
+                app::ID_EXCLUDE,
+                app::ID_EXTRA_DIRS,
+                app::ID_EXCLUDE_EXT,
+                app::ID_MAX_SIZE,
+            ] {
+                set_visible(state, id, false);
+                show_field(state, id, false);
+            }
+            // The Filters page owns these; a page switch inside the settings
+            // screen must hide them too, or they bleed onto the page in front.
+            set_visible(state, app::ID_EXTRA_LIST, false);
+            show_field(state, app::ID_EXTRA_LIST, false);
+            for id in [app::ID_EXTRA_ADD, app::ID_EXTRA_REMOVE] {
+                set_visible(state, id, false);
+            }
+        }
+        if settings_pane {
+            let nav_width = px(180);
+            let pane_left = table.left + px(14);
+            let pane_right = table.right - px(14);
+            let pane_inner = (pane_right - pane_left - nav_width - px(20)).max(px(120));
+            let content_left = pane_left + nav_width + px(20);
+            let content_top = table.top + px(12);
+            place_field(
+                state,
+                app::ID_SETTINGS_NAV,
+                rect(
+                    pane_left,
+                    content_top,
+                    pane_left + nav_width,
+                    table.bottom - px(16),
+                ),
+                px(theme::R_CONTROL),
+                false,
+            );
+            let nav = state.control(app::ID_SETTINGS_NAV);
+            send(nav, LB_SETITEMHEIGHT, 0, px(26) as isize);
+            labels.push(label(
+                rect(content_left, content_top, pane_right, content_top + px(24)),
+                state.settings_page.tab_title(),
+                paint::Ink::Section,
+            ));
+            labels.push(label(
+                rect(
+                    content_left,
+                    content_top + px(24),
+                    pane_right,
+                    content_top + px(44),
+                ),
+                state.settings_page.hint(),
+                paint::Ink::Note,
+            ));
+            let body_top = content_top + px(54);
+            match state.settings_page {
+                model::SettingsPage::Languages => {
+                    show_field(state, app::ID_SOURCE_FILTER, true);
+                    set_visible(state, app::ID_SOURCE_ALL, true);
+                    set_visible(state, app::ID_SOURCE_NONE, true);
+                    // The filter takes the width it needs and the bulk ticks
+                    // sit at the far end, so neither crowds the other out.
+                    let filter_width = px(260).min(pane_inner / 3);
+                    place_field(
+                        state,
+                        app::ID_SOURCE_FILTER,
+                        rect(
+                            content_left,
+                            body_top,
+                            content_left + filter_width,
+                            body_top + metrics.control,
+                        ),
+                        px(theme::R_CONTROL),
+                        true,
+                    );
+                    let mut bulk_left = pane_right;
+                    for id in [app::ID_SOURCE_NONE, app::ID_SOURCE_ALL] {
+                        let width = px(120);
+                        bulk_left -= width;
+                        unsafe {
+                            MoveWindow(
+                                state.control(id),
+                                bulk_left,
+                                body_top,
+                                width,
+                                metrics.control,
+                                1,
+                            )
+                        };
+                        bulk_left -= px(8);
+                    }
+                    // The grid is as wide as the content allows: a column is a
+                    // quarter of the room, so a wide window shows more of the
+                    // thirty two languages at a time.
+                    let grid_top = body_top + metrics.control + px(16);
+                    let columns = (pane_inner / px(260)).clamp(1, 4);
+                    let column_width = pane_inner / columns;
+                    let row_height = metrics.check + px(2);
+                    let mut column = 0usize;
+                    let mut row = 0usize;
+                    for (index, lang) in model::SOURCE_LANGS.iter().enumerate() {
+                        let id = app::source_box_id(index);
+                        if !source_matches(state, *lang) {
+                            set_visible(state, id, false);
+                            continue;
+                        }
+                        let x = content_left + column as i32 * column_width;
+                        let y = grid_top + row as i32 * row_height;
+                        unsafe {
+                            MoveWindow(state.control(id), x, y, column_width, metrics.check, 1)
+                        };
+                        set_visible(state, id, true);
+                        column += 1;
+                        if column >= columns as usize {
+                            column = 0;
+                            row += 1;
+                        }
+                    }
+                }
+                model::SettingsPage::Filters => {
+                    let row_height = metrics.check + px(2);
+                    place_check_grid(
+                        state,
+                        &[app::ID_GITIGNORE, app::ID_DEFAULT_IGNORES, app::ID_TESTS],
+                        content_left,
+                        body_top,
+                        pane_inner,
+                        row_height,
+                        px,
+                    );
+                    // Every field on this page keeps its own row, because each
+                    // one is a sentence long: the label, the field itself, then
+                    // the hint that says what the field takes.
+                    let half = pane_inner / 2;
+                    let field_width = half.max(px(240));
+                    let mut row = body_top + row_height + px(18);
+                    let rows: [(i32, &str, &str); 3] = [
+                        (
+                            app::ID_EXCLUDE,
+                            i18n::t().scope_exclude_label,
+                            i18n::t().hint_exclude,
+                        ),
+                        (
+                            app::ID_EXCLUDE_EXT,
+                            i18n::t().scope_ext_label,
+                            i18n::t().hint_exclude_ext,
+                        ),
+                        (
+                            app::ID_MAX_SIZE,
+                            i18n::t().scope_size_label,
+                            i18n::t().hint_max_size,
+                        ),
+                    ];
+                    for (id, title, hint) in rows {
+                        labels.push(label(
+                            rect(content_left, row, pane_right, row + metrics.section),
+                            title,
+                            paint::Ink::Section,
+                        ));
+                        place_field(
+                            state,
+                            id,
+                            rect(
+                                content_left,
+                                row + metrics.section,
+                                content_left + field_width,
+                                row + metrics.section + metrics.control,
+                            ),
+                            px(theme::R_CONTROL),
+                            true,
+                        );
+                        show_field(state, id, true);
+                        labels.push(label(
+                            rect(
+                                content_left,
+                                row + metrics.section + metrics.control + px(3),
+                                pane_right,
+                                row + metrics.section + metrics.control + px(17),
+                            ),
+                            hint,
+                            paint::Ink::Note,
+                        ));
+                        row += metrics.control + px(3) + px(14) + px(18);
+                    }
+                    // The ignored directories are a list rather than a field:
+                    // every name is visible at once, and the one a reader means
+                    // is the one they remove.
+                    labels.push(label(
+                        rect(content_left, row, pane_right, row + metrics.section),
+                        i18n::t().scope_extra_label,
+                        paint::Ink::Section,
+                    ));
+                    let list_top = row + metrics.section;
+                    let list_height = (metrics.check * 4).max(px(96));
+                    place_field(
+                        state,
+                        app::ID_EXTRA_LIST,
+                        rect(
+                            content_left,
+                            list_top,
+                            content_left + field_width,
+                            list_top + list_height,
+                        ),
+                        px(theme::R_CONTROL),
+                        false,
+                    );
+                    let extra = state.control(app::ID_EXTRA_LIST);
+                    send(extra, LB_SETITEMHEIGHT, 0, metrics.check as isize);
+                    show_field(state, app::ID_EXTRA_LIST, true);
+                    // Add takes the name from the field below the list, and
+                    // Remove takes the row the list has selected. Both sit
+                    // beside the list, so the list keeps its full height.
+                    let mut button_top = list_top;
+                    for (id, title) in [
+                        (app::ID_EXTRA_ADD, i18n::t().scope_dir_add),
+                        (app::ID_EXTRA_REMOVE, i18n::t().scope_dir_remove),
+                    ] {
+                        set_text(state.control(id), title);
+                        unsafe {
+                            MoveWindow(
+                                state.control(id),
+                                content_left + field_width + px(10),
+                                button_top,
+                                px(96),
+                                metrics.control,
+                                1,
+                            )
+                        };
+                        set_visible(state, id, true);
+                        button_top += metrics.control + px(6);
+                    }
+                    place_field(
+                        state,
+                        app::ID_EXTRA_DIRS,
+                        rect(
+                            content_left,
+                            list_top + list_height + px(8),
+                            content_left + field_width,
+                            list_top + list_height + px(8) + metrics.control,
+                        ),
+                        px(theme::R_CONTROL),
+                        true,
+                    );
+                    show_field(state, app::ID_EXTRA_DIRS, true);
+                    set_cue(state.control(app::ID_EXTRA_DIRS), i18n::t().scope_dir_cue);
+                    labels.push(label(
+                        rect(
+                            content_left,
+                            list_top + list_height + px(8) + metrics.control + px(3),
+                            pane_right,
+                            list_top + list_height + px(8) + metrics.control + px(17),
+                        ),
+                        i18n::t().hint_extra_dirs,
+                        paint::Ink::Note,
+                    ));
+                }
+                model::SettingsPage::Report => {
+                    place_check_grid(
+                        state,
+                        &[
+                            app::ID_COMPLEXITY,
+                            app::ID_ULOC,
+                            app::ID_EXCLUDE_GENERATED,
+                            app::ID_COCOMO,
+                            app::ID_AUTHORS,
+                        ],
+                        content_left,
+                        body_top,
+                        pane_inner,
+                        metrics.check + px(2),
+                        px,
+                    );
+                }
+            }
+        } else {
+            // Every other pane hides the settings screen's own chrome, so a
+            // control that belongs to no page can never bleed through.
+            set_visible(state, app::ID_SETTINGS_NAV, false);
+            show_field(state, app::ID_SETTINGS_NAV, false);
+            show_field(state, app::ID_SOURCE_FILTER, false);
+            set_visible(state, app::ID_SOURCE_ALL, false);
+            set_visible(state, app::ID_SOURCE_NONE, false);
+            for index in 0..model::SOURCE_LANGS.len() {
+                set_visible(state, app::source_box_id(index), false);
+            }
+            for id in [
+                app::ID_GITIGNORE,
+                app::ID_DEFAULT_IGNORES,
+                app::ID_TESTS,
+                app::ID_COMPLEXITY,
+                app::ID_ULOC,
+                app::ID_EXCLUDE_GENERATED,
+                app::ID_COCOMO,
+                app::ID_AUTHORS,
+            ] {
+                set_visible(state, id, false);
+            }
+            for id in [app::ID_EXCLUDE, app::ID_EXTRA_DIRS] {
+                set_visible(state, id, false);
+                show_field(state, id, false);
+            }
+            for id in [app::ID_EXCLUDE_EXT, app::ID_MAX_SIZE] {
+                set_visible(state, id, false);
+                show_field(state, id, false);
+            }
+            set_visible(state, app::ID_EXTRA_LIST, false);
+            show_field(state, app::ID_EXTRA_LIST, false);
+            for id in [app::ID_EXTRA_ADD, app::ID_EXTRA_REMOVE] {
+                set_visible(state, id, false);
+            }
+        }
         // ---- table card -------------------------------------------------
         let mut tab_rects = [RECT::default(); model::View::MAX_STRIP];
         let mut table_title_rect = RECT::default();
         let mut table_hint_rect = RECT::default();
-        if !overview {
+        if !overview && !settings_pane {
             let combo_width = px(88);
             let combo_left = table.right - px(14) - combo_width;
             let field_top = table.top + px(12);
@@ -1068,16 +1323,22 @@ fn layout_rects(hwnd: HWND, state: &mut app::AppState, width: i32, height: i32) 
             );
         }
         // Only the pane in front keeps its chrome: a table hides the charts,
-        // and the overview hides the table. Both are placed before this runs,
-        // so a pane that comes back is shown after it has been moved.
-        if state.overview_shown != Some(overview) {
+        // the overview hides the table, and a settings pane hides both for its
+        // own controls. Everything is placed before this runs, so a pane that
+        // comes back is shown after it has been moved.
+        if state.overview_shown != Some(overview) || state.sources_shown != Some(settings_pane) {
             state.overview_shown = Some(overview);
+            state.sources_shown = Some(settings_pane);
             set_visible(state, app::ID_BAR, overview);
             set_visible(state, app::ID_MODULES, overview);
             set_visible(state, app::ID_CARDS, overview);
-            set_visible(state, app::ID_LIST, !overview);
-            show_field(state, app::ID_FILTER, !overview);
-            show_field(state, app::ID_TOP, !overview);
+            set_visible(state, app::ID_LIST, !overview && !settings_pane);
+            show_field(state, app::ID_FILTER, !overview && !settings_pane);
+            show_field(state, app::ID_TOP, !overview && !settings_pane);
+            show_field(state, app::ID_SOURCE_FILTER, settings_pane);
+            set_visible(state, app::ID_SOURCE_ALL, settings_pane);
+            set_visible(state, app::ID_SOURCE_NONE, settings_pane);
+            show_field(state, app::ID_SETTINGS_NAV, settings_pane);
         }
         unsafe { ReleaseDC(hwnd, screen) };
         state.header_rect = header;
@@ -1133,17 +1394,24 @@ fn set_columns(state: &app::AppState) {
     let mut client = RECT::default();
     unsafe { GetClientRect(list, &mut client) };
     let px = |value: i32| state.theme.px(value);
+    let font = state.theme.fonts.mono;
+    // A table that numbers its rows leads with the number column, so the room
+    // it needs is settled before the counters share what is left.
+    let number_width = if state.view.numbers_rows() {
+        number_column_width(list, state.rows.len(), px, font, state.theme.fonts.header)
+    } else {
+        0
+    };
     let numeric: i32 = state
         .columns
         .iter()
         .filter(|column| !model::is_text_column(column.key))
         .map(|column| px(column.pixels()))
         .sum();
-    let available = (client.right - px(18) - numeric).max(px(180));
+    let available = (client.right - px(18) - numeric - number_width).max(px(180));
     // The text columns are measured instead of handed the slack: a column of
     // short author names stays as narrow as the names it shows, and the column
     // whose text is widest - the paths - takes the room that is left.
-    let font = state.theme.fonts.mono;
     let mut naturals = vec![(widest_row_text(list, &state.rows, font, None) + px(28)).max(px(180))];
     let mut cell = 0usize;
     for column in state.columns.iter() {
@@ -1163,8 +1431,17 @@ fn set_columns(state: &app::AppState) {
     // "Complexity..." is a broken column however well the counters fit.
     let header_font = state.theme.fonts.header;
     let header_dc = unsafe { GetWindowDC(list) };
-    let mut specs: Vec<(String, bool, i32)> =
-        vec![(state.view.label_title().to_string(), false, widths[0])];
+    // The label owns the column the list view writes its item text into, so a
+    // table that numbers its rows puts the number in front of it.
+    let mut specs: Vec<(String, bool, i32)> = Vec::new();
+    if state.view.numbers_rows() {
+        specs.push((
+            model::column_title(model::NUMBER_KEY).to_string(),
+            true,
+            number_width,
+        ));
+    }
+    specs.push((state.view.label_title().to_string(), false, widths[0]));
     let mut slot = 0usize;
     for (position, column) in state.columns.iter().enumerate() {
         let active = position as i32 == state.sort_column;
@@ -1210,6 +1487,32 @@ fn header_fit(dc: HDC, title: &str, font: HFONT, padding: i32) -> i32 {
     paint::measure(dc, title, font) + padding
 }
 
+/// Room the row-number column needs: the header that names it, and the widest
+/// number the table can show. A number the column clips is worse than one a
+/// little wider than its caption.
+fn number_column_width(
+    list: HWND,
+    rows: usize,
+    px: impl Fn(i32) -> i32,
+    font: HFONT,
+    header: HFONT,
+) -> i32 {
+    let dc = unsafe { GetWindowDC(list) };
+    let digits = rows.max(1).to_string();
+    let width = (paint::measure(dc, &digits, font) + px(28))
+        .max(header_fit(
+            dc,
+            model::column_title(model::NUMBER_KEY),
+            header,
+            px(18),
+        ))
+        .max(px(44));
+    if !dc.is_null() {
+        unsafe { ReleaseDC(list, dc) };
+    }
+    width
+}
+
 /// The widest text one column shows, measured the way the list measures it.
 ///
 /// `cell` picks the cell that lines up with a text column; `None` measures the
@@ -1250,49 +1553,60 @@ pub fn refresh_list(state: &mut app::AppState) {
     }
     send(list, WM_SETREDRAW, 0, 0);
     send(list, LVM_DELETEALLITEMS, 0, 0);
+    // The item's own text is the column that leads the row: the row number on
+    // the tables that number their rows, the label everywhere else.
+    let numbered = state.view.numbers_rows();
     for (position, index) in state.visible.iter().enumerate() {
         let Some(row) = state.rows.get(*index) else {
             continue;
         };
-        let mut label = wide(&row.label);
+        let lead = if numbered {
+            (position + 1).to_string()
+        } else {
+            row.label.clone()
+        };
+        let mut text = wide(&lead);
         let mut item: LVITEMW = unsafe { std::mem::zeroed() };
         item.mask = LVIF_TEXT;
         item.iItem = position as i32;
         item.iSubItem = 0;
-        item.pszText = label.as_mut_ptr();
+        item.pszText = text.as_mut_ptr();
         send(list, LVM_INSERTITEMW, 0, &item as *const LVITEMW as isize);
         let mut sub = 1;
+        if numbered {
+            // The number is the row's place in the table, which the filter and
+            // the limit have already said: every row after it shifts up one.
+            set_cell(list, position, sub, &row.label);
+            sub += 1;
+        }
         for value in row.cells.iter() {
-            let mut text = wide(&match value {
+            let text = match value {
                 model::Cell::Number(number) => model::human_int(*number as u64),
                 model::Cell::Text(value) => value.clone(),
-            });
-            let mut cell: LVITEMW = unsafe { std::mem::zeroed() };
-            cell.iSubItem = sub;
-            cell.pszText = text.as_mut_ptr();
-            send(
-                list,
-                LVM_SETITEMTEXTW,
-                position,
-                &cell as *const LVITEMW as isize,
-            );
+            };
+            set_cell(list, position, sub, &text);
             sub += 1;
         }
         if let Some(delta) = row.delta {
-            let mut text = wide(&model::delta_text(delta));
-            let mut cell: LVITEMW = unsafe { std::mem::zeroed() };
-            cell.iSubItem = sub;
-            cell.pszText = text.as_mut_ptr();
-            send(
-                list,
-                LVM_SETITEMTEXTW,
-                position,
-                &cell as *const LVITEMW as isize,
-            );
+            set_cell(list, position, sub, &model::delta_text(delta));
         }
     }
     send(list, WM_SETREDRAW, 1, 0);
     invalidate(list);
+}
+
+/// Write one sub-item of a row the list view already holds.
+fn set_cell(list: HWND, row: usize, sub: i32, text: &str) {
+    let mut buffer = wide(text);
+    let mut cell: LVITEMW = unsafe { std::mem::zeroed() };
+    cell.iSubItem = sub;
+    cell.pszText = buffer.as_mut_ptr();
+    send(
+        list,
+        LVM_SETITEMTEXTW,
+        row,
+        &cell as *const LVITEMW as isize,
+    );
 }
 
 pub fn refresh_status(state: &mut app::AppState) {
@@ -1302,7 +1616,13 @@ pub fn refresh_status(state: &mut app::AppState) {
     }
     let (summary, scope) = match &state.report {
         Some(report) => (
-            model::scan_status(report, state.elapsed),
+            // A setting that changed since this scan says so: the numbers on
+            // screen are the old ones until the scan button is pressed.
+            if state.stale {
+                i18n::t().stale_hint.to_string()
+            } else {
+                model::scan_status(report, state.elapsed)
+            },
             model::scope_line(&report.options, report.roots.len()),
         ),
         None => (state.status.clone(), String::new()),
@@ -1333,8 +1653,10 @@ pub fn set_busy(state: &app::AppState, busy: bool) {
         app::ID_SCAN,
         app::ID_EXPORT,
         app::ID_LANG,
-        app::ID_SOURCES,
-    ] {
+    ]
+    .into_iter()
+    .chain(app::settings_controls())
+    {
         let control = state.control(id);
         if !control.is_null() {
             let was_disabled = unsafe { EnableWindow(control, if busy { 0 } else { 1 }) } != 0;
@@ -1737,6 +2059,38 @@ fn create_controls(parent: HWND) -> (Vec<(i32, HWND)>, Vec<app::Field>) {
         app::ID_EXTRA_DIRS,
         create_field(parent, "EDIT", edit, app::ID_EXTRA_DIRS, 24, &mut fields),
     );
+    // The Filters page's own inputs: the extensions a scan skips, the cap on a
+    // single file's size, and the list of extra ignored directory names with
+    // the two buttons that add and remove an entry.
+    add(
+        app::ID_EXCLUDE_EXT,
+        create_field(parent, "EDIT", edit, app::ID_EXCLUDE_EXT, 24, &mut fields),
+    );
+    add(
+        app::ID_MAX_SIZE,
+        create_field(parent, "EDIT", edit, app::ID_MAX_SIZE, 24, &mut fields),
+    );
+    add(
+        app::ID_EXTRA_LIST,
+        create_field(
+            parent,
+            "LISTBOX",
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | WS_VSCROLL
+                | LBS_NOTIFY as u32
+                | LBS_NOINTEGRALHEIGHT as u32
+                | LBS_HASSTRINGS as u32
+                | LBS_OWNERDRAWFIXED as u32,
+            app::ID_EXTRA_LIST,
+            4 * 24,
+            &mut fields,
+        ),
+    );
+    for id in [app::ID_EXTRA_ADD, app::ID_EXTRA_REMOVE] {
+        add(id, create_child(parent, "BUTTON", "", button, 0, id, 26));
+    }
     add(
         app::ID_SCAN,
         create_child(
@@ -1766,9 +2120,48 @@ fn create_controls(parent: HWND) -> (Vec<(i32, HWND)>, Vec<app::Field>) {
         create_field(parent, "COMBOBOX", combo, app::ID_LANG, 200, &mut fields),
     );
     add(
-        app::ID_SOURCES,
-        create_field(parent, "COMBOBOX", combo, app::ID_SOURCES, 200, &mut fields),
+        app::ID_SOURCE_FILTER,
+        create_field(parent, "EDIT", edit, app::ID_SOURCE_FILTER, 24, &mut fields),
     );
+    // The settings screen's own navigation: the second-level grouping on its
+    // left, drawn like the scan-root list beside it.
+    add(
+        app::ID_SETTINGS_NAV,
+        create_field(
+            parent,
+            "LISTBOX",
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | WS_VSCROLL
+                | LBS_NOTIFY as u32
+                | LBS_NOINTEGRALHEIGHT as u32
+                | LBS_HASSTRINGS as u32
+                | LBS_OWNERDRAWFIXED as u32,
+            app::ID_SETTINGS_NAV,
+            3 * 26,
+            &mut fields,
+        ),
+    );
+    for id in [app::ID_SOURCE_ALL, app::ID_SOURCE_NONE] {
+        add(id, create_child(parent, "BUTTON", "", button, 0, id, 26));
+    }
+    // One owner drawn check box per language, in the order the pane draws
+    // them. Their labels are proper names, so they carry no translation.
+    for (index, lang) in model::SOURCE_LANGS.iter().enumerate() {
+        add(
+            app::source_box_id(index),
+            create_child(
+                parent,
+                "BUTTON",
+                lang.name(),
+                check,
+                0,
+                app::source_box_id(index),
+                22,
+            ),
+        );
+    }
     add(
         app::ID_FILTER,
         create_field(parent, "EDIT", edit, app::ID_FILTER, 24, &mut fields),
@@ -1854,10 +2247,10 @@ fn create_controls(parent: HWND) -> (Vec<(i32, HWND)>, Vec<app::Field>) {
         ) {
             track_button(*hwnd, *id);
         }
-        if matches!(*id, app::ID_LANG | app::ID_TOP | app::ID_SOURCES) {
+        if matches!(*id, app::ID_LANG | app::ID_TOP) {
             track_dropdown(*hwnd);
         }
-        if *id == app::ID_ROOTS {
+        if matches!(*id, app::ID_ROOTS | app::ID_EXTRA_LIST) {
             track_list(*hwnd);
         }
     }
@@ -1872,7 +2265,7 @@ fn apply_fonts(state: &app::AppState) {
     for (id, hwnd) in &state.controls {
         let font = match *id {
             app::ID_LIST => mono,
-            app::ID_ROOTS => small,
+            app::ID_ROOTS | app::ID_SETTINGS_NAV | app::ID_EXTRA_LIST => small,
             _ => base,
         };
         send(*hwnd, WM_SETFONT, font, 1);
@@ -1906,7 +2299,7 @@ fn browse_folder(hwnd: HWND) {
         let message = i18n::t().status_folder_listed;
         report_status(hwnd, message);
     }
-    schedule_rescan(hwnd);
+    mark_stale(hwnd);
 }
 
 /// Add every folder found on the clipboard to the scan roots.
@@ -1928,7 +2321,7 @@ fn paste_roots(hwnd: HWND) {
     };
     report_status(hwnd, &message);
     if added > 0 {
-        schedule_rescan(hwnd);
+        mark_stale(hwnd);
     }
 }
 
@@ -2167,18 +2560,142 @@ fn show_context_menu(hwnd: HWND, keyboard: bool) {
     }
 }
 
+/// Lay a row of check boxes out across a pane: as many columns as the width
+/// allows, each box as wide as its column, so a settings pane reads as a form
+/// rather than as the sidebar's single cramped column.
+fn place_check_grid(
+    state: &app::AppState,
+    ids: &[i32],
+    left: i32,
+    top: i32,
+    width: i32,
+    row_height: i32,
+    px: impl Fn(i32) -> i32,
+) {
+    let columns = (width / px(320)).clamp(1, 3);
+    let column_width = width / columns;
+    for (index, id) in ids.iter().enumerate() {
+        let column = index % columns as usize;
+        let row = index / columns as usize;
+        let x = left + column as i32 * column_width;
+        let y = top + row as i32 * row_height;
+        unsafe { MoveWindow(state.control(*id), x, y, column_width, px(25), 1) };
+        set_visible(state, *id, true);
+    }
+}
+/// The language pane's grid: whether a language survives the filter. A name
+/// is proper, so the match is case-insensitive against it, its slug and its
+/// extension.
+fn source_matches(state: &app::AppState, lang: crate::sources::Lang) -> bool {
+    let needle = state.source_filter.trim().to_ascii_lowercase();
+    if needle.is_empty() {
+        return true;
+    }
+    lang.name().to_ascii_lowercase().contains(&needle)
+        || lang.slug().contains(&needle)
+        || lang.extension().to_ascii_lowercase().contains(&needle)
+}
+
+/// Label the language pane's bulk ticks and give its filter box its cue.
+fn label_source_controls(state: &app::AppState) {
+    let t = i18n::t();
+    set_text(state.control(app::ID_SOURCE_ALL), t.settings_all);
+    set_text(state.control(app::ID_SOURCE_NONE), t.settings_none);
+    set_cue(state.control(app::ID_SOURCE_FILTER), t.settings_filter_cue);
+}
+
+/// Fill the settings screen's own navigation: one row per page, with the page
+/// in front selected the way the scan-root list selects its row.
+fn fill_settings_nav(state: &app::AppState) {
+    let nav = state.control(app::ID_SETTINGS_NAV);
+    if nav.is_null() {
+        return;
+    }
+    send(nav, LB_RESETCONTENT, 0, 0);
+    for page in model::SettingsPage::ALL {
+        let text = wide(page.tab_title());
+        send(nav, LB_ADDSTRING, 0, text.as_ptr() as isize);
+    }
+    send(nav, LB_SETITEMHEIGHT, 0, state.theme.px(26) as isize);
+    let row = state.settings_page.index() as isize;
+    send(nav, LB_SETCURSEL, row as usize, 0);
+}
+
+/// Redraw the list of extra ignored directory names.
+fn refresh_extra_dirs(state: &mut app::AppState) {
+    let list = state.control(app::ID_EXTRA_LIST);
+    if list.is_null() {
+        return;
+    }
+    send(list, LB_RESETCONTENT, 0, 0);
+    for name in &state.settings.extra_dirs {
+        let text = wide(name);
+        send(list, LB_ADDSTRING, 0, text.as_ptr() as isize);
+    }
+    invalidate_background(list);
+}
+
+/// The name the field beside the list holds, or nothing when it is blank.
+fn pending_dir_name() -> Option<String> {
+    let text = get_text(state_of(app::ID_EXTRA_DIRS));
+    let name = text.trim().to_string();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Add the typed directory name to the ignored list, unless it is already
+/// there: a name twice skips nothing extra and only clutters the list.
+fn add_extra_dir(hwnd: HWND) {
+    let Some(name) = pending_dir_name() else {
+        return;
+    };
+    let added = with_state(|state| {
+        if state.settings.extra_dirs.iter().any(|seen| seen == &name) {
+            false
+        } else {
+            state.settings.extra_dirs.push(name);
+            true
+        }
+    })
+    .unwrap_or(false);
+    if added {
+        with_state(|state| {
+            refresh_extra_dirs(state);
+            state.sync_options();
+        });
+        set_text(state_of(app::ID_EXTRA_DIRS), "");
+        mark_stale(hwnd);
+    }
+}
+
+/// Remove the selected directory name from the ignored list.
+fn remove_extra_dir(hwnd: HWND) {
+    let list = state_of(app::ID_EXTRA_LIST);
+    let index = send(list, LB_GETCURSEL, 0, 0);
+    if index < 0 {
+        return;
+    }
+    let removed = with_state(|state| {
+        let index = index as usize;
+        if index < state.settings.extra_dirs.len() {
+            state.settings.extra_dirs.remove(index);
+            true
+        } else {
+            false
+        }
+    })
+    .unwrap_or(false);
+    if removed {
+        with_state(|state| {
+            refresh_extra_dirs(state);
+            state.sync_options();
+        });
+        mark_stale(hwnd);
+    }
+}
 /// Fill the Top selector; only the row limit label is translatable.
 fn fill_top_combo(state: &app::AppState) {
     let all = i18n::t().top_all;
     combo_add_all(state.control(app::ID_TOP), &["100", "300", "1000", all]);
-}
-
-/// The source selector offers the languages a scan can read.
-fn fill_sources_combo(state: &app::AppState) {
-    let combo = state.control(app::ID_SOURCES);
-    for sources in model::SOURCE_CHOICES {
-        combo_add_all(combo, &[model::sources_label(sources)]);
-    }
 }
 
 /// The language selector always offers each language in its own script.
@@ -2216,6 +2733,17 @@ fn apply_language(hwnd: HWND) {
         set_text(state.control(app::ID_SCAN), i18n::t().button_scan);
         set_text(state.control(app::ID_EXPORT), i18n::t().button_export);
         set_cue(state.control(app::ID_FILTER), state.view.filter_cue());
+        label_source_controls(state);
+        // The Filters page's own buttons and cue follow the language too.
+        set_text(state.control(app::ID_EXTRA_ADD), i18n::t().scope_dir_add);
+        set_text(
+            state.control(app::ID_EXTRA_REMOVE),
+            i18n::t().scope_dir_remove,
+        );
+        set_cue(state.control(app::ID_EXTRA_DIRS), i18n::t().scope_dir_cue);
+        // The settings screen's navigation is re-filled so a page that changed
+        // language keeps the row it was on selected.
+        fill_settings_nav(state);
         let top = state.control(app::ID_TOP);
         let selected = combo_index(top).min(3);
         send(top, CB_RESETCONTENT, 0, 0);
@@ -2270,19 +2798,32 @@ fn on_create(hwnd: HWND) {
         state.set_check(app::ID_COCOMO, settings.cocomo);
         state.set_check(app::ID_AUTHORS, settings.authors);
         state.sync_options();
+        // The language boxes follow the scope the settings named, so the first
+        // paint and the first scan agree on what a scan reads.
+        state.set_source_checks(state.options.sources);
+        label_source_controls(state);
         set_text(state.control(app::ID_EXCLUDE), &settings.exclude);
-        set_text(state.control(app::ID_EXTRA_DIRS), &settings.extra_dirs);
+        set_text(state.control(app::ID_EXCLUDE_EXT), &settings.exclude_ext);
+        set_text(state.control(app::ID_MAX_SIZE), &settings.max_file_size);
+        set_text(state.control(app::ID_EXTRA_ADD), i18n::t().scope_dir_add);
+
+        set_cue(state.control(app::ID_EXTRA_DIRS), i18n::t().scope_dir_cue);
+        refresh_extra_dirs(state);
         set_text(state.control(app::ID_FILTER), &settings.filter);
         set_cue(state.control(app::ID_FILTER), state.view.filter_cue());
         fill_top_combo(state);
         combo_choose(state.control(app::ID_TOP), settings.top.min(3));
         fill_language_combo(state);
         combo_choose(state.control(app::ID_LANG), settings.lang.min(1));
-        fill_sources_combo(state);
-        combo_choose(
-            state.control(app::ID_SOURCES),
-            settings.sources.min(model::SOURCE_CHOICES.len() - 1),
-        );
+        fill_settings_nav(state);
+        // The settings page comes from the settings file, so a window that
+        // closed on a page opens on it again.
+        state.settings_page = model::SettingsPage::from_index(settings.settings_page);
+        // The language boxes are seeded before the options are read back, so
+        // the first paint and the first scan agree on the scope.
+        let sources = model::sources_of(&settings.sources);
+        state.options.sources = sources;
+        state.set_source_checks(sources);
         refresh_roots(state);
         let list = state.control(app::ID_LIST);
         let extended = LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP;
@@ -2460,6 +3001,22 @@ fn schedule_rescan(hwnd: HWND) {
     start_timer(hwnd, app::TIMER_RESCAN, 600);
 }
 
+/// A setting changed after the report in hand was scanned.
+///
+/// A setting never rescans by itself: it marks the report as out of date and
+/// asks for a scan, so a reader who is only looking at the numbers is not
+/// interrupted by a pass they did not ask for. The file watcher still
+/// refreshes on its own, because a file that changed *is* the tree changing.
+fn mark_stale(hwnd: HWND) {
+    with_state(|state| {
+        if state.report.is_some() && !state.scanning {
+            state.stale = true;
+            refresh_status(state);
+            repaint(state, hwnd);
+        }
+    });
+}
+
 pub fn start_scan(hwnd: HWND) {
     with_state(|state| {
         state.begin_scan();
@@ -2565,7 +3122,25 @@ unsafe extern "system" fn main_proc(
                             }
                         });
                         with_state(refresh_roots);
-                        schedule_rescan(hwnd);
+                        mark_stale(hwnd);
+                    }
+                }
+                id if app::is_source_box(id) => {
+                    // A language box ticks the language its id names; the last
+                    // ticked one refuses to go, so a scan always reads code.
+                    if code == BN_CLICKED {
+                        if let Some(index) = app::source_box_index(id) {
+                            with_state(|state| {
+                                state.toggle_source(index);
+                                state.sync_options();
+                                state.rebuild();
+                                reconfigure_list(state);
+                                refresh_status(state);
+                                repaint(state, hwnd);
+                            });
+                        }
+                        layout(hwnd);
+                        mark_stale(hwnd);
                     }
                 }
                 app::ID_GITIGNORE
@@ -2590,25 +3165,70 @@ unsafe extern "system" fn main_proc(
                             repaint(state, hwnd);
                         });
                         layout(hwnd);
-                        schedule_rescan(hwnd);
+                        mark_stale(hwnd);
                     }
                 }
-                app::ID_EXCLUDE | app::ID_EXTRA_DIRS => {
+                app::ID_EXCLUDE | app::ID_EXTRA_DIRS | app::ID_EXCLUDE_EXT | app::ID_MAX_SIZE => {
                     if code == EN_CHANGE {
                         with_state(|state| {
                             state.sync_options();
                             invalidate(hwnd);
                         });
-                        schedule_rescan(hwnd);
+                        mark_stale(hwnd);
                     }
                 }
-                app::ID_SOURCES => {
-                    if code == CBN_SELCHANGE {
+                app::ID_EXTRA_ADD => {
+                    if code == BN_CLICKED {
+                        add_extra_dir(hwnd);
+                    }
+                }
+                app::ID_EXTRA_REMOVE => {
+                    if code == BN_CLICKED {
+                        remove_extra_dir(hwnd);
+                    }
+                }
+                app::ID_SETTINGS_NAV => {
+                    // A row of the settings screen's own navigation carries
+                    // the reader to the page it names.
+                    if code == LBN_SELCHANGE {
+                        let row = send(state_of(app::ID_SETTINGS_NAV), LB_GETCURSEL, 0, 0);
+                        let page = model::SettingsPage::from_index(row.max(0) as usize);
                         with_state(|state| {
-                            state.sync_options();
-                            invalidate(hwnd);
+                            state.settings_page = page;
+                            state.settings.settings_page = page.index();
                         });
-                        schedule_rescan(hwnd);
+                        layout(hwnd);
+                        invalidate(hwnd);
+                    }
+                }
+                app::ID_SOURCE_FILTER => {
+                    if code == EN_CHANGE {
+                        with_state(|state| {
+                            state.source_filter = get_text(state.control(app::ID_SOURCE_FILTER));
+                        });
+                        // The grid is placed from the filter, so the boxes
+                        // that survive it close the gaps the hidden ones left.
+                        layout(hwnd);
+                        invalidate(hwnd);
+                    }
+                }
+                app::ID_SOURCE_ALL | app::ID_SOURCE_NONE => {
+                    if code == BN_CLICKED {
+                        let all = id == app::ID_SOURCE_ALL;
+                        with_state(|state| {
+                            // Clearing every language is refused: a scan
+                            // always reads something, so the first language of
+                            // the list stays ticked.
+                            for index in 0..model::SOURCE_LANGS.len() {
+                                let on = all || index == 0;
+                                state.set_check(app::source_box_id(index), on);
+                            }
+                            state.sync_options();
+                            state.rebuild();
+                            reconfigure_list(state);
+                            refresh_status(state);
+                        });
+                        invalidate(hwnd);
                     }
                 }
                 app::ID_TOP => {
@@ -2678,7 +3298,7 @@ unsafe extern "system" fn main_proc(
                 return 1;
             }
             if (*item).CtlType == ODT_BUTTON
-                && matches!(
+                && (matches!(
                     (*item).CtlID as i32,
                     app::ID_GITIGNORE
                         | app::ID_DEFAULT_IGNORES
@@ -2688,7 +3308,7 @@ unsafe extern "system" fn main_proc(
                         | app::ID_EXCLUDE_GENERATED
                         | app::ID_COCOMO
                         | app::ID_AUTHORS
-                )
+                ) || app::is_source_box((*item).CtlID as i32))
             {
                 with_state(|state| {
                     let on = state.check((*item).CtlID as i32);
@@ -2698,10 +3318,16 @@ unsafe extern "system" fn main_proc(
             }
             with_state(|state| {
                 let style = match (*item).CtlID as i32 {
+                    // A setting changed after the last scan: the scan button
+                    // is the one with work behind it.
+                    app::ID_SCAN if state.stale => Some(paint::ButtonStyle::AccentWaiting),
                     app::ID_SCAN => Some(paint::ButtonStyle::Accent),
-                    app::ID_EXPORT | app::ID_ADD_FOLDER | app::ID_ADD_PATH | app::ID_REMOVE => {
-                        Some(paint::ButtonStyle::Ghost)
-                    }
+                    app::ID_EXPORT
+                    | app::ID_ADD_FOLDER
+                    | app::ID_ADD_PATH
+                    | app::ID_REMOVE
+                    | app::ID_SOURCE_ALL
+                    | app::ID_SOURCE_NONE => Some(paint::ButtonStyle::Ghost),
                     _ => None,
                 };
                 match style {
@@ -2763,8 +3389,7 @@ unsafe extern "system" fn main_proc(
                 if !info.is_null() {
                     with_state(|state| {
                         // A list view's header reports itself with an id of zero, so
-                        // it is recognised by its window. Its first item is the
-                        // label column and the report's columns follow it.
+                        // it is recognised by its window.
                         let header = send(state.control(app::ID_LIST), LVM_GETHEADER, 0, 0) as HWND;
                         if header.is_null()
                             || (*info).hdr.hwndFrom != header
@@ -2772,7 +3397,11 @@ unsafe extern "system" fn main_proc(
                         {
                             return;
                         }
-                        let column = model::header_item_column((*info).iItem);
+                        // The row-number column counts the rows instead of ranking
+                        // them, so its header is the one click the table ignores.
+                        let Some(column) = state.view.header_item_column((*info).iItem) else {
+                            return;
+                        };
                         if column == state.sort_column {
                             state.sort_descending = !state.sort_descending;
                         } else {
@@ -3030,7 +3659,11 @@ fn persist(hwnd: HWND) {
         settings.exclude_generated = state.check(app::ID_EXCLUDE_GENERATED);
         settings.cocomo = state.check(app::ID_COCOMO);
         settings.exclude = get_text(state.control(app::ID_EXCLUDE));
-        settings.extra_dirs = get_text(state.control(app::ID_EXTRA_DIRS));
+        // The ignored names live in the list, which `add_extra_dir` and
+        // `remove_extra_dir` already keep in the settings; the field beside it
+        // only holds the name being typed.
+        settings.exclude_ext = get_text(state.control(app::ID_EXCLUDE_EXT));
+        settings.max_file_size = get_text(state.control(app::ID_MAX_SIZE));
         settings.view = state.view.index();
         settings.group = state.group.index();
         settings.top = combo_selection(state.control(app::ID_TOP));
@@ -3056,6 +3689,7 @@ fn default_export_name(format: crate::options::Format) -> &'static str {
         crate::options::Format::Csv => "rust-loc.csv",
         crate::options::Format::Markdown => "rust-loc.md",
         crate::options::Format::Svg => "rust-loc.svg",
+        crate::options::Format::Html => "rust-loc.html",
         crate::options::Format::Text => "rust-loc.txt",
     }
 }

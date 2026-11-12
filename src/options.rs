@@ -18,6 +18,7 @@ pub enum Format {
     Csv,
     Markdown,
     Svg,
+    Html,
 }
 
 impl Format {
@@ -34,6 +35,7 @@ impl Format {
             "csv" => Some(Format::Csv),
             "markdown" | "md" => Some(Format::Markdown),
             "svg" => Some(Format::Svg),
+            "html" => Some(Format::Html),
             _ => None,
         }
     }
@@ -49,6 +51,13 @@ pub struct Options {
     /// Which source languages the scan reads. Defaults to Rust alone, so an
     /// existing invocation keeps the numbers it always reported.
     pub sources: sources::Sources,
+    /// File extensions a scan skips, the way an editor's "excluded file types"
+    /// does: `min.js`, `lock`, `map`. A name without a dot is taken as the
+    /// extension itself.
+    pub exclude_ext: BTreeSet<String>,
+    /// Files larger than this many megabytes are skipped whole, so one
+    /// generated blob cannot decide what the report says. 0 disables the cap.
+    pub max_file_size_mb: u64,
     pub include_tests: bool,
     pub exclude: Vec<String>,
     pub ignore_dirs: BTreeSet<String>,
@@ -73,6 +82,8 @@ pub struct Options {
     pub smells: bool,
     /// Rank files by complexity times how often git says they change.
     pub hotspots: bool,
+    /// Count the file pairs that keep sharing commits (change coupling).
+    pub coupling: bool,
     /// Add cognitive complexity, Halstead volume and the maintainability
     /// index to the report.
     pub metrics: bool,
@@ -101,6 +112,8 @@ pub struct Options {
     pub baseline: Option<baseline::Snapshot>,
     /// Append this scan to a history file and chart the series.
     pub history: Option<PathBuf>,
+    /// Classify what changed between two git revisions.
+    pub diff: Option<(String, String)>,
     /// 0 means "use every available core".
     pub jobs: usize,
 }
@@ -117,6 +130,8 @@ impl Default for Options {
             top: 0,
             show_excluded: false,
             sources: sources::Sources::default(),
+            exclude_ext: BTreeSet::new(),
+            max_file_size_mb: 0,
             include_tests: false,
             exclude: Vec::new(),
             ignore_dirs: scan::default_ignore_dirs(),
@@ -133,6 +148,7 @@ impl Default for Options {
             cocomo_params: cocomo::ORGANIC,
             smells: false,
             hotspots: false,
+            coupling: false,
             metrics: false,
             languages: false,
             duplicates: false,
@@ -147,6 +163,7 @@ impl Default for Options {
             snapshot: None,
             baseline: None,
             history: None,
+            diff: None,
             jobs: 0,
         }
     }

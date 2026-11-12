@@ -33,7 +33,10 @@ OPTIONS:
     --snapshot <PATH>        save this scan for a later --baseline diff
     --baseline <PATH>        compare with a snapshot from --snapshot
     --history <PATH>         append this scan to a history file and chart it
-    --format <FORMAT>        output format: text, json, csv, markdown, svg [default: text]
+    --diff <A> <B>           classify what changed between two git revisions
+                             (A..B also works), in code, comment and blank
+    --format <FORMAT>        output format: text, json, csv, markdown, svg,
+                             html [default: text]
     --json                   alias for --format json
     --badge                  print a README badge instead of a report
     --badge-metric <NAME>    figure the badge shows: code, lines, files,
@@ -46,8 +49,15 @@ OPTIONS:
     --top <N>                limit listings to N rows
     --show-excluded          list excluded test-only files
     --include-tests          count test code too
-    --sources <LANG>         source languages to read: rust, python, all
-                             [default: rust]
+    --sources <LANGS>        source languages to read, comma separated or
+                             repeated: rust, python, go, java, typescript,
+                             c, cpp, csharp, kotlin, swift, ruby, php, dart,
+                             zig, lua, haskell, ocaml, shell, sql, css,
+                             makefile, dockerfile, ... all [default: rust]
+    --exclude-ext <EXT>      skip files with this extension (repeatable, and
+                             comma separated: min.js,lock,map)
+    --max-file-size <MB>     skip files larger than this many megabytes
+                             [default: 0, no cap]
     --exclude <GLOB>         exclude paths (repeatable)
     --ignore-dir <NAME>      skip directories with this name (repeatable)
     --no-ignore-dirs         do not skip the default ignored directories
@@ -72,7 +82,10 @@ OPTIONS:
     --cocomo                 add a COCOMO cost estimate
     --cocomo-project-type <T>  organic, semi-detached, embedded, custom
     --cocomo-params <a,b,c,d>  custom COCOMO coefficients
-    --fail-if <SPEC>         exit 1 when METRIC OP VALUE fails (repeatable)
+    --fail-if <SPEC>         exit 1 when METRIC OP VALUE fails (repeatable);
+                             METRIC can be fn_complexity for the worst single
+                             function, which a '// rust-loc: forgives' comment
+                             on the line above exempts
     --ci                     print gate failures as GitHub annotations,
                              pointing at the file (and function) to blame
     --jobs <N>               analysis threads [default: all cores]
@@ -154,12 +167,13 @@ fn config_request(arguments: &[String]) -> Result<(Option<String>, bool), String
 
 /// Flags that eat the argument after them, so the pre-pass can tell a scan
 /// root apart from a flag value.
-const VALUE_FLAGS: [&str; 20] = [
+const VALUE_FLAGS: [&str; 24] = [
     "--badge-metric",
     "--badge-label",
     "--snapshot",
     "--baseline",
     "--history",
+    "--diff",
     "--root",
     "--config",
     "--format",
@@ -167,6 +181,9 @@ const VALUE_FLAGS: [&str; 20] = [
     "--top",
     "--jobs",
     "--exclude",
+    "--exclude-ext",
+    "--ignore-ext",
+    "--max-file-size",
     "--ignore-dir",
     "--fail-if",
     "--min-gen-line-length",
@@ -236,6 +253,7 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
     let mut ignore_dirs_given: BTreeSet<String> = BTreeSet::new();
     let mut no_ignore_dirs = false;
     let mut json_alias = false;
+    let mut sources_given = false;
     if let Some(loaded) = &config {
         loaded.apply(&mut options)?;
         ignore_dirs_given.extend(loaded.ignore_dirs.iter().cloned());
@@ -291,21 +309,62 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                 let value = take(arguments, &mut index, "--history")?;
                 options.history = Some(resolve_path(&value, cwd));
             }
+            "--diff" => {
+                let value = take(arguments, &mut index, "--diff")?;
+                // "A..B" spells a range the way git log does; two separate
+                // values spell it the way git diff does.
+                options.diff = Some(match value.split_once("..") {
+                    Some((a, b)) => (a.to_string(), b.to_string()),
+                    None => {
+                        let b = take(arguments, &mut index, "--diff")?;
+                        (value, b)
+                    }
+                });
+            }
             "--by-file" | "--per-file" => options.by_file = true,
             "--by-module" => options.by_module = true,
             "--show-excluded" => options.show_excluded = true,
             "--include-tests" => options.include_tests = true,
             "--sources" | "--source" => {
                 let value = take(arguments, &mut index, "--sources")?;
-                options.sources = Sources::parse(&value).ok_or_else(|| {
-                    format!("--sources needs one of rust, python or all, got {}", value)
+                // A comma separated list, and every repetition adds to the
+                // selection rather than replacing it, so a polyglot scan is
+                // spelled the way it is read. The first one replaces whatever
+                // the config file asked for.
+                let parsed = Sources::parse(&value).ok_or_else(|| {
+                    format!(
+                        "--sources needs a language name, a comma separated list or all, got {}",
+                        value
+                    )
                 })?;
+                options.sources = if sources_given {
+                    options.sources.union(parsed)
+                } else {
+                    parsed
+                };
+                sources_given = true;
             }
             "--uloc" => options.uloc = true,
+            "--exclude-ext" | "--ignore-ext" => {
+                for name in take(arguments, &mut index, "--exclude-ext")?
+                    .split(',')
+                    .map(|name| name.trim().trim_start_matches('.').to_ascii_lowercase())
+                    .filter(|name| !name.is_empty())
+                {
+                    options.exclude_ext.insert(name);
+                }
+            }
+            "--max-file-size" => {
+                let value = take(arguments, &mut index, "--max-file-size")?;
+                options.max_file_size_mb = value
+                    .parse::<u64>()
+                    .map_err(|_| format!("--max-file-size needs a number, got {}", value))?;
+            }
             "--no-complexity" => options.complexity = false,
             "--functions" => options.functions = true,
             "--smells" => options.smells = true,
             "--hotspots" => options.hotspots = true,
+            "--coupling" => options.coupling = true,
             "--metrics" => options.metrics = true,
             "--languages" | "--langs" => options.languages = true,
             "--duplicates" | "--dup" => options.duplicates = true,
@@ -408,6 +467,15 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                 let value = &other["--history=".len()..];
                 options.history = Some(resolve_path(value, cwd));
             }
+            other if other.starts_with("--diff=") => {
+                let value = &other["--diff=".len()..];
+                options.diff = Some(
+                    value
+                        .split_once("..")
+                        .map(|(a, b)| (a.to_string(), b.to_string()))
+                        .ok_or_else(|| "--diff=A..B is the only = form".to_string())?,
+                );
+            }
             other if other.starts_with("--format=") => {
                 let value = &other["--format=".len()..];
                 options.format =
@@ -420,6 +488,21 @@ pub fn parse(arguments: &[String], cwd: &Path) -> Result<Invocation, String> {
                     return Err(format!("unknown sort key: {}", value));
                 }
                 options.sort = value.to_string();
+            }
+            other if other.starts_with("--sources=") || other.starts_with("--source=") => {
+                let value = other.split_once('=').map(|(_, value)| value).unwrap_or("");
+                let parsed = Sources::parse(value).ok_or_else(|| {
+                    format!(
+                        "--sources needs a language name, a comma separated list or all, got {}",
+                        value
+                    )
+                })?;
+                options.sources = if sources_given {
+                    options.sources.union(parsed)
+                } else {
+                    parsed
+                };
+                sources_given = true;
             }
             other if other.starts_with("--top-functions=") => {
                 let value = &other["--top-functions=".len()..];
@@ -560,9 +643,18 @@ fn check_gates(
         return Ok((String::new(), 0));
     }
     let files = report.business.len() as u32;
+    let fn_complexity = if options
+        .fail_if
+        .iter()
+        .any(|rule| rule.metric == gate::Metric::FnComplexity)
+    {
+        Some(gate::max_function_complexity(report, options.include_tests).unwrap_or(0))
+    } else {
+        None
+    };
     let mut failures: Vec<(gate::Gate, f64)> = Vec::new();
     for rule in &options.fail_if {
-        let value = rule.value(&report.summary, files, report.uloc_total)?;
+        let value = rule.value(&report.summary, files, report.uloc_total, fn_complexity)?;
         if rule.violated(value) {
             failures.push((*rule, value));
         }
@@ -573,7 +665,7 @@ fn check_gates(
     let mut text = String::new();
     if options.ci {
         for (rule, value) in &failures {
-            let location = match rule.metric.blame(report, cwd) {
+            let location = match rule.metric.blame(report, cwd, options.include_tests) {
                 Some(spot) => spot.annotation(),
                 None => String::new(),
             };
@@ -586,7 +678,7 @@ fn check_gates(
         text.push_str("Quality gate failed\n");
         for (rule, value) in &failures {
             text.push_str(&format!("  {}\n", rule.message(*value)));
-            if let Some(spot) = rule.metric.blame(report, cwd) {
+            if let Some(spot) = rule.metric.blame(report, cwd, options.include_tests) {
                 text.push_str(&format!("    worst: {}\n", spot.label()));
             }
         }

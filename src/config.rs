@@ -10,6 +10,7 @@
 //! shape - is an error naming the file, the line and the key, so a typo never
 //! silently changes a report.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::cocomo;
@@ -35,6 +36,8 @@ pub struct Config {
     pub gitignore: Option<bool>,
     pub include_tests: Option<bool>,
     pub sources: Option<crate::sources::Sources>,
+    pub exclude_ext: BTreeSet<String>,
+    pub max_file_size_mb: Option<u64>,
     pub exclude_generated: Option<bool>,
     pub mark_generated: Option<bool>,
     pub min_gen_line_length: Option<usize>,
@@ -84,9 +87,15 @@ impl Config {
             authors,
             cocomo,
             min_gen_line_length,
+            max_file_size_mb,
             top,
             jobs,
         );
+        // The list valued keys only ever add to what the config asked for, the
+        // way the repeatable command line flags do.
+        for name in &self.exclude_ext {
+            options.exclude_ext.insert(name.clone());
+        }
         if let Some(value) = self.top_functions {
             options.top_functions = value;
         }
@@ -257,11 +266,42 @@ fn apply(
         ("scope", "gitignore") => config.gitignore = Some(boolean()?),
         ("scope", "include_tests") => config.include_tests = Some(boolean()?),
         ("scope", "sources") => {
-            let name = string()?;
-            config.sources = Some(crate::sources::Sources::parse(&name).ok_or_else(|| {
-                let message = format!("unknown source selection `{}`", name);
-                error(&path, line, &message)
-            })?);
+            // One quoted string naming a language, a comma separated list, an
+            // array of names, or `all`: whichever spelling the team prefers.
+            let items = match string_list(&path, line, &key, value) {
+                Ok(items) => items,
+                Err(_) => vec![string()?],
+            };
+            let name = items.join(",");
+            config.sources = Some(
+                crate::sources::Sources::parse(&name)
+                    .filter(|selection| !selection.is_empty())
+                    .ok_or_else(|| {
+                        let message = format!("unknown source selection `{}`", name);
+                        error(&path, line, &message)
+                    })?,
+            );
+        }
+        ("scope", "exclude_ext") => {
+            let items = match string_list(&path, line, &key, value) {
+                Ok(items) => items,
+                Err(_) => vec![string()?],
+            };
+            for name in items {
+                for name in name.split(',') {
+                    let name = name.trim().trim_start_matches('.').to_ascii_lowercase();
+                    if !name.is_empty() {
+                        config.exclude_ext.insert(name);
+                    }
+                }
+            }
+        }
+        ("scope", "max_file_size") => {
+            config.max_file_size_mb = Some(
+                count()?
+                    .try_into()
+                    .map_err(|_| error(&path, line, "`max_file_size` is too large"))?,
+            );
         }
         ("scope", "exclude_generated") => config.exclude_generated = Some(boolean()?),
         ("scope", "mark_generated") => config.mark_generated = Some(boolean()?),

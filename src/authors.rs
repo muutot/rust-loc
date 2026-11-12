@@ -18,7 +18,6 @@ use crate::git;
 use crate::options::Options;
 use crate::scan::{self, Entry, Progress, Stage};
 use crate::sources::Lang;
-use crate::{lexer, pylexer};
 
 /// The per-line classes, in the shape the report counts them.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +84,7 @@ pub struct FileShare {
 }
 
 /// Everything `--authors` collected.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Authors {
     /// False when no scanned file lives in a git repository.
     pub available: bool,
@@ -198,6 +197,27 @@ impl Blamed {
     }
 }
 
+/// Case-insensitive path prefix check. Git echoes the toplevel with its own
+/// casing, which need not match how the user spelled the scan root (a drive
+/// letter, a differently cased folder), and with forward slashes where the
+/// scan carries Windows separators; both sides are normalised before the
+/// comparison, and a component boundary is still required.
+fn starts_with_ci(path: &Path, prefix: &Path) -> bool {
+    let path = path.to_string_lossy().replace('\\', "/");
+    let prefix = prefix
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string();
+    if path.len() < prefix.len() || !path[..prefix.len()].eq_ignore_ascii_case(&prefix) {
+        return false;
+    }
+    match path[prefix.len()..].chars().next() {
+        None => true,
+        Some(c) => c == '/',
+    }
+}
+
 /// The repository every entry lives in, asked once per directory so a tree
 /// costs one `rev-parse` per folder instead of one per file.
 fn repo_tops(targets: &[Target]) -> Vec<Option<PathBuf>> {
@@ -208,7 +228,7 @@ fn repo_tops(targets: &[Target]) -> Vec<Option<PathBuf>> {
         .map(|target| {
             if let Some(root) = roots
                 .iter()
-                .find(|root| target.path.starts_with(root.as_path()))
+                .find(|root| starts_with_ci(&target.path, root.as_path()))
             {
                 return Some(root.clone());
             }
@@ -218,7 +238,7 @@ fn repo_tops(targets: &[Target]) -> Vec<Option<PathBuf>> {
             }
             let found = scan::run_git(dir, &["rev-parse", "--show-toplevel"])
                 .map(|text| PathBuf::from(text.trim()))
-                .filter(|root| root.is_dir() && target.path.starts_with(root));
+                .filter(|root| root.is_dir() && starts_with_ci(&target.path, root));
             if let Some(root) = &found {
                 roots.push(root.clone());
             }
@@ -255,7 +275,9 @@ fn blame_all(
     if total == 0 {
         return results;
     }
-    let workers = options.worker_count().max(1).min(total);
+    // Each worker only waits on a git child process, so oversubscribe the
+    // pool: four slots per core keeps every spawned git busy without thrashing.
+    let workers = options.worker_count().saturating_mul(4).max(1).min(total);
     if workers <= 1 || total < 4 {
         for (index, slot) in results.iter_mut().enumerate() {
             *slot = blame(index);
@@ -311,6 +333,11 @@ fn blame_file(top: &Path, target: &Target, options: &Options) -> Blamed {
     let mut shares: Vec<Share> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for (position, (name, email)) in authors.iter().enumerate() {
+        // git's pseudo author for uncommitted lines is not a person; those
+        // lines stay unattributed instead of inventing an author row.
+        if name == "Not Committed Yet" {
+            continue;
+        }
         let Some(class) = classes.get(position) else {
             break;
         };
@@ -357,10 +384,7 @@ fn classify(path: &Path, lang: Lang) -> Vec<Line> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    let analysis = match lang {
-        Lang::Rust => lexer::analyze(&text),
-        Lang::Python => pylexer::analyze(&text),
-    };
+    let analysis = lang.analyze(&text);
     let mut out = Vec::with_capacity(analysis.total);
     for index in 0..analysis.total {
         let kind = if analysis.code[index] {

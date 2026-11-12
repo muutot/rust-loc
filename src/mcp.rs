@@ -59,7 +59,7 @@ fn failure(id: &Value, code: i32, message: &str) -> String {
 }
 
 /// What the client is told the server is for, in one paragraph.
-const INSTRUCTIONS: &str = "rust-loc counts source lines with test code excluded (Rust by default; set \"sources\" to \"python\" or \"all\"). Use `scan` for a tree's counters (business code, comments, blank lines, complexity, smells, per-file rows), `gate` to check budgets such as \"code>100000\", and `history` to read the series a previous `--history` run recorded.";
+const INSTRUCTIONS: &str = "rust-loc counts source lines with test code excluded (Rust by default; set \"sources\" to \"python\", \"go,java\" or \"all\"). Use `scan` for a tree's counters (business code, comments, blank lines, complexity, smells, per-file rows), `gate` to check budgets such as \"code>100000\", and `history` to read the series a previous `--history` run recorded.";
 
 fn initialize(params: &Value) -> String {
     // Answer with the revision the client asked for: the tools use nothing
@@ -90,8 +90,8 @@ fn initialize(params: &Value) -> String {
 const SCOPE_PROPERTIES: &str = concat!(
     "\"roots\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},",
     "\"description\":\"Directories to scan; defaults to the server working directory.\"},",
-    "\"sources\":{\"type\":\"string\",\"enum\":[\"rust\",\"python\",\"all\"],",
-    "\"description\":\"Source languages to read; Rust by default.\"},",
+    "\"sources\":{\"type\":\"string\",",
+    "\"description\":\"Source languages to read: one name, a comma separated list, or all; Rust by default.\"},",
     "\"include_tests\":{\"type\":\"boolean\",\"description\":\"Count test code as well.\"},",
     "\"exclude\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},",
     "\"description\":\"Glob patterns to skip.\"},",
@@ -114,7 +114,7 @@ const SCOPE_PROPERTIES: &str = concat!(
     "\"cocomo\":{\"type\":\"boolean\",\"description\":\"Add a COCOMO cost estimate.\"}"
 );
 
-const SCAN_DESCRIPTION: &str = "Count the business code of a directory (Rust, or Python with \"sources\") and return the report: files, lines, blank, comment, code, test, physical, complexity, unsafe, test_fns and, when asked for, ULOC, smells, function metrics, language shares, duplicates, hotspots, author shares and an estimate. JSON by default.";
+const SCAN_DESCRIPTION: &str = "Count the business code of a directory (Rust, or any selection of the languages `sources` names) and return the report: files, lines, blank, comment, code, test, physical, complexity, unsafe, test_fns and, when asked for, ULOC, smells, function metrics, language shares, duplicates, hotspots, author shares and an estimate. JSON by default.";
 const GATE_DESCRIPTION: &str = "Check quality budgets against a scan. Every rule is written METRIC OP VALUE, for example \"code>100000\" or \"complexity>=5000\", and the answer names the file (and function) to blame for each failure.";
 const HISTORY_DESCRIPTION: &str = "Read a scan history written by `--history` or by the window and return the series, its sparkline and the change since the previous scan.";
 
@@ -204,12 +204,24 @@ fn gate_tool(arguments: &Value, cwd: &Path) -> Result<String, String> {
     }
     let (report, options) = run(&args, cwd)?;
     let mut failed = false;
+    let fn_complexity = if options
+        .fail_if
+        .iter()
+        .any(|rule| rule.metric == crate::gate::Metric::FnComplexity)
+    {
+        Some(
+            crate::gate::max_function_complexity(&report, options.include_tests).unwrap_or(0),
+        )
+    } else {
+        None
+    };
     let mut items: Vec<String> = Vec::with_capacity(options.fail_if.len());
     for rule in &options.fail_if {
         let value = rule.value(
             &report.summary,
             report.business.len() as u32,
             report.uloc_total,
+            fn_complexity,
         )?;
         let violated = rule.violated(value);
         failed |= violated;
@@ -223,7 +235,7 @@ fn gate_tool(arguments: &Value, cwd: &Path) -> Result<String, String> {
                 "worst",
                 if violated {
                     rule.metric
-                        .blame(&report, cwd)
+                        .blame(&report, cwd, options.include_tests)
                         .map(|spot| json::quote(&spot.label()))
                         .unwrap_or_else(|| "null".to_string())
                 } else {
@@ -282,7 +294,7 @@ fn history_tool(arguments: &Value, cwd: &Path) -> Result<String, String> {
 }
 
 /// The switches a tool argument can turn on, in the order they are printed.
-const SWITCHES: [(&str, &str); 13] = [
+const SWITCHES: [(&str, &str); 14] = [
     ("include_tests", "--include-tests"),
     ("exclude_generated", "--exclude-generated"),
     ("mark_generated", "--mark-generated"),
@@ -293,6 +305,7 @@ const SWITCHES: [(&str, &str); 13] = [
     ("languages", "--languages"),
     ("duplicates", "--duplicates"),
     ("hotspots", "--hotspots"),
+    ("coupling", "--coupling"),
     ("authors", "--authors"),
     ("by_file", "--by-file"),
     ("cocomo", "--cocomo"),

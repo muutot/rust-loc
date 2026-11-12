@@ -63,7 +63,7 @@ pub fn parse_numstat(text: &str) -> HashMap<String, Churn> {
 
 /// True for the `%H` line git prints ahead of each commit's file stats: a
 /// bare object id and nothing else. Numstat rows always carry a tab.
-fn is_commit_header(line: &str) -> bool {
+pub(crate) fn is_commit_header(line: &str) -> bool {
     matches!(line.len(), 40 | 64) && line.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
@@ -82,15 +82,44 @@ pub fn churn(root: &Path) -> Option<(PathBuf, HashMap<String, Churn>)> {
     Some((toplevel, parse_numstat(&log)))
 }
 
-/// Path of `path` below the repository root, with forward slashes.
+/// Path of `path` below the repository root, with forward slashes. The
+/// comparison is case-insensitive, and both sides are normalised to forward
+/// slashes first: the scan root arrives with Windows separators while git
+/// prints the toplevel with POSIX ones, and a byte-wise prefix test on the
+/// raw strings would fail on every file for exactly that reason.
 pub fn repo_relative(path: &Path, toplevel: &Path) -> Option<String> {
-    let rest = path.strip_prefix(toplevel).ok()?;
-    Some(scan::posix(rest))
+    let path = path.to_string_lossy().replace('\\', "/");
+    let top = toplevel
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string();
+    if path.len() < top.len() || !path[..top.len()].eq_ignore_ascii_case(&top) {
+        return None;
+    }
+    let rest = path[top.len()..].trim_start_matches('/');
+    if rest.is_empty() {
+        return None;
+    }
+    Some(rest.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The web UI stores roots with Windows separators while `git rev-parse
+    /// --show-toplevel` prints forward slashes; the relative-path cut must
+    /// normalise both sides or every file drops out of the hotspot ranking.
+    #[test]
+    fn repo_relative_matches_windows_and_posix_separators() {
+        let path = Path::new(r"B:\Program\Project\Open\rust-loc\src\git.rs");
+        let top = Path::new("B:/Program/Project/Open/rust-loc");
+        assert_eq!(
+            repo_relative(path, top).as_deref(),
+            Some("src/git.rs")
+        );
+    }
 
     const HEAD_A: &str = "1111111111111111111111111111111111111111";
     const HEAD_B: &str = "2222222222222222222222222222222222222222";

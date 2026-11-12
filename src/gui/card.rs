@@ -113,7 +113,7 @@ fn layout(painter: &mut dyn Painter, report: &Report, options: &Options, cwd: &P
         Style::Body,
         muted(),
         Anchor::Right,
-        heading,
+        &heading,
     );
     y += 40;
     let roots: Vec<String> = report

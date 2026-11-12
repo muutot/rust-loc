@@ -7,7 +7,6 @@
 mod app;
 mod card;
 mod dialog;
-mod i18n;
 mod model;
 mod paint;
 mod scan;
@@ -15,6 +14,10 @@ mod sys;
 mod theme;
 mod watch;
 mod window;
+
+/// The UI language catalog is shared with the web front end, so it lives at
+/// the crate root and is re-exported here under its old path.
+pub use crate::i18n;
 
 /// Create the main window and pump messages until it closes.
 pub fn run() -> i32 {

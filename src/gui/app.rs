@@ -36,8 +36,76 @@ pub const ID_VEIL: i32 = 1021;
 pub const ID_LANG: i32 = 1022;
 pub const ID_EXCLUDE_GENERATED: i32 = 1023;
 pub const ID_COCOMO: i32 = 1024;
-pub const ID_SOURCES: i32 = 1025;
 pub const ID_AUTHORS: i32 = 1026;
+/// The language pane's own controls: its filter, the two bulk ticks and the
+/// one check box per language the counts can read.
+pub const ID_SOURCE_FILTER: i32 = 1027;
+pub const ID_SOURCE_ALL: i32 = 1028;
+pub const ID_SOURCE_NONE: i32 = 1029;
+/// The settings screen's own navigation: the second-level grouping on its
+/// left, one row per page.
+pub const ID_SETTINGS_NAV: i32 = 1062;
+/// The Filters page's own controls: the extensions a scan skips, the cap on a
+/// single file's size, and the list of extra ignored directory names.
+pub const ID_EXCLUDE_EXT: i32 = 1063;
+pub const ID_MAX_SIZE: i32 = 1064;
+pub const ID_EXTRA_LIST: i32 = 1065;
+pub const ID_EXTRA_ADD: i32 = 1066;
+pub const ID_EXTRA_REMOVE: i32 = 1067;
+/// The first language check box; the rest follow it in `model::SOURCE_LANGS`
+/// order, so a language's box is `ID_SOURCE_FIRST + index`.
+pub const ID_SOURCE_FIRST: i32 = 1030;
+/// The check box a language at `index` ticks.
+pub const fn source_box_id(index: usize) -> i32 {
+    ID_SOURCE_FIRST + index as i32
+}
+
+/// The language a check box id ticks, when it ticks one.
+pub fn source_box_index(id: i32) -> Option<usize> {
+    let offset = id - ID_SOURCE_FIRST;
+    (0..model::SOURCE_LANGS.len() as i32)
+        .contains(&offset)
+        .then_some(offset as usize)
+}
+
+/// Whether a control id is one of the language pane's check boxes.
+pub const fn is_source_box(id: i32) -> bool {
+    id >= ID_SOURCE_FIRST && (id - ID_SOURCE_FIRST) < model::SOURCE_LANGS.len() as i32
+}
+
+/// Every control the settings screen owns, so a scan can gate them together.
+pub fn settings_controls() -> Vec<i32> {
+    let mut ids = vec![ID_SETTINGS_NAV];
+    ids.extend(source_controls());
+    ids.extend([
+        ID_GITIGNORE,
+        ID_DEFAULT_IGNORES,
+        ID_TESTS,
+        ID_COMPLEXITY,
+        ID_ULOC,
+        ID_EXCLUDE_GENERATED,
+        ID_COCOMO,
+        ID_AUTHORS,
+        ID_EXCLUDE,
+        ID_EXTRA_DIRS,
+        ID_EXCLUDE_EXT,
+        ID_MAX_SIZE,
+        ID_EXTRA_LIST,
+        ID_EXTRA_ADD,
+        ID_EXTRA_REMOVE,
+    ]);
+    ids
+}
+
+/// The controls one language check box owns: its filter, its two bulk ticks
+/// and every language row.
+pub fn source_controls() -> Vec<i32> {
+    let mut ids = vec![ID_SOURCE_FILTER, ID_SOURCE_ALL, ID_SOURCE_NONE];
+    for index in 0..model::SOURCE_LANGS.len() {
+        ids.push(source_box_id(index));
+    }
+    ids
+}
 
 /// Commands reachable from the keyboard, dispatched through an accelerator table.
 pub const ID_ACCEL_SCAN: i32 = 1100;
@@ -113,9 +181,17 @@ pub const CHECK_BOXES: [i32; 8] = [
     ID_AUTHORS,
 ];
 
+/// Every check box the shell owns: the sidebar's own, then one per language in
+/// the order `model::SOURCE_LANGS` lists them, so a language's flag always
+/// sits at `CHECK_BOXES.len() + index`.
+pub const CHECK_SLOTS: usize = CHECK_BOXES.len() + model::SOURCE_LANGS.len();
+
 /// The slot an owner drawn check box fills in the state check table.
 fn check_slot(id: i32) -> Option<usize> {
-    CHECK_BOXES.iter().position(|candidate| *candidate == id)
+    if let Some(slot) = CHECK_BOXES.iter().position(|candidate| *candidate == id) {
+        return Some(slot);
+    }
+    source_box_index(id).map(|offset| CHECK_BOXES.len() + offset)
 }
 
 /// A framed input: `frame` paints the rounded surface and `control` sits
@@ -155,6 +231,18 @@ pub struct AppState {
     /// until the first layout, which has to place the controls whatever the
     /// pane is: they are all created visible.
     pub overview_shown: Option<bool>,
+    /// Whether the language pane, rather than a table or the charts, is the
+    /// one on show. None until the first layout, for the same reason.
+    pub sources_shown: Option<bool>,
+    /// What the language pane's filter box says; every language whose name
+    /// does not carry it is hidden until it is cleared.
+    pub source_filter: String,
+    /// The page of the settings screen in front.
+    pub settings_page: model::SettingsPage,
+    /// Whether a setting changed after the report in hand was scanned. A
+    /// setting never rescans by itself: the scan button is what brings the
+    /// report up to date, and this is what asks for it.
+    pub stale: bool,
     pub sort_column: i32,
     pub sort_descending: bool,
     pub scanning: bool,
@@ -206,8 +294,9 @@ pub struct AppState {
     /// light up, since they get no hover state of their own.
     pub hot: i32,
     /// The owner drawn check boxes. A box keeps no state of its own, so the
-    /// app carries the flag its painter reads back.
-    pub checks: [bool; CHECK_BOXES.len()],
+    /// app carries the flag its painter reads back: the sidebar's own boxes
+    /// first, then one per language.
+    pub checks: [bool; CHECK_SLOTS],
 }
 
 impl AppState {
@@ -235,7 +324,7 @@ impl AppState {
             exclude: model::parse_list(&settings.exclude),
             ignore_dirs: configured_ignore_dirs(&settings),
             gitignore: settings.gitignore,
-            sources: model::sources_at(settings.sources),
+            sources: model::sources_of(&settings.sources),
             format: format_at(settings.format),
             ..Options::default()
         };
@@ -287,6 +376,10 @@ impl AppState {
             group,
             group_views,
             overview_shown: None,
+            sources_shown: None,
+            source_filter: String::new(),
+            settings_page: model::SettingsPage::Languages,
+            stale: false,
             sort_column,
             sort_descending,
             scanning: false,
@@ -319,7 +412,7 @@ impl AppState {
             group_rects: [RECT::default(); model::Group::ALL.len()],
             fields: Vec::new(),
             hot: 0,
-            checks: [false; CHECK_BOXES.len()],
+            checks: [false; CHECK_SLOTS],
         }
     }
 
@@ -373,9 +466,32 @@ impl AppState {
         }
     }
 
+    /// Tick every language box from a selection, so the pane and the scope
+    /// agree from the moment the window opens.
+    pub fn set_source_checks(&mut self, selection: crate::sources::Sources) {
+        for (index, lang) in model::SOURCE_LANGS.iter().enumerate() {
+            let on = selection.contains(*lang);
+            self.checks[CHECK_BOXES.len() + index] = on;
+        }
+    }
+
+    /// Tick or untick one language of the pane's checklist. The last ticked
+    /// language stays ticked, so a scan always has something to read.
+    pub fn toggle_source(&mut self, index: usize) {
+        if model::SOURCE_LANGS.get(index).is_none() {
+            return;
+        }
+        let on = self.checks[CHECK_BOXES.len() + index];
+        if on && self.options.sources.languages().len() <= 1 {
+            return;
+        }
+        self.checks[CHECK_BOXES.len() + index] = !on;
+        self.sync_options();
+    }
+
     /// Read every scope widget back into the scan options. The check boxes
     /// draw themselves, so their flags come from the app rather than from the
-    /// control.
+    /// control: the sidebar's own boxes, then one per language.
     pub fn sync_options(&mut self) {
         self.options.include_tests = self.check(ID_TESTS);
         self.options.complexity = self.check(ID_COMPLEXITY);
@@ -384,16 +500,31 @@ impl AppState {
         self.options.cocomo = self.check(ID_COCOMO);
         self.options.authors = self.check(ID_AUTHORS);
         self.options.gitignore = self.check(ID_GITIGNORE);
-        self.options.sources = model::sources_at(window::combo_index(self.control(ID_SOURCES)));
+        // The languages are a set, the way `--sources` spells one. A scan
+        // always reads something, so an empty selection keeps what it had.
+        let mut selection = crate::sources::Sources::NONE;
+        for (index, lang) in model::SOURCE_LANGS.iter().enumerate() {
+            if self.check(source_box_id(index)) {
+                selection.insert(*lang);
+            }
+        }
+        if !selection.is_empty() {
+            self.options.sources = selection;
+        }
+        self.options.exclude_ext =
+            parse_extensions(&window::get_text(self.control(ID_EXCLUDE_EXT)));
+        self.options.max_file_size_mb = window::get_text(self.control(ID_MAX_SIZE))
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(0);
         let defaults = self.check(ID_DEFAULT_IGNORES);
-        let extra = model::parse_list(&window::get_text(self.control(ID_EXTRA_DIRS)));
         let mut dirs: BTreeSet<String> = if defaults {
             crate::scan::default_ignore_dirs()
         } else {
             BTreeSet::new()
         };
-        for name in extra {
-            dirs.insert(name);
+        for name in &self.settings.extra_dirs {
+            dirs.insert(name.clone());
         }
         self.options.ignore_dirs = dirs;
         self.options.exclude = model::parse_list(&window::get_text(self.control(ID_EXCLUDE)));
@@ -447,6 +578,7 @@ impl AppState {
             return;
         }
         self.sync_options();
+        self.stale = false;
         let roots = self.roots_paths();
         let missing: Vec<String> = self
             .roots
@@ -487,12 +619,15 @@ impl AppState {
         self.settings.cocomo = self.options.cocomo;
         self.settings.authors = self.options.authors;
         self.settings.exclude = window::get_text(self.control(ID_EXCLUDE));
-        self.settings.extra_dirs = window::get_text(self.control(ID_EXTRA_DIRS));
+        // The extension and size fields keep their raw text, so a value the
+        // scanner has not parsed yet still survives a restart.
+        self.settings.exclude_ext = window::get_text(self.control(ID_EXCLUDE_EXT));
+        self.settings.max_file_size = window::get_text(self.control(ID_MAX_SIZE));
         self.settings.view = self.view.index();
         self.settings.group = self.group.index();
         self.settings.sort_column = self.sort_column;
         self.settings.sort_descending = self.sort_descending;
-        self.settings.sources = model::sources_index(self.options.sources);
+        self.settings.sources = model::sources_slugs(self.options.sources);
         self.scanning = true;
         self.progress_done = 0;
         self.progress_total = 0;
@@ -843,6 +978,15 @@ impl AppState {
     }
 }
 
+/// Extension names from the field a reader typed, lower cased and without
+/// their leading dot, so `min.js`, `.MIN.JS` and `min.js, lock` all parse.
+pub fn parse_extensions(text: &str) -> BTreeSet<String> {
+    text.split(|c: char| c == ',' || c.is_whitespace())
+        .map(|name| name.trim().trim_start_matches('.').to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
 /// Ignored directory names from the persisted scope switches.
 fn configured_ignore_dirs(settings: &model::Settings) -> BTreeSet<String> {
     let mut dirs = if settings.default_ignores {
@@ -850,8 +994,8 @@ fn configured_ignore_dirs(settings: &model::Settings) -> BTreeSet<String> {
     } else {
         BTreeSet::new()
     };
-    for name in model::parse_list(&settings.extra_dirs) {
-        dirs.insert(name);
+    for name in &settings.extra_dirs {
+        dirs.insert(name.clone());
     }
     dirs
 }

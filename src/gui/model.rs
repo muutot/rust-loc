@@ -27,11 +27,21 @@ pub enum Group {
     Overview,
     /// The line counters: per file, module, function and smell.
     Code,
+    /// The settings screen: a second-level grouping on the left, the settings
+    /// of the group in front on the right.
+    Settings,
 }
 
 impl Group {
-    /// Every pane, in the order its strip shows them.
-    pub const ALL: [Group; 3] = [Group::Overview, Group::Authors, Group::Code];
+    /// Every pane, in the order its strip shows them. The three that came
+    /// first keep their index, so a settings file an older build wrote still
+    /// opens on the pane it named.
+    pub const ALL: [Group; 4] = [
+        Group::Overview,
+        Group::Authors,
+        Group::Code,
+        Group::Settings,
+    ];
 
     /// Caption of one pane in the strip above the content.
     pub fn tab_title(self) -> &'static str {
@@ -40,6 +50,7 @@ impl Group {
             Group::Authors => t.tab_authors,
             Group::Overview => t.group_overview,
             Group::Code => t.group_code,
+            Group::Settings => t.group_settings,
         }
     }
 
@@ -52,6 +63,61 @@ impl Group {
             .iter()
             .position(|group| *group == self)
             .unwrap_or(2)
+    }
+}
+
+/// The second-level grouping inside the settings screen. Each page owns the
+/// settings that belong together, so a reader finds one thing where they look
+/// for it instead of scrolling a form that grew.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SettingsPage {
+    /// Which languages a scan reads.
+    Languages,
+    /// What a scan reads and what it skips.
+    Filters,
+    /// What the report adds on top of the counters.
+    Report,
+}
+
+impl SettingsPage {
+    /// Every page, in the order the settings screen lists them.
+    pub const ALL: [SettingsPage; 3] = [
+        SettingsPage::Languages,
+        SettingsPage::Filters,
+        SettingsPage::Report,
+    ];
+
+    /// Caption of one page in the settings screen's own strip.
+    pub fn tab_title(self) -> &'static str {
+        let t = i18n::t();
+        match self {
+            SettingsPage::Languages => t.group_languages,
+            SettingsPage::Filters => t.group_filters,
+            SettingsPage::Report => t.group_report,
+        }
+    }
+
+    /// The sentence under the page caption, naming what the page holds.
+    pub fn hint(self) -> &'static str {
+        let t = i18n::t();
+        match self {
+            SettingsPage::Languages => t.languages_hint,
+            SettingsPage::Filters => t.filters_hint,
+            SettingsPage::Report => t.report_hint,
+        }
+    }
+
+    pub fn from_index(index: usize) -> SettingsPage {
+        *SettingsPage::ALL
+            .get(index)
+            .unwrap_or(&SettingsPage::Languages)
+    }
+
+    pub fn index(self) -> usize {
+        SettingsPage::ALL
+            .iter()
+            .position(|page| *page == self)
+            .unwrap_or(0)
     }
 }
 
@@ -94,13 +160,13 @@ impl View {
         View::AuthorTotals,
     ];
 
-    /// The tables one pane can show, in strip order. The overview pane has
-    /// none: its charts are not tables.
+    /// The tables one pane can show, in strip order. The overview and the
+    /// settings screens have none: their content is not a table.
     pub fn strip(group: Group) -> &'static [View] {
         match group {
             Group::Authors => &View::AUTHOR_STRIP,
             Group::Code => &View::CODE_STRIP,
-            Group::Overview => &[],
+            Group::Overview | Group::Settings => &[],
         }
     }
 
@@ -131,6 +197,31 @@ impl View {
     /// author tally has one row per person, so there is no file behind it.
     pub fn opens_files(self) -> bool {
         self != View::AuthorTotals
+    }
+
+    /// Whether the table leads with a column of row numbers, so a reader can
+    /// point at a row the way a report or a chart names one.
+    pub fn numbers_rows(self) -> bool {
+        self == View::AuthorTotals
+    }
+
+    /// The column a click on a header item sorts on, or `None` when the item
+    /// sorts nothing.
+    ///
+    /// The label column owns item zero and the report's own columns follow it.
+    /// A table that numbers its rows puts the number column in front of the
+    /// label, and that column counts the rows instead of ranking them, so the
+    /// one click it takes is the one the table ignores.
+    pub fn header_item_column(self, item: i32) -> Option<i32> {
+        if self.numbers_rows() {
+            if item == 0 {
+                None
+            } else {
+                Some(item - 2)
+            }
+        } else {
+            Some(item - 1)
+        }
     }
 
     pub fn label_title(self) -> &'static str {
@@ -243,9 +334,18 @@ pub fn column_title(key: &str) -> &'static str {
         "files" => t.col_files,
         "author" => t.col_author,
         "delta" => t.col_delta,
+        "no" => t.col_index,
         _ => "",
     }
 }
+
+/// Key of the row-number column the tables that number their rows lead with.
+///
+/// It is the one column whose text is table state rather than report data: a
+/// number is the row's place in the table, which the filter and the limit
+/// say, so the shell writes it while it fills the table instead of reading it
+/// out of a `Row`.
+pub const NUMBER_KEY: &str = "no";
 
 const TABLE_COLUMNS: [Column; 7] = [
     Column {
@@ -457,12 +557,6 @@ pub fn flex_widths(natural: &[i32], available: i32) -> Vec<i32> {
     widths
 }
 
-/// The sort column a header item stands for. The label owns item zero, so the
-/// report's own columns are the items after it.
-pub fn header_item_column(item: i32) -> i32 {
-    item - 1
-}
-
 /// Column a tab sorts on until the user clicks a header: worst first for the
 /// function list, most code first for the file and module lists.
 pub fn default_sort(view: View) -> (i32, bool) {
@@ -583,16 +677,7 @@ pub fn delta_text(value: i64) -> String {
 
 /// Split pasted roots: Windows paths may contain commas, so only `;` and
 /// newlines separate them.
-pub fn parse_paths(text: &str) -> Vec<String> {
-    let mut result: Vec<String> = Vec::new();
-    for part in text.split([';', '\r', '\n']) {
-        let token = part.trim().trim_matches('"').trim();
-        if !token.is_empty() && !result.iter().any(|seen| seen == token) {
-            result.push(token.to_string());
-        }
-    }
-    result
-}
+pub use crate::settings::parse_paths;
 
 pub fn display_path(path: &Path, cwd: &Path) -> String {
     scan::relative(path, cwd)
@@ -983,16 +1068,7 @@ fn sorted_clause(view: View, report: &Report, column: i32, descending: bool) -> 
 }
 
 /// Split a free-form field into unique globs or directory names.
-pub fn parse_list(text: &str) -> Vec<String> {
-    let mut result: Vec<String> = Vec::new();
-    for part in text.split([',', ';', ' ', '\t', '\r', '\n']) {
-        let token = part.trim();
-        if !token.is_empty() && !result.iter().any(|seen| seen == token) {
-            result.push(token.to_string());
-        }
-    }
-    result
-}
+pub use crate::settings::parse_list;
 
 /// Stable value sort on top of an ascending label order. A text cell sorts by
 /// its text, which is how the location column reads; the trailing delta column
@@ -1105,7 +1181,7 @@ pub fn summary_cards(report: Option<&Report>, options: &Options) -> Vec<Card> {
                 t.hint_files_scanned,
                 &[
                     ("n", human_int(report.entries.len() as u64)),
-                    ("ext", i18n::extensions(sources).to_string()),
+                    ("ext", i18n::extensions(sources)),
                 ],
             ),
         },
@@ -1178,7 +1254,7 @@ pub fn summary_cards(report: Option<&Report>, options: &Options) -> Vec<Card> {
         key: "test_fns",
         label: t.card_test_fns,
         value: human_int(totals.test_fns as u64),
-        hint: i18n::test_item(sources).to_string(),
+        hint: i18n::test_item(sources),
     });
     if report.options.uloc {
         let total = report.uloc_total.unwrap_or(0) as u64;
@@ -1286,6 +1362,11 @@ pub fn scope_line(options: &Options, roots: usize) -> String {
             &[("n", options.ignore_dirs.len().to_string())],
         ),
     ];
+    // A scan that reads something other than Rust says so, the way the report
+    // does, so the status bar never claims the wrong language.
+    if options.sources != crate::sources::Sources::RUST {
+        parts.push(options.sources.label());
+    }
     if !options.exclude.is_empty() {
         parts.push(fill(
             t.scope_excludes,
@@ -1316,6 +1397,12 @@ pub fn cli_command(report: &Report, cwd: &Path) -> String {
     for name in options.ignore_dirs.difference(&defaults) {
         parts.push("--ignore-dir".to_string());
         parts.push(quote_arg(name));
+    }
+    // A selection other than Rust-only has to be spelled out, or the command
+    // a reader copies would scan a different tree than the one on screen.
+    if options.sources != crate::sources::Sources::RUST {
+        parts.push("--sources".to_string());
+        parts.push(options.sources.slug());
     }
     if options.include_tests {
         parts.push("--include-tests".to_string());
@@ -1353,6 +1440,7 @@ pub fn cli_command(report: &Report, cwd: &Path) -> String {
         Format::Csv => parts.push("--csv".to_string()),
         Format::Markdown => parts.push("--markdown".to_string()),
         Format::Svg => parts.push("--format svg".to_string()),
+        Format::Html => parts.push("--format html".to_string()),
         Format::Text => {}
     }
     parts.join(" ")
@@ -1378,21 +1466,14 @@ pub struct Spark {
 
 /// Where the history of a root set lives: beside the settings, one file per
 /// tree, so switching projects does not splice two series together.
-pub fn history_path(roots: &[String]) -> PathBuf {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for root in roots {
-        for byte in root.trim().to_lowercase().bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        hash ^= u64::from(b'/');
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    if roots.is_empty() {
-        return settings_path().with_file_name("history.tsv");
-    }
-    settings_path().with_file_name(format!("history-{hash:016x}.tsv"))
-}
+pub use crate::settings::history_path;
+
+/// Persisted UI state, shared with the web front end: the struct and its
+/// key=value file live in `crate::settings` so both shells read the same file.
+pub use crate::settings::{
+    load_settings, save_settings, settings_path, sources_of, sources_slugs, Settings,
+    SOURCE_LANGS,
+};
 
 /// The sparkline card for the recorded scans, or None while there is nothing
 /// to compare: one sample is a point, not a trend.
@@ -1416,200 +1497,6 @@ pub fn history_trend(history: &history::History) -> Option<Spark> {
         ),
         values,
     })
-}
-
-/// Persisted UI state; a tiny key=value file, no serialisation dependency.
-#[derive(Clone)]
-pub struct Settings {
-    pub roots: String,
-    pub gitignore: bool,
-    pub default_ignores: bool,
-    pub include_tests: bool,
-    pub complexity: bool,
-    pub uloc: bool,
-    pub exclude_generated: bool,
-    pub cocomo: bool,
-    pub authors: bool,
-    pub exclude: String,
-    pub extra_dirs: String,
-    pub view: usize,
-    /// The pane the window opens on. The tables keep the index they had, so a
-    /// file written before the panes existed cannot land on the wrong one.
-    pub group: usize,
-    pub top: usize,
-    pub format: usize,
-    pub lang: usize,
-    pub filter: String,
-    pub sort_column: i32,
-    pub sort_descending: bool,
-    pub sources: usize,
-    pub window: Option<(i32, i32, i32, i32)>,
-}
-
-impl Default for Settings {
-    fn default() -> Settings {
-        Settings {
-            roots: String::new(),
-            gitignore: true,
-            default_ignores: true,
-            include_tests: false,
-            complexity: true,
-            uloc: false,
-            exclude_generated: false,
-            cocomo: false,
-            authors: false,
-            exclude: String::new(),
-            extra_dirs: String::new(),
-            view: 0,
-            group: Group::Code.index(),
-            top: 1,
-            format: 0,
-            lang: i18n::system_lang().index(),
-            filter: String::new(),
-            sort_column: 3,
-            sort_descending: true,
-            sources: 0,
-            window: None,
-        }
-    }
-}
-
-pub fn settings_path() -> PathBuf {
-    let base = std::env::var("APPDATA")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            std::env::var("USERPROFILE")
-                .ok()
-                .map(|home| format!("{home}\\AppData\\Roaming"))
-        })
-        .unwrap_or_else(|| ".".to_string());
-    Path::new(&base).join("rust-loc").join("ui.ini")
-}
-
-/// The source-language selector, in the order the combo offers it.
-pub const SOURCE_CHOICES: [crate::sources::Sources; 3] = [
-    crate::sources::Sources::Rust,
-    crate::sources::Sources::Python,
-    crate::sources::Sources::All,
-];
-
-/// The selection a saved index names, clamped to a known choice.
-pub fn sources_at(index: usize) -> crate::sources::Sources {
-    SOURCE_CHOICES[index.min(SOURCE_CHOICES.len() - 1)]
-}
-
-/// The index a selection sits at in the combo.
-pub fn sources_index(sources: crate::sources::Sources) -> usize {
-    SOURCE_CHOICES
-        .iter()
-        .position(|candidate| *candidate == sources)
-        .unwrap_or(0)
-}
-
-/// The label a choice shows in the combo. Proper names, so untranslated.
-pub fn sources_label(sources: crate::sources::Sources) -> &'static str {
-    match sources {
-        crate::sources::Sources::Rust => "Rust",
-        crate::sources::Sources::Python => "Python",
-        crate::sources::Sources::All => "Rust + Python",
-    }
-}
-
-pub fn load_settings() -> Settings {
-    let mut settings = Settings::default();
-    let Ok(text) = std::fs::read_to_string(settings_path()) else {
-        return settings;
-    };
-    for line in text.lines() {
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let flag = value.trim() == "1";
-        match key.trim() {
-            "roots" => settings.roots = value.trim().to_string(),
-            "gitignore" => settings.gitignore = flag,
-            "default_ignores" => settings.default_ignores = flag,
-            "include_tests" => settings.include_tests = flag,
-            "complexity" => settings.complexity = flag,
-            "uloc" => settings.uloc = flag,
-            "exclude_generated" => settings.exclude_generated = flag,
-            "cocomo" => settings.cocomo = flag,
-            "authors" => settings.authors = flag,
-            "exclude" => settings.exclude = value.trim().to_string(),
-            "extra_dirs" => settings.extra_dirs = value.trim().to_string(),
-            "view" => settings.view = value.trim().parse().unwrap_or(0),
-            "group" => settings.group = value.trim().parse().unwrap_or(Group::Code.index()),
-            "lang" => settings.lang = value.trim().parse().unwrap_or(settings.lang),
-            "top" => settings.top = value.trim().parse().unwrap_or(1),
-            "format" => settings.format = value.trim().parse().unwrap_or(0),
-            "filter" => settings.filter = value.trim().to_string(),
-            "sort_column" => settings.sort_column = value.trim().parse().unwrap_or(3),
-            "sort_descending" => settings.sort_descending = flag,
-            "sources" => settings.sources = value.trim().parse().unwrap_or(0),
-            "window" => {
-                let parts: Vec<i32> = value
-                    .trim()
-                    .split(',')
-                    .filter_map(|part| part.trim().parse().ok())
-                    .collect();
-                if parts.len() == 4 {
-                    settings.window = Some((parts[0], parts[1], parts[2], parts[3]));
-                }
-            }
-            _ => {}
-        }
-    }
-    settings
-}
-
-pub fn save_settings(settings: &Settings) {
-    let path = settings_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut text = String::new();
-    text.push_str(&format!("roots={}\n", settings.roots));
-    text.push_str(&format!("gitignore={}\n", flag(settings.gitignore)));
-    text.push_str(&format!(
-        "default_ignores={}\n",
-        flag(settings.default_ignores)
-    ));
-    text.push_str(&format!("include_tests={}\n", flag(settings.include_tests)));
-    text.push_str(&format!("complexity={}\n", flag(settings.complexity)));
-    text.push_str(&format!("uloc={}\n", flag(settings.uloc)));
-    text.push_str(&format!(
-        "exclude_generated={}\n",
-        flag(settings.exclude_generated)
-    ));
-    text.push_str(&format!("cocomo={}\n", flag(settings.cocomo)));
-    text.push_str(&format!("authors={}\n", flag(settings.authors)));
-    text.push_str(&format!("exclude={}\n", settings.exclude));
-    text.push_str(&format!("extra_dirs={}\n", settings.extra_dirs));
-    text.push_str(&format!("view={}\n", settings.view));
-    text.push_str(&format!("group={}\n", settings.group));
-    text.push_str(&format!("sources={}\n", settings.sources));
-    text.push_str(&format!("lang={}\n", settings.lang));
-    text.push_str(&format!("top={}\n", settings.top));
-    text.push_str(&format!("format={}\n", settings.format));
-    text.push_str(&format!("filter={}\n", settings.filter));
-    text.push_str(&format!("sort_column={}\n", settings.sort_column));
-    text.push_str(&format!(
-        "sort_descending={}\n",
-        flag(settings.sort_descending)
-    ));
-    if let Some((x, y, width, height)) = settings.window {
-        text.push_str(&format!("window={x},{y},{width},{height}\n"));
-    }
-    let _ = std::fs::write(path, text);
-}
-
-fn flag(value: bool) -> u8 {
-    if value {
-        1
-    } else {
-        0
-    }
 }
 
 #[cfg(test)]
@@ -1822,18 +1709,18 @@ mod tests {
         scratch.write("app.py", "def test_one():\n    assert True\n");
         for (sources, files, test_fns) in [
             (
-                crate::sources::Sources::Rust,
+                crate::sources::Sources::RUST,
                 "1 .rs files scanned",
                 "#[test] functions",
             ),
             (
-                crate::sources::Sources::Python,
+                crate::sources::Sources::PYTHON,
                 "1 .py files scanned",
                 "def test_ functions",
             ),
             (
-                crate::sources::Sources::All,
-                "2 .rs / .py files scanned",
+                crate::sources::Sources::parse("rust,python").unwrap(),
+                "2 .rs .py files scanned",
                 "test functions",
             ),
         ] {
@@ -1854,6 +1741,54 @@ mod tests {
             assert_eq!(hint("files"), files, "{sources:?}");
             assert_eq!(hint("test_fns"), test_fns, "{sources:?}");
         }
+    }
+
+    #[test]
+    fn a_saved_setting_round_trips_through_the_language_slugs() {
+        // A setting is a comma separated list of slugs, and one written by an
+        // older build is a bare index of the three choices it offered.
+        for (saved, selection) in [
+            ("rust", crate::sources::Sources::RUST),
+            ("python", crate::sources::Sources::PYTHON),
+            (
+                "rust,python",
+                crate::sources::Sources::parse("rust,python").unwrap(),
+            ),
+            ("go", crate::sources::Sources::parse("go").unwrap()),
+            ("0", crate::sources::Sources::RUST),
+            ("1", crate::sources::Sources::PYTHON),
+            ("2", crate::sources::Sources::parse("rust,python").unwrap()),
+        ] {
+            assert_eq!(sources_of(saved), selection, "{saved}");
+            assert_eq!(sources_slugs(selection), selection.slug());
+        }
+        // An empty or nonsense value reads as the Rust default rather than as
+        // a scan of nothing.
+        assert_eq!(sources_of(""), crate::sources::Sources::RUST);
+        assert_eq!(sources_of("cobol"), crate::sources::Sources::RUST);
+        assert_eq!(sources_slugs(crate::sources::Sources::RUST), "rust");
+        assert_eq!(sources_slugs(crate::sources::Sources::ALL), "all");
+    }
+
+    #[test]
+    fn a_command_line_names_the_languages_that_were_read() {
+        let scratch = Scratch::new("cli_command_langs");
+        scratch.write("src/lib.rs", SOURCE);
+        scratch.write("cmd/main.go", "package main\n");
+        let cwd = scratch.path.clone();
+        let rust = scratch.scan(&Options::default());
+        assert!(!cli_command(&rust, &cwd).contains("--sources"));
+        let mixed = scratch.scan(&Options {
+            sources: crate::sources::Sources::parse("rust,go").unwrap(),
+            ..Options::default()
+        });
+        let command = cli_command(&mixed, &cwd);
+        assert!(command.contains("--sources rust,go"), "{}", command);
+        let go = scratch.scan(&Options {
+            sources: crate::sources::Sources::parse("go").unwrap(),
+            ..Options::default()
+        });
+        assert!(cli_command(&go, &cwd).contains("--sources go"));
     }
 
     #[test]
@@ -1884,10 +1819,24 @@ mod tests {
 
     #[test]
     fn a_header_item_names_the_column_under_it() {
-        // The label column is header item zero, so the counters start at one.
-        assert_eq!(header_item_column(0), -1);
-        assert_eq!(header_item_column(1), 0);
-        assert_eq!(header_item_column(7), 6);
+        // The label column is item zero, so the counters start at one.
+        assert_eq!(View::Files.header_item_column(0), Some(-1));
+        assert_eq!(View::Files.header_item_column(1), Some(0));
+        assert_eq!(View::Files.header_item_column(7), Some(6));
+        // The number column leads the tables that number their rows, so the
+        // label moves to item one and the counters to item two.
+        assert_eq!(View::AuthorTotals.header_item_column(1), Some(-1));
+        assert_eq!(View::AuthorTotals.header_item_column(2), Some(0));
+        // A number that counts the rows ranks nothing, so its header sorts no.
+        assert_eq!(View::AuthorTotals.header_item_column(0), None);
+    }
+
+    #[test]
+    fn only_the_author_tally_numbers_its_rows() {
+        assert!(View::AuthorTotals.numbers_rows());
+        for view in View::ALL {
+            assert_eq!(view.numbers_rows(), view == View::AuthorTotals, "{view:?}");
+        }
     }
 
     #[test]
@@ -1966,8 +1915,22 @@ mod tests {
         assert_eq!(Group::from_index(0), Group::Overview);
         assert_eq!(Group::Overview.index(), 0);
         assert_eq!(Group::Authors.index(), 1);
-        assert_eq!(Group::ALL.len(), 3);
+        assert_eq!(Group::ALL.len(), 4);
+        // The panes that came later keep their index, so a settings file an
+        // older build wrote still opens on the pane it named.
         assert_eq!(Group::from_index(Group::ALL.len()), Group::Code);
+        assert!(View::strip(Group::Settings).is_empty());
+        assert_eq!(Group::Settings.index(), 3);
+        assert_eq!(Group::from_index(3), Group::Settings);
+        // The settings screen's own second-level grouping.
+        assert_eq!(SettingsPage::ALL.len(), 3);
+        assert_eq!(SettingsPage::from_index(0), SettingsPage::Languages);
+        assert_eq!(SettingsPage::Languages.index(), 0);
+        assert_eq!(SettingsPage::from_index(1), SettingsPage::Filters);
+        assert_eq!(SettingsPage::Filters.index(), 1);
+        assert_eq!(SettingsPage::from_index(2), SettingsPage::Report);
+        assert_eq!(SettingsPage::Report.index(), 2);
+        assert_eq!(SettingsPage::from_index(9), SettingsPage::Languages);
         for group in Group::ALL {
             for (index, view) in View::strip(group).iter().enumerate() {
                 assert_eq!(View::from_strip(group, index), *view);
@@ -2064,6 +2027,7 @@ mod tests {
             ["files", "lines", "code", "comment", "blank", "test"]
         );
         assert_eq!(column_title("files"), i18n::t().col_files);
+        assert_eq!(column_title(NUMBER_KEY), i18n::t().col_index);
         let rows = build_rows(&report, View::AuthorTotals, &totals, &scratch.path);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].label, "Ada");

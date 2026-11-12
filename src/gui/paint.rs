@@ -1036,6 +1036,9 @@ pub enum ButtonStyle {
     Accent,
     /// White with a hairline border: the secondary actions.
     Ghost,
+    /// The accent action with work waiting behind it: the same fill, drawn
+    /// with the darker ring a reader reads as "press me".
+    AccentWaiting,
 }
 
 /// Paint an owner drawn button from its `WM_DRAWITEM` payload. `hot` is the
@@ -1065,6 +1068,28 @@ pub fn button(
             (
                 fill,
                 None,
+                if disabled {
+                    theme::MUTED
+                } else {
+                    theme::CARD_BG
+                },
+            )
+        }
+        // The waiting accent keeps its fill and adds the ring: a reader sees
+        // the same button they know, with something behind it.
+        ButtonStyle::AccentWaiting => {
+            let fill = if disabled {
+                theme::TRACK_BG
+            } else if pressed {
+                theme::ACCENT_DARK
+            } else if hot {
+                theme::ACCENT_HOVER
+            } else {
+                theme::ACCENT
+            };
+            (
+                fill,
+                Some(theme::ACCENT_DARK),
                 if disabled {
                     theme::MUTED
                 } else {

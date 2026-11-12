@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use crate::lexer;
 use crate::report::{group, Report};
 use crate::scan::{self, Totals};
 
@@ -68,6 +69,9 @@ pub enum Metric {
     Test,
     Physical,
     Complexity,
+    /// The complexity of the worst single function, forgiveness markers
+    /// excluded.
+    FnComplexity,
     Unsafe,
     TestFns,
     Uloc,
@@ -93,6 +97,7 @@ impl Metric {
             "test" => Some(Metric::Test),
             "physical" => Some(Metric::Physical),
             "complexity" => Some(Metric::Complexity),
+            "fn_complexity" | "max_fn_complexity" => Some(Metric::FnComplexity),
             "unsafe" | "unsafe_kw" => Some(Metric::Unsafe),
             "test_fns" | "test_fn" => Some(Metric::TestFns),
             "uloc" => Some(Metric::Uloc),
@@ -118,6 +123,7 @@ impl Metric {
             Metric::Test => "test",
             Metric::Physical => "physical",
             Metric::Complexity => "complexity",
+            Metric::FnComplexity => "fn_complexity",
             Metric::Unsafe => "unsafe",
             Metric::TestFns => "test_fns",
             Metric::Uloc => "uloc",
@@ -134,14 +140,14 @@ impl Metric {
     /// The key `Totals::column` understands.
     fn key(self) -> &'static str {
         match self {
-            Metric::Files => "files",
+            Metric::Files | Metric::FnComplexity => "files",
             other => other.as_str(),
         }
     }
 
     fn count(self, totals: &Totals) -> u32 {
         match self {
-            Metric::Files => 0,
+            Metric::Files | Metric::FnComplexity => 0,
             other => totals.column(other.key()),
         }
     }
@@ -149,7 +155,7 @@ impl Metric {
     /// True for the counters a single function can own, so an annotation can
     /// point at its line rather than at the whole file.
     pub fn per_function(self) -> bool {
-        matches!(self, Metric::Complexity | Metric::Code)
+        matches!(self, Metric::Complexity | Metric::FnComplexity | Metric::Code)
     }
 
     /// Locating this metric needs the function table, which the scan only
@@ -160,9 +166,32 @@ impl Metric {
 
     /// The business file that contributes most to this metric, with the line
     /// of its worst function when a function owns the counter.
-    pub fn blame(self, report: &Report, cwd: &Path) -> Option<Blame> {
+    pub fn blame(self, report: &Report, cwd: &Path, include_tests: bool) -> Option<Blame> {
         if self == Metric::Files {
             return None;
+        }
+        if self == Metric::FnComplexity {
+            // Read the untruncated per-file table: the ranking the report
+            // keeps may have cut the offender, and forgiven bodies never
+            // count.
+            let mut best: Option<(&scan::Entry, &lexer::FunctionInfo)> = None;
+            for entry in report.business_entries() {
+                for function in &entry.facts.functions {
+                    if function.forgiven || (function.test && !include_tests) {
+                        continue;
+                    }
+                    if best.map(|(_, top)| function.complexity > top.complexity) != Some(false)
+                        && function.complexity > 0
+                    {
+                        best = Some((entry, function));
+                    }
+                }
+            }
+            let (entry, function) = best?;
+            return Some(Blame {
+                path: scan::relative(entry.path(), cwd),
+                line: Some(function.line),
+            });
         }
         let key = self.key();
         let worst = report
@@ -265,12 +294,22 @@ impl Gate {
     }
 
     /// The measured value, or an error when the run never collected it.
-    pub fn value(self, totals: &Totals, files: u32, uloc: Option<usize>) -> Result<f64, String> {
+    pub fn value(
+        self,
+        totals: &Totals,
+        files: u32,
+        uloc: Option<usize>,
+        fn_complexity: Option<u32>,
+    ) -> Result<f64, String> {
         match self.metric {
             Metric::Files => Ok(f64::from(files)),
             Metric::Uloc => match uloc {
                 Some(value) => Ok(value as f64),
                 None => Err("--fail-if uloc needs --uloc".to_string()),
+            },
+            Metric::FnComplexity => match fn_complexity {
+                Some(value) => Ok(f64::from(value)),
+                None => Err("--fail-if fn_complexity needs the function table".to_string()),
             },
             other => Ok(f64::from(other.count(totals))),
         }
@@ -301,6 +340,18 @@ fn format_number(value: f64) -> String {
     }
 }
 
+/// The complexity of the worst business function, forgiveness markers
+/// excluded. `None` when the tree holds no function at all.
+pub fn max_function_complexity(report: &Report, include_tests: bool) -> Option<u32> {
+    report
+        .business_entries()
+        .iter()
+        .flat_map(|entry| entry.facts.functions.iter())
+        .filter(|function| !function.forgiven && (include_tests || !function.test))
+        .map(|function| function.complexity)
+        .max()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,6 +371,7 @@ mod tests {
             volume: 1234.5,
             unsafe_kw: 2,
             test_fns: 7,
+            test_fns_all: 9,
             smells: Smells {
                 unwrap: 3,
                 expect: 1,
@@ -386,7 +438,7 @@ mod tests {
         let totals = totals();
         let read = |spec: &str| {
             let gate = Gate::parse(spec).unwrap();
-            gate.value(&totals, 3, Some(55)).unwrap()
+            gate.value(&totals, 3, Some(55), None).unwrap()
         };
         assert_eq!(read("code>0"), 70.0);
         assert_eq!(read("files>0"), 3.0);
@@ -396,11 +448,22 @@ mod tests {
     }
 
     #[test]
+    fn fn_complexity_reads_the_worst_function_and_needs_the_table() {
+        let gate = Gate::parse("fn_complexity>0").unwrap();
+        assert_eq!(gate.value(&totals(), 1, None, Some(12)).unwrap(), 12.0);
+        assert!(gate.value(&totals(), 1, None, None).is_err());
+        assert_eq!(
+            Gate::parse("max-fn-complexity <= 25").map(|gate| gate.metric),
+            Some(Metric::FnComplexity)
+        );
+    }
+
+    #[test]
     fn smell_metrics_read_the_business_totals() {
         let totals = totals();
         let read = |spec: &str| {
             let gate = Gate::parse(spec).unwrap();
-            gate.value(&totals, 3, Some(55)).unwrap()
+            gate.value(&totals, 3, Some(55), None).unwrap()
         };
         assert_eq!(read("smells>0"), 6.0);
         assert_eq!(read("unwrap>0"), 3.0);
@@ -419,8 +482,8 @@ mod tests {
     #[test]
     fn uloc_without_the_switch_is_an_error() {
         let gate = Gate::parse("uloc>10").unwrap();
-        assert!(gate.value(&totals(), 1, None).is_err());
-        assert_eq!(gate.value(&totals(), 1, Some(55)).unwrap(), 55.0);
+        assert!(gate.value(&totals(), 1, None, None).is_err());
+        assert_eq!(gate.value(&totals(), 1, Some(55), None).unwrap(), 55.0);
     }
 
     #[test]

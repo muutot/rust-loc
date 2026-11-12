@@ -10,7 +10,6 @@ implementation the Rust port was matched against line for line, and
 understand. The Rust CLI is the maintained one: it has since grown switches the
 reference never had (positional roots, `--sources`, the gate suite, the
 functions and smells tables).
-
 ## Why another line counter
 
 tokei, scc, cloc and cargo-count all answer "how many lines are in this repo?".
@@ -24,17 +23,49 @@ blank, then subtracts test code so the numbers describe the shipped logic. It
 matches the competitors on the core columns (`files`, `lines`, `blank`,
 `comment`, `code`) so it can be dropped into an existing dashboard.
 
+### Where the competitors stand (verified 2026-11)
+
+Checked against the current upstream READMEs of tokei v15, scc (v4.x) and cloc
+v2.10:
+
+| Capability | tokei | scc | cloc | rust-loc |
+| --- | :---: | :---: | :---: | :---: |
+| core columns + per-file breakdown | yes | yes | yes | yes |
+| **test code excluded** | no | no | no | **yes** |
+| output formats | JSON/YAML/CBOR | 12 formats incl. HTML, SQL | text/MD/CSV/JSON/XML/YAML/SQL | text/JSON/CSV/MD/SVG/HTML |
+| HTML report with charts | no | yes (`--report`) | no | no¹ |
+| shareable SVG card + badge | no | sloc.xyz (online) | no | **yes, offline** |
+| baseline diff / snapshot | no | no | `--diff` (two trees) | **yes** |
+| scan history trend | no | `--timeline` | no | **yes** |
+| git authors (blame per line) | no | `--by-author` | no | **yes** |
+| git hotspots (complexity × churn) | no | yes | no | yes |
+| change coupling | no | yes | no | yes |
+| cognitive complexity / Halstead / MI | no | cognitive only | no | **all three** |
+| duplicated-code blocks | no | duplicate files only | no | **yes (CPD-style)** |
+| COCOMO estimate | no | yes | no | yes |
+| CI gates (`--fail-if`, exit 1, annotations) | no | no | no | **yes** |
+| quality smells (unwrap/panic/todo/allow) | no | no | no | **yes** |
+| MCP query server | no | yes (stdio) | no | yes (stdio) |
+| local web UI (HTTP + watch + tray) | no | no | no | **yes** |
+| native desktop UI | no | no | no | **yes (Win32)** |
+
+¹ scc's HTML report is the one visualisation rust-loc's web UI does not
+replicate as a single static file; the SVG card covers the shareable case.
+
 ## Source languages
 
-`--sources <rust|python|all>` picks what a scan reads. The default is `rust`,
-so every existing invocation counts exactly the `.rs` files it always did.
-`--sources python` reads a Python tree instead, and `--sources all` reads both,
-which is what a repository that ships a Rust core with a Python tool wants from
-one run.
+`--sources <LANGS>` picks what a scan reads, and it is a *set*: one name, a
+comma separated list, or the same flag repeated, so a repository that ships a
+Rust core with a Go service counts both from one run. The default is `rust`, so
+every existing invocation counts exactly the `.rs` files it always did.
+`--sources all` names every language the tool knows; `rust,python` is the pair
+that used to be spelled `all`.
 
 ```console
 > rust-loc --sources python tools
-> rust-loc --sources all src python --by-file
+> rust-loc --sources rust,go src cmd --by-file
+> rust-loc --sources typescript --sources css web
+> rust-loc --sources all .
 ```
 
 A language brings its own reader and its own idea of a test; everything
@@ -42,10 +73,24 @@ downstream — the tables, the gates, the badges, the JSON — is shared. The
 report heading, the block titles and the JSON `scope.sources` key follow the
 selection, so a Python-only run never claims to have counted Rust.
 
+Markdown and TeX are documentation rather than code: every non-blank line of
+one is counted as a `doc` line, so a README never shows up as shipped code.
+
+Rust and Python have readers of their own that follow their grammar: brace
+spans, attributes, decorators, indentation. Every other language shares one
+reader in `src/generic.rs` that reads the comment, literal and branch rules of
+the language table in `src/languages.rs`. It keeps every metric that survives
+without a parser — the line classes, the branch tokens as a complexity
+estimate, the Halstead tokens, `TODO`/`FIXME` comments, Go's godoc groups —
+and leaves the parser-shaped ones at zero rather than guess: no per-function
+table, no `unsafe`, no `unwrap`/`expect`/`panic`, no in-file test items. A test
+file is recognised by its path, the way the naming conventions below spell it.
+
 | Language | Reader | Counted as test code, excluded by default |
 | --- | --- | --- |
 | Rust | `src/lexer.rs` | `tests/`, `benches/`, `*_test.rs` files, `#[cfg(test)]` items, `#![cfg(test)]` crates |
 | Python | `src/pylexer.rs` | `test_*.py`, `*_test.py`, `conftest.py`, `tests/` packages, and the bodies of `def test_*` / `class Test*` (including pytest, unittest, mock and hypothesis decorated tests) |
+| Go, JavaScript, TypeScript, Svelte, C, C++, C#, Java, Kotlin, Swift, Dart, PHP, Ruby, Lua, Haskell, OCaml, Shell, SQL, CSS, Zig, CMake, Makefile, Dockerfile, HTML, JSON, TOML, YAML, Markdown, TeX, PowerShell | `src/generic.rs` | `tests/`, `test/`, `benches/`, `test`/`tests`/`*_test`/`*_tests` stems, plus the language's own spelling: `FooTest.java` / `FooTests.kt` / `FooTest.php`, `foo_test.go`, `app.test.ts` / `app.spec.tsx`, `__tests__/` and `spec/` folders, `foo_spec.rb` |
 
 ### Python
 
@@ -62,7 +107,11 @@ The Python reader mirrors the Rust one, with the language's own spellings:
 
 `unsafe`, `unwrap`, `expect` and `panic` are Rust spellings with no Python
 counterpart, so they stay zero and the report drops the *Unsafe* row rather than
-print a misleading `0`.
+print a misleading `0`. The languages that share `src/generic.rs` keep the same
+promise: their `complexity` counts the language's own branch tokens, their
+`doc` counts the comment spellings above (Go's plain godoc group included),
+their `todo` counts `TODO`/`FIXME`/`XXX` comments, and their cognitive score is
+the branch count with no nesting to pay for, because nothing measured braces.
 
 ## Metrics
 
@@ -73,7 +122,7 @@ print a misleading `0`.
 | `blank` / `comment` / `code` | per-line classification, excluding test lines |
 | `doc` | subset of `comment`: `///`, `//!`, `/** */`, `/*! */` |
 | `test` | lines inside test-only files or test items (`#[cfg(test)]` / `def test_*`) |
-| `complexity` | approximate cyclomatic complexity using scc's branch tokens (Rust: `if else for while loop match && \|\| == !=`; Python: `if elif else for while except and or == != case`) |
+| `complexity` | approximate cyclomatic complexity using scc's branch tokens (Rust: `if else for while loop match && \|\| == !=`; Python: `if elif else for while except and or == != case`; every other language: the tokens of `src/languages.rs`, so Go counts `if else for switch case select && \|\| == !=`) |
 | `unsafe` | `unsafe` keyword count (cargo-count style) |
 | `test_fns` | functions carrying `#[test]`, `#[tokio::test]`, `#[rstest]`, ... |
 | `smells` | `unwrap + expect + panic + todo + unimplemented + allow` (Rust); `todo + unimplemented + allow` (Python) |
@@ -117,7 +166,10 @@ method calls are.
 * **test-only files** - anything under `tests/`, `benches/` or `test/`, files
   named `tests.rs`, `test.rs`, `*_tests.rs`, `*_test.rs`, files reached by
   `#[cfg(test)] mod x;` (honouring `#[path = "..." ]`), and files with a
-  crate-level `#![cfg(test)]`;
+  crate-level `#![cfg(test)]`. Another language spells the same idea its own
+  way - `test_*.py` and `conftest.py`, `foo_test.go`, `FooTest.java`,
+  `app.test.ts` - and a test *directory* is spelled `__tests__` or `spec` in
+  the JS and Ruby worlds;
 * **test-only items** - the balanced item after `#[cfg(test)]` or
   `#[cfg(all(test, ...))]`. `#[cfg(any(test, ...))]` and `#[cfg(not(test))]`
   stay, because they also build outside tests;
@@ -198,6 +250,11 @@ gitignore = true
 include_tests = false
 exclude_generated = true
 min_gen_line_length = 255
+# one name, a comma separated list, or an array of them
+sources = ["rust", "python", "go"]
+# one name, a comma separated list, or an array of them
+exclude_ext = ["min.js", "lock", "map"]
+max_file_size = 2
 
 [report]
 format = "markdown"
@@ -404,6 +461,27 @@ in a `maintainability` object and a `cognitive` field on every function, and
 `--format csv` adds a `cognitive` column. The card and the extra columns stay
 out of the report unless the flag is given.
 
+### What a scan skips
+
+Two switches keep machine-written and oversized files out of the way, the way
+an editor's statistics panel does:
+
+* **`--exclude-ext <EXT>`** - skip files whose name ends with the entry, so a
+  plain extension (`lock`) skips `Cargo.lock` and a dotted suffix (`min.js`)
+  skips `app.min.js`. Repeatable and comma separated; the dot and the case are
+  optional on either side.
+* **`--max-file-size <MB>`** - skip files larger than the cap, so one generated
+  blob or data dump cannot decide what the report says. `0` reads every file,
+  which is the behaviour a scan always had.
+
+```console
+> rust-loc --sources all --exclude-ext min.js,lock,map
+> rust-loc --max-file-size 2 .
+```
+
+The GUI keeps the same two on the *Settings* screen, under *Filters*, next to
+the excluded globs and the extra ignored directories.
+
 ### Language composition
 
 `--languages` (alias `--langs`) steps outside Rust and describes the whole tree,
@@ -571,8 +649,10 @@ rust-loc [OPTIONS] [ROOTS]...
 | `--top <n>` | limit listings to `n` rows |
 | `--show-excluded` | list the excluded test-only files |
 | `--include-tests` | count test code as well |
-| `--sources <rust\|python\|all>` | source languages to read (default `rust`) |
+| `--sources <LANGS>` | source languages to read: one name, a comma separated list, or the flag repeated; `all` names every language (default `rust`) |
 | `--exclude <glob>` | skip matching paths (repeatable) |
+| `--exclude-ext <EXT>` | skip files with this extension or dotted suffix, e.g. `min.js`, `lock` (repeatable, and comma separated) |
+| `--max-file-size <MB>` | skip files larger than this many megabytes (default 0, no cap) |
 | `--ignore-dir <name>` | skip a directory name (repeatable) |
 | `--no-ignore-dirs` | do not skip the built-in directory list |
 | `--gitignore` / `--no-gitignore` | control `.gitignore` filtering (default on) |
@@ -606,7 +686,8 @@ usage error.
 > rust-loc --by-file --sort complexity --top 15
 > rust-loc --format markdown --by-module --uloc
 > rust-loc --sources python tools --smells
-> rust-loc --sources all src python --by-file --sort code
+> rust-loc --sources rust,python src python --by-file --sort code
+> rust-loc --sources go,java src cmd --functions
 > rust-loc --format csv --by-file > loc.csv
 > rust-loc --format json --show-excluded --uloc .
 > rust-loc --functions --top-functions 10
@@ -625,14 +706,17 @@ usage error.
 ## Windows UI
 
 `rust-loc-gui.exe` is a native Win32 front end over the same library: one
-window, no web runtime, no UI toolkit. A scan-root sidebar owns the options
-(including the *Sources* selector that picks Rust, Python or both), and the
-right side is three panes. *Overview* holds the line-composition bar, the
-top-module chart, the KPI cards and the scan history; *Authors* holds the
+window, no web runtime, no UI toolkit. A scan-root sidebar owns the roots,
+and the right side is three panes. *Overview* holds the line-composition bar,
+the top-module chart, the KPI cards and the scan history; *Authors* holds the
 `git blame` tables; *Code* holds the per-file / per-module / per-function /
-smell / excluded-test tables behind a second strip. Only the pane in front is
-built, so a table pane takes the whole content area instead of sharing it with
-the charts, and each pane comes back on the tab it was left on.
+smell / excluded-test tables behind a second strip. *Settings* opens a screen
+of its own — the second-level grouping (*Languages*, *Filters*, *Report*)
+down the left, the settings of the group in front on the right — where the
+thirty two languages get a grid wide enough to read them all at once. Only
+the pane in front is built, so a table pane takes the whole content area
+instead of sharing it with the charts, and each pane comes back on the tab it
+was left on.
 Every row names its file from the scan root down, so the tables read the same
 whether the window was started on the tree itself or from a shortcut
 somewhere else.
@@ -697,7 +781,7 @@ both at once, and a plain scan keeps the single bar it always had:
 | Smells tab | the files that carry `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`#[allow]`, one row per file, ranked by the total |
 | Since the last scan | each scan diffs itself against the previous one in the same window: a *vs last scan* card with the code change, the added and deleted counts, and a `Delta` column on the Files tab |
 | Report options | `REPORT OPTIONS` keeps generated / minified files out of the totals and adds the COCOMO estimate; the KPI strip grows a row to hold the cost, effort, staffing and schedule cards |
-| Live watch | `ReadDirectoryChangesW` follows the roots on background threads, so a file added, edited or removed rescans by itself (debounced, and churn under `target`, `node_modules`, `.git`, `dist` and `build` is ignored) |
+| Live watch | `ReadDirectoryChangesW` follows the roots on background threads, so a file added, edited or removed rescans by itself (debounced, and churn under `target`, `node_modules`, `.git`, `dist` and `build` is ignored). A *setting* change never rescans on its own: it marks the report as out of date and asks for a scan, so the numbers on screen stay the ones that were asked for |
 | Chrome | owner-drawn buttons - an accent fill for the primary action, a filled chip that darkens under the pointer for the rest - hand-drawn check boxes whose accent tick reads at a glance, hand-drawn selector rows that carry the washed accent on the current entry, and equally hand-drawn scan-root rows with an accent pill on the selected root; `SHBrowseForFolderW` / `GetSaveFileNameW` dialogs (no COM, no extra crates), clipboard paste of folder paths, accelerators, a row context menu and chart tooltips |
 | Language | English and Chinese, chosen from the system UI language on first run and switchable at any time |
 | Settings | `%APPDATA%\rust-loc\ui.ini`, read at start-up and written on close |
@@ -752,6 +836,8 @@ rest being directory walking and the `git ls-files` call for `.gitignore`.
 | --- | --- |
 | `src/lexer.rs` | Rust single-pass tokeniser: line classes, metrics, `#[cfg(test)]` spans |
 | `src/pylexer.rs` | Python tokeniser: docstrings, `def test_*` spans, the same metrics shape |
+| `src/generic.rs` | the reader every other language shares: line classes, branch tokens, Halstead tokens, `TODO` markers |
+| `src/languages.rs` | the language table: extensions, comment and literal rules, branch tokens, per-language doc spellings |
 | `src/sources.rs` | the `--sources` selection: languages, extensions, git pathspecs |
 | `src/git.rs` | the git helpers: repository root, `numstat` churn and history |
 | `src/authors.rs` | `git blame` attribution: per-author and per-file line shares |
@@ -776,7 +862,7 @@ rest being directory walking and the `git ls-files` call for `.gitignore`.
 > cargo build --release      # target/release/rust-loc.exe
 > cargo build --release --bin rust-loc-gui   # target/release/rust-loc-gui.exe
 > cargo build --release --bin rust-loc-mcp   # target/release/rust-loc-mcp.exe
-> cargo test                 # 320 tests
+> cargo test                 # 372 tests
 > cargo clippy --all-targets -- -D warnings
 > cargo fmt --all
 ```
