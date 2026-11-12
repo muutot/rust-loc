@@ -593,6 +593,12 @@ pub fn run(arguments: &[String], cwd: &Path) -> Result<String, String> {
 /// Like run, but also reports the gate diagnostics (which belong on stderr)
 /// and the exit code the quality gates imply.
 pub fn run_checked(arguments: &[String], cwd: &Path) -> Result<(String, String, u8), String> {
+    // The scan canonicalises its roots (`resolve_path`), so a cwd handed in
+    // with an 8.3 short name (`RUNNER~1`, the spelling `std::env::temp_dir`
+    // returns on some machines) would never match the long-form entry paths
+    // at the relative-cut, and every label would print absolute. Resolve it
+    // to the same canonical form first.
+    let cwd = &scan::resolve_path(cwd);
     let invocation = parse(arguments, cwd)?;
     match invocation.action {
         Action::Help => Ok((format!("{}\n", USAGE), String::new(), 0)),
