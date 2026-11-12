@@ -332,6 +332,21 @@ fn test_attributed_functions_are_flagged_but_still_counted() {
 }
 
 #[test]
+fn smells_inside_test_functions_stay_out_of_business_totals() {
+    let text = "#[test]\nfn covers() {\n    let x = value.unwrap();\n    let y = other.expect(\"bad\");\n    panic!(\"boom\");\n}\n#[tokio::test]\nasync fn covers_async() {\n    todo!();\n    unimplemented!();\n}\nfn business(maybe: Option<u32>) -> u32 {\n    maybe.unwrap()\n}\n";
+    let analysis = analyze(text);
+    assert_eq!(analysis.smells.unwrap, 1);
+    assert_eq!(analysis.smells_all.unwrap, 2);
+    assert_eq!(analysis.smells.expect, 0);
+    assert_eq!(analysis.smells_all.expect, 1);
+    assert_eq!(analysis.smells.panic, 0);
+    assert_eq!(analysis.smells.todo, 0);
+    assert_eq!(analysis.smells.unimplemented, 0);
+    assert_eq!(analysis.smells.total(), 1);
+    assert_eq!(analysis.smells_all.total(), 6);
+}
+
+#[test]
 fn functions_inside_cfg_test_modules_are_not_recorded() {
     let text = "fn business() {}\n#[cfg(test)]\nmod tests {\n    fn helper() {}\n}\n";
     let analysis = analyze(text);

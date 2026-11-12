@@ -1901,7 +1901,7 @@ fn the_scope_names_the_languages_it_read() {
     assert!(out.contains("Sources: Python"), "{}", out);
     assert!(out.contains("Python metrics"), "{}", out);
     assert!(!out.contains("Unsafe"), "{}", out);
-    let both = workspace.run(&["--sources", "all"]);
+    let both = workspace.run(&["--sources", "rust,python"]);
     assert!(both.contains("Sources: Rust and Python"), "{}", both);
     assert!(both.contains("Metrics"), "{}", both);
     assert!(!both.contains("Rust smells"), "{}", both);
@@ -1924,6 +1924,39 @@ fn the_json_scope_records_the_selection() {
 }
 
 #[test]
+fn an_excluded_extension_skips_the_files_that_carry_it() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn main() {}\n");
+    workspace.write("web/app.min.js", "var a=1;\n");
+    workspace.write("web/app.js", "var b=1;\n");
+    let all = workspace.summary(&["--sources", "rust,javascript"]);
+    assert_eq!(all.get("files").unwrap().integer(), 3);
+    let skipped = workspace.summary(&["--sources", "rust,javascript", "--exclude-ext", "min.js"]);
+    assert_eq!(skipped.get("files").unwrap().integer(), 2);
+    // The dot and the case are both optional.
+    let dotted = workspace.summary(&["--sources", "rust,javascript", "--exclude-ext", ".MIN.JS"]);
+    assert_eq!(dotted.get("files").unwrap().integer(), 2);
+    // A comma separated list and a repeated flag say the same thing.
+    let list = workspace.summary(&["--sources", "rust,javascript", "--exclude-ext", "min.js,rs"]);
+    assert_eq!(list.get("files").unwrap().integer(), 1);
+}
+
+#[test]
+fn a_size_cap_skips_the_files_that_outgrow_it() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn main() {}\n");
+    let big = "x".repeat(3 * 1024 * 1024);
+    workspace.write("src/blob.rs", &big);
+    let all = workspace.summary(&[]);
+    assert_eq!(all.get("files").unwrap().integer(), 2);
+    let capped = workspace.summary(&["--max-file-size", "1"]);
+    assert_eq!(capped.get("files").unwrap().integer(), 1);
+    // Zero reads every file, which is the behaviour a scan always had.
+    let uncapped = workspace.summary(&["--max-file-size", "0"]);
+    assert_eq!(uncapped.get("files").unwrap().integer(), 2);
+}
+
+#[test]
 fn an_unknown_sources_value_is_an_error() {
     let workspace = Workspace::new();
     let args: Vec<String> = vec![
@@ -1932,5 +1965,52 @@ fn an_unknown_sources_value_is_an_error() {
         "cobol".to_string(),
     ];
     let error = cli::parse(&args, &workspace.path).unwrap_err();
-    assert!(error.contains("rust, python or all"), "{}", error);
+    assert!(error.contains("cobol"), "{}", error);
+    assert!(error.contains("--sources"), "{}", error);
+}
+
+#[test]
+fn the_sources_flag_accepts_a_comma_separated_list() {
+    let workspace = Workspace::new();
+    workspace.write("src/lib.rs", "fn main() {}\n");
+    workspace.write("cmd/main.go", "package main\n");
+    let summary = workspace.summary(&["--sources", "rust,go"]);
+    assert_eq!(summary.get("files").unwrap().integer(), 2);
+    let repeated = workspace.summary(&["--sources", "rust", "--sources", "go"]);
+    assert_eq!(repeated.get("files").unwrap().integer(), 2);
+    let all = workspace.summary(&["--sources", "all"]);
+    assert_eq!(all.get("files").unwrap().integer(), 2);
+    let inline = workspace.summary(&["--sources=rust,go"]);
+    assert_eq!(inline.get("files").unwrap().integer(), 2);
+}
+
+#[test]
+fn another_language_is_read_with_its_own_rules() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "cmd/main.go",
+        "// Package main is the entry point.\npackage main\n\nfunc main() {\n\tif true {\n\t\tprintln(1)\n\t}\n}\n",
+    );
+    workspace.write(
+        "cmd/main_test.go",
+        "package main\n\nfunc TestMain(t *testing.T) {}\n",
+    );
+    let summary = workspace.summary(&["--sources", "go"]);
+    // The `_test.go` file is test-only, so only the doc comment, the code
+    // lines and the branch of main.go are counted.
+    assert_eq!(summary.get("files").unwrap().integer(), 1);
+    assert_eq!(summary.get("code").unwrap().integer(), 6);
+    assert_eq!(summary.get("comment").unwrap().integer(), 1);
+    assert_eq!(summary.get("doc").unwrap().integer(), 1);
+    assert_eq!(summary.get("complexity").unwrap().integer(), 1);
+    let document = workspace.document(&["--sources", "go"]);
+    assert_eq!(
+        document
+            .get("scope")
+            .unwrap()
+            .get("sources")
+            .unwrap()
+            .text(),
+        "go"
+    );
 }
