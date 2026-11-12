@@ -72,22 +72,63 @@ pub fn posix(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-/// Path relative to cwd when possible, else the absolute path.
+/// The components of `path` below `prefix`, when `prefix` names an ancestor.
+/// Returns `None` when `prefix` is not a prefix of `path`.
+fn strip_prefix_ci(path: &Path, prefix: &Path) -> Option<PathBuf> {
+    let mut path_parts: Vec<_> = path
+        .components()
+        .filter(|part| {
+            !matches!(
+                part,
+                std::path::Component::Prefix(_) | std::path::Component::RootDir
+            )
+        })
+        .collect();
+    let prefix_parts: Vec<_> = prefix
+        .components()
+        .filter(|part| {
+            !matches!(
+                part,
+                std::path::Component::Prefix(_) | std::path::Component::RootDir
+            )
+        })
+        .collect();
+    if path_parts.len() < prefix_parts.len() {
+        return None;
+    }
+    for (left, right) in path_parts.iter().zip(prefix_parts.iter()) {
+        if !left
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+        {
+            return None;
+        }
+    }
+    let rest = path_parts.split_off(prefix_parts.len());
+    Some(rest.iter().collect())
+}
+
+/// Path relative to cwd when possible, else the absolute path. The prefix
+/// test is component-wise, so a cwd spelled with an 8.3 short name still
+/// cuts against a long-name scan root.
 pub fn relative(path: &Path, cwd: &Path) -> String {
-    match path.strip_prefix(cwd) {
-        Ok(rest) if !rest.as_os_str().is_empty() => posix(rest),
-        Ok(_) => ".".to_string(),
-        Err(_) => posix(path),
+    match strip_prefix_ci(path, cwd) {
+        Some(rest) if !rest.as_os_str().is_empty() => posix(&rest),
+        Some(_) => ".".to_string(),
+        None => posix(path),
     }
 }
 
 /// Top level component below the root, or (root) for files at the root.
 pub fn group_key(path: &Path, root: &Path) -> String {
-    let mut parts = match path.strip_prefix(root) {
-        Ok(rest) => rest.components(),
-        Err(_) => path.components(),
+    let rest = strip_prefix_ci(path, root);
+    let mut parts = match &rest {
+        Some(rest) => rest.components(),
+        None => path.components(),
     };
-    match (parts.next(), parts.next()) {
+    let first = parts.next();
+    match (first, parts.next()) {
         (Some(first), Some(_)) => first.as_os_str().to_string_lossy().into_owned(),
         _ => "(root)".to_string(),
     }

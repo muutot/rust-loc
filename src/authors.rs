@@ -200,8 +200,9 @@ impl Blamed {
 /// Case-insensitive path prefix check. Git echoes the toplevel with its own
 /// casing, which need not match how the user spelled the scan root (a drive
 /// letter, a differently cased folder), and with forward slashes where the
-/// scan carries Windows separators; both sides are normalised before the
-/// comparison, and a component boundary is still required.
+/// scan carries Windows separators. The comparison is per component, so an
+/// 8.3 short name (`RUNNER~1`) on one side fails honestly against the long
+/// form (`runneradmin`) instead of half-matching a text prefix.
 fn starts_with_ci(path: &Path, prefix: &Path) -> bool {
     let path = path.to_string_lossy().replace('\\', "/");
     let prefix = prefix
@@ -209,13 +210,13 @@ fn starts_with_ci(path: &Path, prefix: &Path) -> bool {
         .replace('\\', "/")
         .trim_end_matches('/')
         .to_string();
-    if path.len() < prefix.len() || !path[..prefix.len()].eq_ignore_ascii_case(&prefix) {
-        return false;
-    }
-    match path[prefix.len()..].chars().next() {
-        None => true,
-        Some(c) => c == '/',
-    }
+    let left: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let right: Vec<&str> = prefix.split('/').filter(|part| !part.is_empty()).collect();
+    left.len() >= right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 /// The repository every entry lives in, asked once per directory so a tree
