@@ -365,6 +365,7 @@ impl<'a> Reader<'a> {
             params,
             depth: 0,
             test,
+            forgiven: self.forgiven_above(self.item_start(header.line)),
         });
         self.pending = Header::Def {
             index: self.functions.len() - 1,
@@ -387,6 +388,20 @@ impl<'a> Reader<'a> {
     /// The line an item starts on: the decorator above it when there is one.
     fn item_start(&self, line: usize) -> usize {
         self.decorators.first().copied().unwrap_or(line)
+    }
+
+    /// True when the line above `line` is a comment-only line carrying the
+    /// forgiveness marker, so the item below is exempt from function gates.
+    fn forgiven_above(&self, line: usize) -> bool {
+        let Some(above) = line.checked_sub(1) else {
+            return false;
+        };
+        if above >= self.total || self.code[above] {
+            return false;
+        }
+        let text = line_text(self.bytes, above);
+        let marker = crate::lexer::FORGIVES.as_bytes();
+        text.windows(marker.len()).any(|window| window == marker)
     }
 
     /// The line of the innermost open body, if it belongs to a function.
@@ -479,6 +494,26 @@ impl<'a> Reader<'a> {
         while indent < self.top().indent {
             self.pop_frame(self.line.saturating_sub(1));
         }
+    }
+}
+
+/// The text of one 0-based line, without its newline; empty past the end.
+fn line_text(bytes: &[u8], line: usize) -> &[u8] {
+    let mut start = 0usize;
+    let mut index = 0usize;
+    for (offset, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            if index == line {
+                return &bytes[start..offset];
+            }
+            index += 1;
+            start = offset + 1;
+        }
+    }
+    if index == line {
+        &bytes[start..]
+    } else {
+        &[]
     }
 }
 

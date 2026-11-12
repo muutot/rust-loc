@@ -69,7 +69,13 @@ pub struct FunctionInfo {
     pub params: u32,
     pub depth: u32,
     pub test: bool,
+    /// A `// rust-loc: forgives` comment sits on the line above, so quality
+    /// gates skip this body when they hunt for offenders.
+    pub forgiven: bool,
 }
+
+/// The comment that exempts the function below it from function gates.
+pub const FORGIVES: &str = "rust-loc: forgives";
 
 /// Panic-shaped calls and lint escapes a reviewer usually wants counted.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +104,7 @@ struct PendingFn {
     angle: u32,
     seen_param: bool,
     test: bool,
+    forgiven: bool,
 }
 
 /// A `fn` body currently open on the brace stack.
@@ -114,6 +121,7 @@ struct OpenFn {
     control_base: u32,
     max_depth: u32,
     test: bool,
+    forgiven: bool,
 }
 
 /// Accumulates one Halstead scope while the lexer walks the file. The token
@@ -469,6 +477,10 @@ pub fn analyze(text: &str) -> Analysis {
     let mut sibling_targets: Vec<String> = Vec::new();
     let mut smells = Smells::default();
     let mut smells_all = Smells::default();
+    // Bodies of `#[test]`-attributed fns are test code even without a
+    // `#[cfg(test)]` wrapper (a whole test module file included by the parent
+    // has none), so their panicky calls must not count as business smells.
+    let mut in_test_fn: u32 = 0;
     let mut functions: Vec<FunctionInfo> = Vec::new();
     let mut fn_spans: Vec<(usize, usize)> = Vec::new();
     let mut open_fns: Vec<OpenFn> = Vec::new();
@@ -485,19 +497,30 @@ pub fn analyze(text: &str) -> Analysis {
     let mut literal_business = false;
     let mut tokens: TokenCounter<'_> = TokenCounter::default();
     let mut tokens_all: TokenCounter<'_> = TokenCounter::default();
+    // Line-comment text being read, and the line the last forgiveness marker
+    // sat on: a `fn` right under it is exempt from function gates.
+    let mut comment_text = String::new();
+    let mut marker_line: Option<usize> = None;
 
     while i < n {
         let ch = bytes[i];
 
         if state == LINE_COMMENT {
             if ch == b'\n' {
+                if comment_text.contains(FORGIVES) {
+                    marker_line = Some(line);
+                }
+                comment_text.clear();
                 state = CODE;
                 line += 1;
-            } else if line < total {
-                comment[line] = true;
-                if comment_is_doc {
-                    doc[line] = true;
+            } else {
+                if line < total {
+                    comment[line] = true;
+                    if comment_is_doc {
+                        doc[line] = true;
+                    }
                 }
+                comment_text.push(char::from(ch));
             }
             i += 1;
             continue;
@@ -615,7 +638,7 @@ pub fn analyze(text: &str) -> Analysis {
             if let Some((body, end)) = match_attr(bytes, i) {
                 if attr_is_allow(&body) {
                     smells_all.allow += 1;
-                    if !skipping_test {
+                    if !skipping_test && in_test_fn == 0 {
                         smells.allow += 1;
                     }
                 }
@@ -768,27 +791,27 @@ pub fn analyze(text: &str) -> Analysis {
             }
             if word == b"unwrap" && call_like {
                 smells_all.unwrap += 1;
-                if !skipping_test {
+                if !skipping_test && in_test_fn == 0 {
                     smells.unwrap += 1;
                 }
             } else if word == b"expect" && call_like {
                 smells_all.expect += 1;
-                if !skipping_test {
+                if !skipping_test && in_test_fn == 0 {
                     smells.expect += 1;
                 }
             } else if word == b"panic" && macro_call {
                 smells_all.panic += 1;
-                if !skipping_test {
+                if !skipping_test && in_test_fn == 0 {
                     smells.panic += 1;
                 }
             } else if word == b"todo" && macro_call {
                 smells_all.todo += 1;
-                if !skipping_test {
+                if !skipping_test && in_test_fn == 0 {
                     smells.todo += 1;
                 }
             } else if word == b"unimplemented" && macro_call {
                 smells_all.unimplemented += 1;
-                if !skipping_test {
+                if !skipping_test && in_test_fn == 0 {
                     smells.unimplemented += 1;
                 }
             }
@@ -825,6 +848,13 @@ pub fn analyze(text: &str) -> Analysis {
                 pending_fn = if skipping_test || pending_test.is_some() {
                     None
                 } else {
+                    // The marker must own the whole line above: an inline
+                    // comment after code exempts nothing.
+                    let forgiven = line
+                        .checked_sub(1)
+                        .is_some_and(|above| {
+                            above < total && marker_line == Some(above) && !code[above]
+                        });
                     Some(PendingFn {
                         name: String::new(),
                         line,
@@ -833,6 +863,7 @@ pub fn analyze(text: &str) -> Analysis {
                         angle: 0,
                         seen_param: false,
                         test: is_test_fn,
+                        forgiven,
                     })
                 };
             } else if let Some(pending) = pending_fn.as_mut() {
@@ -1003,6 +1034,9 @@ pub fn analyze(text: &str) -> Analysis {
                 pending_control = false;
                 after_else = false;
                 if let Some(pending) = pending_fn.take() {
+                    if pending.test {
+                        in_test_fn += 1;
+                    }
                     open_fns.push(OpenFn {
                         name: pending.name,
                         line: pending.line,
@@ -1017,6 +1051,7 @@ pub fn analyze(text: &str) -> Analysis {
                         control_base: control_depth,
                         max_depth: 0,
                         test: pending.test,
+                        forgiven: pending.forgiven,
                     });
                 }
                 for open in open_fns.iter_mut() {
@@ -1034,6 +1069,9 @@ pub fn analyze(text: &str) -> Analysis {
                     .is_some_and(|open| open.body_depth == brace_depth)
                 {
                     let open = open_fns.pop().expect("body_depth just matched");
+                    if open.test {
+                        in_test_fn = in_test_fn.saturating_sub(1);
+                    }
                     fn_spans.push((open.line, line));
                     functions.push(FunctionInfo {
                         name: open.name,
@@ -1044,6 +1082,7 @@ pub fn analyze(text: &str) -> Analysis {
                         params: open.params,
                         depth: open.max_depth,
                         test: open.test,
+                        forgiven: open.forgiven,
                     });
                 }
                 brace_depth = brace_depth.saturating_sub(1);
@@ -1089,6 +1128,7 @@ pub fn analyze(text: &str) -> Analysis {
             params: open.params,
             depth: open.max_depth,
             test: open.test,
+            forgiven: open.forgiven,
         });
     }
 
@@ -1152,6 +1192,34 @@ mod tests {
             ("0b1010_i8", 9),
         ] {
             assert_eq!(number_end(text.as_bytes(), 0), end, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_forgives_marker_on_the_line_above_exempts_the_function() {
+        let source = "fn plain() {\n    if true {}\n}\n\
+                      // rust-loc: forgives\nfn spared() {\n    if true {}\n}\n";
+        let analysis = analyze(source);
+        let spared = analysis
+            .functions
+            .iter()
+            .find(|function| function.name == "spared")
+            .expect("spared parsed");
+        let plain = analysis
+            .functions
+            .iter()
+            .find(|function| function.name == "plain")
+            .expect("plain parsed");
+        assert!(spared.forgiven);
+        assert!(!plain.forgiven);
+    }
+
+    #[test]
+    fn an_inline_marker_exempts_nothing() {
+        let source = "fn outer() {} // rust-loc: forgives\nfn next() {\n    if true {}\n}\n";
+        let analysis = analyze(source);
+        for function in &analysis.functions {
+            assert!(!function.forgiven, "{} was forgiven", function.name);
         }
     }
 }

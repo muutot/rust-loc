@@ -4,6 +4,14 @@
 //! counter cannot. The table is hand written: one entry per language, no
 //! dependencies, and only the extensions that show up in mixed repositories.
 //! Files whose extension is not in the table are never read.
+//!
+//! The table is also the grammar the shared reader in [`crate::generic`] reads
+//! with, so every language here can be selected as a source language with
+//! `--sources`: the comment and literal rules classify the lines, and the
+//! `branch` tokens estimate complexity the way the language's own tools count
+//! branches.
+
+use crate::generic;
 
 /// One language: its extensions and how it marks comments and literals.
 pub struct Language {
@@ -15,6 +23,71 @@ pub struct Language {
     pub block: Option<(&'static str, &'static str)>,
     /// Quotes that open and close a single-line literal.
     pub quotes: &'static [char],
+    /// Tokens that split control flow, so a scan can estimate complexity
+    /// without a parser. Alphabetic entries are matched on word boundaries,
+    /// the rest as plain tokens; an empty list marks a language with no
+    /// branches to count.
+    pub branch: &'static [&'static str],
+    /// Whether a plain comment group sitting directly above what it documents
+    /// is a doc comment. Go is the language that spells documentation this
+    /// way; everywhere else a doc comment carries a marker of its own.
+    pub doc_attached: bool,
+    /// Whether the language is a documentation format rather than a code one.
+    /// Every non-blank line of a documentation file counts as a doc line, the
+    /// way a reference write-up is read rather than as shipped code.
+    pub documentation: bool,
+    /// Line shapes that declare a test function, matched against the
+    /// whitespace-trimmed line start. `{}` is the test function's name; a
+    /// `*` marks the parameter list where C-like languages spell it. The
+    /// shared reader in [`crate::generic`] counts every match so the report's
+    /// test-function total covers languages without a lexer of their own -
+    /// Go's `func TestXxx(`, Java's `void testXxx()`, Python-style `def
+    /// test_xxx` spellings their lexers already count.
+    pub test_fn: &'static [TestFn],
+}
+
+/// One test-function declaration shape. `prefix` must match the trimmed line
+/// start; `name_upper` requires the captured name to start upper- (true) or
+/// lowercase (false), which keeps `func helper(` out while `func TestXxx(`
+/// counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TestFn {
+    pub prefix: &'static str,
+    pub name_upper: bool,
+}
+
+impl TestFn {
+    /// Whether the trimmed line declares a test function in this shape: the
+    /// prefix matches, the name is an identifier of the required case, and a
+    /// `(` follows - so a call site or a comment never counts.
+    pub fn matches(&self, trimmed: &str) -> bool {
+        let Some(rest) = trimmed.strip_prefix(self.prefix) else {
+            return false;
+        };
+        let rest = rest.trim_start();
+        let bytes = rest.as_bytes();
+        if bytes.is_empty() {
+            return false;
+        }
+        let ok_case = if self.name_upper {
+            bytes[0].is_ascii_uppercase() || bytes[0] == b'_'
+        } else {
+            bytes[0].is_ascii_lowercase() || bytes[0] == b'_'
+        };
+        if !ok_case {
+            return false;
+        }
+        let mut end = 1;
+        while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+            end += 1;
+        }
+        let tail = &bytes[end..];
+        let mut i = 0;
+        while i < tail.len() && (tail[i] == b' ' || tail[i] == b'\t') {
+            i += 1;
+        }
+        tail[i..].starts_with(b"(")
+    }
 }
 
 const SLASH: &[&str] = &["//"];
@@ -34,6 +107,34 @@ const SINGLE_QUOTE: char = '\u{27}';
 const QUOTES_C: &[char] = &['"', SINGLE_QUOTE];
 const QUOTES_NONE: &[char] = &[];
 const QUOTES_GO: &[char] = &['"', SINGLE_QUOTE, '`'];
+/// Branch tokens of the C family: every language that spells `if` and `&&`
+/// the way C does.
+const BRANCH_C: &[&str] = &["if", "else", "for", "while", "case", "&&", "||", "==", "!="];
+/// The JavaScript spelling, which TypeScript and Svelte share.
+const BRANCH_JS: &[&str] = &["if", "else", "for", "while", "case", "&&", "||", "==", "!="];
+/// Languages whose branches are words rather than operators.
+const BRANCH_LUA: &[&str] = &[
+    "if", "elseif", "else", "for", "while", "and", "or", "==", "~=",
+];
+const BRANCH_SHELL: &[&str] = &[
+    "if", "elif", "else", "for", "while", "until", "case", "&&", "||",
+];
+const BRANCH_RUBY: &[&str] = &[
+    "if", "elsif", "else", "unless", "for", "while", "until", "case", "when", "&&", "||", "==",
+    "!=",
+];
+/// Languages with no branch token worth counting.
+const BRANCH_NONE: &[&str] = &[];
+/// No test-function shape: the languages whose reader never sees one, or
+/// whose lexers already count them (Rust, Python).
+const TEST_FN_NONE: &[TestFn] = &[];
+/// Go: `func TestXxx(t *testing.T)` - the name must start uppercase, the way
+/// `go test` requires. Only the top-level declaration counts; subtests run
+/// inside it and are not separate declarations.
+const TEST_FN_GO: &[TestFn] = &[TestFn {
+    prefix: "func Test",
+    name_upper: true,
+}];
 pub const LANGUAGES: [Language; 32] = [
     Language {
         name: "C",
@@ -41,6 +142,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: BRANCH_C,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "C#",
@@ -48,6 +153,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: BRANCH_C,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "C++",
@@ -55,6 +164,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: BRANCH_C,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "CMake",
@@ -62,6 +175,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: HASH,
         block: None,
         quotes: QUOTES_C,
+        branch: &["if", "elseif", "else", "foreach", "while", "and", "or"],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "CSS",
@@ -69,6 +186,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: BRANCH_NONE,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Dart",
@@ -76,6 +197,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: BRANCH_C,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Go",
@@ -83,6 +208,12 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_GO,
+        branch: &[
+            "if", "else", "for", "switch", "case", "select", "&&", "||", "==", "!=",
+        ],
+        doc_attached: true,
+        documentation: false,
+        test_fn: TEST_FN_GO,
     },
     Language {
         name: "Haskell",
@@ -90,6 +221,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: DASH,
         block: Some(("{-", "-}")),
         quotes: QUOTES_C,
+        branch: &["if", "case", "&&", "||", "==", "/="],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "HTML",
@@ -97,6 +232,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: NONE,
         block: HTML_BLOCK,
         quotes: QUOTES_C,
+        branch: BRANCH_NONE,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Java",
@@ -104,6 +243,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: BRANCH_C,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "JavaScript",
@@ -111,6 +254,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_GO,
+        branch: BRANCH_JS,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "JSON",
@@ -118,6 +265,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: BRANCH_NONE,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Kotlin",
@@ -125,6 +276,12 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: &[
+            "if", "else", "for", "while", "when", "case", "&&", "||", "==", "!=",
+        ],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Lua",
@@ -132,6 +289,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: DASH,
         block: Some(("--[[", "]]")),
         quotes: QUOTES_C,
+        branch: BRANCH_LUA,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Markdown",
@@ -139,6 +300,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: NONE,
         block: HTML_BLOCK,
         quotes: QUOTES_NONE,
+        branch: BRANCH_NONE,
+        doc_attached: false,
+        documentation: true,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "OCaml",
@@ -146,6 +311,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: ML_BLOCK,
         quotes: QUOTES_C,
+        branch: &["if", "match", "when", "&&", "||", "==", "<>"],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "PHP",
@@ -153,6 +322,13 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: &[
+            "if", "elseif", "else", "foreach", "for", "while", "switch", "case", "&&", "||", "==",
+            "!=",
+        ],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "PowerShell",
@@ -160,6 +336,13 @@ pub const LANGUAGES: [Language; 32] = [
         line: HASH,
         block: Some(("<#", "#>")),
         quotes: QUOTES_C,
+        branch: &[
+            "if", "elseif", "else", "for", "foreach", "while", "switch", "-and", "-or", "-eq",
+            "-ne",
+        ],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Python",
@@ -167,6 +350,12 @@ pub const LANGUAGES: [Language; 32] = [
         line: HASH,
         block: PY_BLOCK,
         quotes: QUOTES_C,
+        branch: &[
+            "if", "elif", "else", "except", "for", "while", "and", "or", "==", "!=", "case",
+        ],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Ruby",
@@ -174,6 +363,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: HASH,
         block: Some(("=begin", "=end")),
         quotes: QUOTES_C,
+        branch: BRANCH_RUBY,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Rust",
@@ -181,6 +374,12 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: &[
+            "if", "else", "for", "while", "loop", "match", "&&", "||", "==", "!=",
+        ],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "SQL",
@@ -188,6 +387,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: DASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: BRANCH_NONE,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Shell",
@@ -195,6 +398,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: HASH,
         block: None,
         quotes: QUOTES_C,
+        branch: BRANCH_SHELL,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Svelte",
@@ -202,6 +409,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: HTML_BLOCK,
         quotes: QUOTES_C,
+        branch: &["if", "else", "each", "case", "&&", "||", "==", "!="],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Swift",
@@ -209,6 +420,12 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: &[
+            "if", "else", "for", "while", "case", "guard", "switch", "&&", "||", "==", "!=",
+        ],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "TOML",
@@ -216,6 +433,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: HASH,
         block: None,
         quotes: QUOTES_C,
+        branch: BRANCH_NONE,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "TypeScript",
@@ -223,6 +444,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_GO,
+        branch: BRANCH_JS,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "TeX",
@@ -230,6 +455,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: PERCENT,
         block: None,
         quotes: QUOTES_NONE,
+        branch: BRANCH_NONE,
+        doc_attached: false,
+        documentation: true,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "YAML",
@@ -237,6 +466,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: HASH,
         block: None,
         quotes: QUOTES_C,
+        branch: BRANCH_NONE,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Zig",
@@ -244,6 +477,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: SLASH,
         block: C_BLOCK,
         quotes: QUOTES_C,
+        branch: BRANCH_C,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Makefile",
@@ -251,6 +488,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: HASH,
         block: None,
         quotes: QUOTES_C,
+        branch: &["ifeq", "ifneq", "ifdef", "ifndef", "else"],
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
     Language {
         name: "Dockerfile",
@@ -258,6 +499,10 @@ pub const LANGUAGES: [Language; 32] = [
         line: HASH,
         block: None,
         quotes: QUOTES_C,
+        branch: BRANCH_NONE,
+        doc_attached: false,
+        documentation: false,
+        test_fn: TEST_FN_NONE,
     },
 ];
 
@@ -300,69 +545,20 @@ pub struct LineCounts {
 /// Classify every physical line as blank, comment-only or code, the way tokei
 /// and cloc do: a line holding both code and a trailing comment counts as code,
 /// and a block comment marks every line it covers.
+///
+/// The walk is the one [`crate::generic::analyze`] does, so the numbers a
+/// `--languages` table shows and the numbers a `--sources` report shows for the
+/// same file cannot drift apart.
 pub fn count(text: &str, language: &Language) -> LineCounts {
-    let mut counts = LineCounts::default();
-    let mut closing: Option<&'static str> = None;
-    for raw in text.lines() {
-        counts.lines += 1;
-        let bytes = raw.as_bytes();
-        let mut i = 0usize;
-        let mut code = false;
-        let mut comment = false;
-        while i < bytes.len() {
-            let rest = &bytes[i..];
-            if let Some(close) = closing {
-                comment = true;
-                if rest.starts_with(close.as_bytes()) {
-                    i += close.len();
-                    closing = None;
-                } else {
-                    i += 1;
-                }
-                continue;
-            }
-            if bytes[i].is_ascii_whitespace() {
-                i += 1;
-                continue;
-            }
-            if let Some((open, close)) = language.block {
-                if rest.starts_with(open.as_bytes()) {
-                    comment = true;
-                    closing = Some(close);
-                    i += open.len();
-                    continue;
-                }
-            }
-            if language
-                .line
-                .iter()
-                .any(|prefix| rest.starts_with(prefix.as_bytes()))
-            {
-                comment = true;
-                break;
-            }
-            if language.quotes.iter().any(|quote| bytes[i] == *quote as u8) {
-                code = true;
-                let quote = bytes[i];
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                    } else if bytes[i] == quote {
-                        i += 1;
-                        break;
-                    } else {
-                        i += 1;
-                    }
-                }
-                continue;
-            }
-            code = true;
-            i += 1;
-        }
-        if code {
+    let analysis = generic::analyze(text, language);
+    let mut counts = LineCounts {
+        lines: analysis.total as u32,
+        ..LineCounts::default()
+    };
+    for index in 0..analysis.total {
+        if analysis.code[index] {
             counts.code += 1;
-        } else if comment {
+        } else if analysis.comment[index] {
             counts.comment += 1;
         } else {
             counts.blank += 1;
@@ -437,9 +633,12 @@ mod tests {
     }
 
     #[test]
-    fn markdown_without_comments_is_all_code() {
+    fn markdown_is_counted_as_documentation() {
+        // A documentation format ships prose, not code: --languages reads it
+        // the way the main report does.
         let counts = count("# Title\n\nSome text.\n", language("Markdown"));
-        assert_eq!(counts.code, 2);
+        assert_eq!(counts.code, 0);
+        assert_eq!(counts.comment, 2);
         assert_eq!(counts.blank, 1);
     }
 }

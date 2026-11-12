@@ -10,8 +10,7 @@ use crate::generated::{self, Generated};
 use crate::languages::{self, LineCounts};
 use crate::lexer::{self, Analysis, FunctionInfo, Halstead, Metrics, Smells};
 use crate::options::Options;
-use crate::pylexer;
-use crate::sources::Lang;
+use crate::sources::{Lang, Sources};
 
 pub const DEFAULT_IGNORE_DIRS: [&str; 15] = [
     ".git",
@@ -30,8 +29,6 @@ pub const DEFAULT_IGNORE_DIRS: [&str; 15] = [
     ".pytest_cache",
     ".tox",
 ];
-
-const TEST_DIR_NAMES: [&str; 3] = ["tests", "benches", "test"];
 
 /// Which part of a scan a progress report belongs to. They run one after the
 /// other, so a bar that only knows the file count sits at 100% while the
@@ -218,9 +215,51 @@ pub fn discover(root: &Path, options: &Options) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = Vec::new();
     walk(root, options, &mut found, &|path| {
         options.sources.accepts(path)
+            && !excluded_extension(path, &options.exclude_ext)
+            && within_size_cap(path, options.max_file_size_mb)
     });
     sort_paths(&mut found);
     found
+}
+
+/// Whether a path carries an extension the scan was told to skip.
+///
+/// An entry is matched against the end of the file name, so a plain extension
+/// (`lock`) and a dotted suffix (`min.js`) both work: the first skips
+/// `Cargo.lock`, the second skips `app.min.js`. The dot and the case are
+/// optional on either side.
+pub fn excluded_extension(path: &Path, skipped: &BTreeSet<String>) -> bool {
+    if skipped.is_empty() {
+        return false;
+    }
+    let Some(name) = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+    else {
+        return false;
+    };
+    if name.is_empty() {
+        return false;
+    }
+    skipped.iter().any(|entry| {
+        let entry = entry.trim().trim_start_matches('.').to_ascii_lowercase();
+        if entry.is_empty() {
+            return false;
+        }
+        name == entry || name.ends_with(&format!(".{entry}"))
+    })
+}
+/// Whether a file is larger than the cap allows, in megabytes. A cap of zero
+/// reads every file, which is the behaviour a scan always had.
+pub fn within_size_cap(path: &Path, megabytes: u64) -> bool {
+    if megabytes == 0 {
+        return true;
+    }
+    let Ok(meta) = std::fs::metadata(path) else {
+        return true;
+    };
+    let cap = megabytes.saturating_mul(1024 * 1024);
+    meta.len() <= cap
 }
 
 /// Collect every file the language table knows, for `--languages`.
@@ -235,6 +274,10 @@ pub fn discover_languages(root: &Path, options: &Options) -> Vec<PathBuf> {
 
 /// Depth-first walk that keeps the files `keep` accepts.
 fn walk(root: &Path, options: &Options, found: &mut Vec<PathBuf>, keep: &dyn Fn(&Path) -> bool) {
+    // Ignore rules apply to the components below the scan root only: a root
+    // that happens to sit inside a directory named "build" or "target" must
+    // still be scanned instead of being silently skipped as a whole.
+    let base = root.components().count();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let read = match std::fs::read_dir(&dir) {
@@ -243,7 +286,7 @@ fn walk(root: &Path, options: &Options, found: &mut Vec<PathBuf>, keep: &dyn Fn(
         };
         for entry in read.flatten() {
             let path = entry.path();
-            let skipped = path.components().any(|part| {
+            let skipped = path.components().skip(base).any(|part| {
                 options
                     .ignore_dirs
                     .contains(part.as_os_str().to_string_lossy().as_ref())
@@ -287,7 +330,7 @@ pub fn apply_gitignore(
     root: &Path,
     files: Vec<PathBuf>,
     enabled: bool,
-    sources: crate::sources::Sources,
+    sources: Sources,
 ) -> Vec<PathBuf> {
     // The listing only holds the files the walk kept, so the pathspec only has
     // to name the languages this run reads.
@@ -303,7 +346,7 @@ fn gitignore_filter(
     root: &Path,
     files: Vec<PathBuf>,
     enabled: bool,
-    patterns: &[&str],
+    patterns: &[String],
 ) -> Vec<PathBuf> {
     if !enabled || files.is_empty() {
         return files;
@@ -320,7 +363,7 @@ fn gitignore_filter(
         "--exclude-standard",
         "--",
     ];
-    args.extend_from_slice(patterns);
+    args.extend(patterns.iter().map(String::as_str));
     let listing = match run_git(&top, &args) {
         Some(listing) => listing,
         None => return files,
@@ -457,6 +500,12 @@ pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The same call as [`run_git`], exposed for the `probe` example: it prints
+/// what git answered instead of swallowing the failure.
+pub fn run_git_probe(dir: &Path) -> Option<String> {
+    run_git(dir, &["rev-parse", "--show-toplevel"])
 }
 
 /// A git command that never shows a console window of its own.
@@ -647,26 +696,44 @@ impl Entry {
 }
 
 /// Test-only path heuristics: a test directory, then the naming convention of
-/// the language. Rust writes \`tests.rs\` next to \`mod tests\`; Python writes
-/// \`test_\` in front and puts a \`conftest.py\` beside it.
+/// the language. Rust writes `tests.rs` next to `mod tests`; Python writes
+/// `test_` in front and puts a `conftest.py` beside it; the JVM spells a test
+/// file `FooTest`; the JS world keeps a `__tests__` folder and a `.spec.` stem.
 pub fn is_test_file(path: &Path, lang: Lang) -> bool {
-    for part in path.components() {
-        let name = part.as_os_str().to_string_lossy();
-        if TEST_DIR_NAMES.contains(&name.as_ref()) {
-            return true;
-        }
-    }
     let stem = path
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let stem = stem.to_lowercase();
-    let shared =
-        stem == "test" || stem == "tests" || stem.ends_with("_test") || stem.ends_with("_tests");
-    match lang {
-        Lang::Rust => shared,
-        Lang::Python => shared || stem.starts_with("test_") || stem == "conftest",
-    }
+    let lower = stem.to_lowercase();
+    // The convention every language shares: the file *is* a test.
+    let shared = lower == "test"
+        || lower == "tests"
+        || lower.ends_with("_test")
+        || lower.ends_with("_tests");
+    // What the language spells on top of that.
+    let named = match lang {
+        Lang::Python => stem == "conftest" || lower.starts_with("test_"),
+        Lang::Java | Lang::Kotlin | Lang::CSharp | Lang::Swift | Lang::Dart | Lang::Php => {
+            stem.ends_with("Test") || stem.ends_with("Tests")
+        }
+        Lang::Ruby => lower.ends_with("_spec"),
+        Lang::JavaScript | Lang::TypeScript | Lang::Svelte => {
+            lower.ends_with(".test") || lower.ends_with(".spec")
+        }
+        _ => false,
+    };
+    let directories: &[&str] = match lang {
+        Lang::JavaScript | Lang::TypeScript | Lang::Svelte => {
+            &["tests", "benches", "test", "__tests__", "spec"]
+        }
+        Lang::Ruby => &["tests", "benches", "test", "spec"],
+        _ => &["tests", "benches", "test"],
+    };
+    let in_test_dir = path.components().any(|part| {
+        let name = part.as_os_str().to_string_lossy();
+        directories.contains(&name.as_ref())
+    });
+    shared || named || in_test_dir
 }
 
 /// The language a discovered file is read with.
@@ -678,10 +745,9 @@ pub fn language_of(path: &Path) -> Lang {
 fn read_facts(path: &Path, root: &Path, read: ReadOptions) -> Option<FileFacts> {
     let text = read_text(path)?;
     let lang = language_of(path);
-    let analysis: Analysis = match lang {
-        Lang::Rust => lexer::analyze(&text),
-        Lang::Python => pylexer::analyze(&text),
-    };
+    // Each language reads with its own reader: Rust and Python follow their
+    // grammar, everything else shares the generic scanner.
+    let analysis: Analysis = lang.analyze(&text);
     let generated_kind = generated::detect(&text, &analysis, read.min_gen_line_length);
 
     let mut all = Counts::default();
@@ -898,6 +964,12 @@ pub struct Totals {
     pub cognitive: u32,
     pub unsafe_kw: u32,
     pub test_fns: u32,
+    /// Test functions across the whole tree - business scope plus the files
+    /// the scan excluded as test-only. The cards describe the repository, and
+    /// a project whose tests live in `*_test.go` files would otherwise read
+    /// as having none, which is exactly the number the reader is asking
+    /// about. The text report keeps the business-only column.
+    pub test_fns_all: u32,
     pub smells: Smells,
     /// Sum of the per-file Halstead volumes. Volume is additive enough for a
     /// project figure; the distinct-token counts behind it are not.
@@ -951,6 +1023,14 @@ pub fn totals(entries: &[&Entry]) -> Totals {
         total.volume += stats.halstead.volume();
         total.unsafe_kw += stats.unsafe_kw;
         total.test_fns += stats.test_fns;
+        // Every file analysed (business or test-only) carries its
+        // `metrics_all.test_fns`; a test file's own Stats zero the business
+        // column, so the all-tree count reads it from the facts side.
+        total.test_fns_all += if stats.forced_test {
+            entry.facts.metrics_all.test_fns
+        } else {
+            stats.test_fns
+        };
         total.smells.unwrap += stats.smells.unwrap;
         total.smells.expect += stats.smells.expect;
         total.smells.panic += stats.smells.panic;
