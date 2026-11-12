@@ -186,7 +186,13 @@ mod tests {
 
     /// Scan a throwaway tree twice so the report has a number to show.
     fn report() -> (Report, PathBuf) {
-        let root = std::env::temp_dir().join(format!("rustloc-badge-{}", std::process::id()));
+        // Thread name in the path: two badge tests running in parallel must
+        // not share one directory, or one's cleanup deletes the other's tree.
+        let root = std::env::temp_dir().join(format!(
+            "rustloc-badge-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("t").replace("::", "-")
+        ));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("main.rs"), SOURCE).unwrap();

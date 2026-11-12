@@ -1,0 +1,893 @@
+:root {
+  color-scheme: dark;
+  --bg: #0e1014;
+  --surface: #15181e;
+  --surface-2: #1c2029;
+  --surface-3: #232834;
+  --border: #262c38;
+  --border-strong: #333b4a;
+  --text: #e4e7ee;
+  --muted: #868fa0;
+  --accent: #4f8cff;
+  --accent-soft: rgba(79, 140, 255, 0.14);
+  --ok: #3fb96f;
+  --bad: #e0564f;
+  --bar: #3d6fd6;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(79, 140, 255, 0.35);
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 400px at 50% -200px, rgba(79, 140, 255, 0.06), transparent),
+    var(--bg);
+  color: var(--text);
+  font: 13px/1.6 "Cascadia Code", "JetBrains Mono", Consolas, "Sarasa Mono SC",
+    ui-monospace, "Microsoft YaHei", monospace;
+  font-variant-ligatures: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 5px;
+  border: 2px solid var(--bg);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.shell {
+  max-width: 1560px;
+  margin: 0 auto;
+  padding: 0 24px 48px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px 0 12px;
+  flex-wrap: wrap;
+}
+
+.header-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 200px;
+}
+
+.header-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* A small terminal-prompt glyph marks the tool's code-first identity. */
+.header-title::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: linear-gradient(135deg, var(--accent), #7aa8ff);
+  box-shadow: 0 0 12px rgba(79, 140, 255, 0.5);
+}
+
+.header-subtitle {
+  color: var(--muted);
+  font-size: 12px;
+  padding-left: 20px;
+}
+
+.header-subtitle:empty {
+  display: none;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.panel-head .panel-title {
+  margin: 0;
+}
+
+.panel-head .button {
+  flex: 0 0 auto;
+}
+
+.stale-roots {
+  margin-top: 10px;
+}
+
+.stale-caption {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.button {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.button:hover {
+  border-color: var(--accent);
+  background: var(--surface-3);
+}
+
+.button:active {
+  transform: translateY(1px);
+}
+
+.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.button.primary:hover {
+  background: #619aff;
+  border-color: #619aff;
+}
+
+.button.small {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  transform: none;
+}
+
+.chip {
+  display: inline-block;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  text-decoration: none;
+  padding: 3px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.chip:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.banner {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 6px 0;
+}
+
+.banner-error {
+  border-color: rgba(224, 86, 79, 0.5);
+  background: rgba(224, 86, 79, 0.08);
+  color: #ffb4b0;
+}
+
+.banner-track {
+  height: 6px;
+  background: var(--surface-2);
+  border-radius: 3px;
+  margin-top: 6px;
+  overflow: hidden;
+}
+
+.banner-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #7aa8ff);
+  border-radius: 3px;
+  transition: width 0.2s;
+}
+
+.banner-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.banner-path {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Full-page veil while a scan or blame runs: dimmed backdrop, centered card. */
+.progress-veil {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 6, 10, 0.6);
+  backdrop-filter: blur(2px);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.progress-card {
+  width: min(560px, 80vw);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 18px 20px;
+  box-shadow: var(--shadow);
+}
+
+.progress-card .banner-track {
+  margin-top: 10px;
+  height: 8px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin: 10px 0;
+}
+
+.tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 8px 16px;
+  cursor: pointer;
+  font: inherit;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.content {
+  min-height: 300px;
+}
+
+.view-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 80px 0;
+}
+
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.kpi {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 40%),
+    var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.kpi:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+/* Toned KPI cards: a thin left edge in the family hue, so test / smell /
+   effort cards read as one group without a legend. */
+.kpi.tone-ok {
+  border-left: 3px solid var(--ok);
+}
+
+.kpi.tone-warn {
+  border-left: 3px solid var(--bad);
+}
+
+.kpi.tone-info {
+  border-left: 3px solid var(--accent);
+}
+
+.kpi-delta {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.kpi-head {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  min-width: 0;
+}
+
+.kpi-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.kpi-value {
+  font-size: 21px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.kpi-hint {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+.panel.span-all {
+  grid-column: 1 / -1;
+}
+
+.panel-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* The card grid under the language chart: two cards per row. */
+.overview-layout {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.overview-layout .cards-2col {
+  flex: 0 0 310px;
+  align-self: flex-start;
+}
+
+.view-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.kpi-strip.cards-2col {
+  grid-template-columns: repeat(2, 1fr);
+  margin: 0;
+  align-content: start;
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 60px),
+    var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin: 12px 0;
+}
+
+.panel-title {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 12px;
+}
+
+.bars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.bar-row:hover {
+  background: var(--accent-soft);
+}
+
+/* The label names the row on the left half; the bar and its count share the
+   other half, so long paths and short ones line up column for column. */
+.bar-label {
+  flex: 0 0 calc(50% - 5px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.bar-rest {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bar-track {
+  flex: 1;
+  min-width: 0;
+}
+
+.bar-fill {
+  fill: var(--bar);
+  rx: 3px;
+}
+
+.bar-row:hover .bar-fill {
+  fill: var(--accent);
+}
+
+.bar-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 48px;
+}
+
+.bar-share {
+  color: var(--muted);
+  opacity: 0.75;
+}
+
+/* The stacked line-composition bar and its legend, the GUI overview's strip
+   drawn with DOM boxes instead of GDI rectangles. */
+.comp-bar {
+  display: flex;
+  height: 18px;
+  border-radius: 6px;
+  overflow: hidden;
+  gap: 1px;
+  background: var(--surface-2);
+}
+
+.comp-seg {
+  min-width: 1px;
+  transition: filter 0.15s;
+}
+
+.comp-bar:hover .comp-seg {
+  filter: brightness(0.85);
+}
+
+.comp-bar .comp-seg:hover {
+  filter: brightness(1.15);
+}
+
+.comp-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.comp-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: opacity 0.15s;
+}
+
+.comp-item.dim {
+  opacity: 0.45;
+}
+
+.comp-item b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.comp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.comp-share {
+  opacity: 0.75;
+}
+
+.spark-bar {
+  fill: var(--bar);
+  rx: 1px;
+}
+
+/* The newest scan's column wears the accent so the trend reads at a glance. */
+.spark-bar.spark-latest {
+  fill: var(--accent);
+}
+
+.spark {
+  width: 100%;
+  height: 90px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+}
+
+.metric-grid span {
+  color: var(--muted);
+}
+
+.metric-grid b {
+  font-variant-numeric: tabular-nums;
+}
+
+.delta-up {
+  color: var(--ok);
+}
+
+.delta-down {
+  color: var(--bad);
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border-strong);
+  padding: 8px 10px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
+}
+
+.data-table th:hover {
+  color: var(--text);
+}
+
+.sort-mark {
+  color: var(--accent);
+}
+
+.data-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.data-table tbody tr,
+.data-table tr:not(:first-child) {
+  transition: background 0.1s;
+}
+
+.data-table tr:hover td {
+  background: rgba(79, 140, 255, 0.05);
+}
+
+.data-table th.num,
+.data-table td.num {
+  text-align: right;
+}
+
+.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 20px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.toolbar .text-input {
+  flex: 1;
+  min-width: 200px;
+}
+
+.text-input,
+.select {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  padding: 6px 10px;
+  font: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.text-input:hover,
+.select:hover {
+  border-color: var(--border-strong);
+}
+
+.text-input:focus,
+.select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.text-input::placeholder {
+  color: var(--muted);
+}
+
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+}
+
+/* The language grid: one fixed column per row so every box lines up. */
+.checks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 8px 16px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.check input {
+  accent-color: var(--accent);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.roots {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.root-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 10px;
+}
+
+.root-path {
+  font-family: inherit;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 8px 14px;
+  align-items: center;
+}
+
+.field-grid label {
+  color: var(--muted);
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  margin: 16px 0;
+}
+
+/* The download chip wears the same shape as the scan button, a different
+   hue so the two never read as one pair. */
+.button.download {
+  background: var(--accent-2, #2f9e77);
+  border-color: var(--accent-2, #2f9e77);
+  color: #fff;
+}
+
+.button.download:hover {
+  background: #38b78b;
+  border-color: #38b78b;
+}
+
+.modal-veil {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 6, 10, 0.6);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  width: min(560px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  gap: 10px;
+  box-shadow: var(--shadow);
+}
+
+.modal-title {
+  font-weight: 700;
+}
+
+.picker-drives {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.picker-bar {
+  display: flex;
+  gap: 8px;
+}
+
+.picker-bar .text-input {
+  flex: 1;
+}
+
+.picker-list {
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  min-height: 200px;
+}
+
+.picker-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  transition: background 0.1s;
+}
+
+.picker-row:hover {
+  background: var(--surface-3);
+}
+
+.picker-error {
+  color: var(--bad);
+  font-size: 12px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The export dialog's format buttons sit in a row that wraps. */
+.dialog-formats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.dialog-formats .chip {
+  text-decoration: none;
+}
+
+/* Narrow screens: the KPI sidebar stops being a sidebar and stacks above. */
+@media (max-width: 900px) {
+  .overview-layout {
+    flex-direction: column;
+  }
+
+  .overview-layout .cards-2col {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

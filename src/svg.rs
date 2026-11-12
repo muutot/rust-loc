@@ -40,7 +40,7 @@ pub fn render(report: &Report, options: &Options, cwd: &Path) -> String {
         "start",
         &format!("rust-loc {VERSION}"),
     );
-    canvas.text(WIDTH - PAD, y, 14, MUTED, "400", "end", heading);
+    canvas.text(WIDTH - PAD, y, 14, MUTED, "400", "end", &heading);
     y += 24;
     let roots: Vec<String> = report
         .roots

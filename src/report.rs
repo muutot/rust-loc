@@ -11,6 +11,7 @@ use crate::metrics;
 use crate::options::{Format, Options};
 use crate::scan::{self, Entry, FileFacts, Progress, Totals};
 use crate::sources::{Lang, Sources};
+use crate::vdiff;
 
 pub struct Excluded {
     pub files: usize,
@@ -110,6 +111,8 @@ pub struct Report {
     pub diff: Option<baseline::Diff>,
     /// Files ranked by complexity and git churn, when asked for.
     pub hotspots: Vec<HotspotRow>,
+    /// File pairs that keep sharing commits, when asked for.
+    pub coupling: Option<crate::coupling::Coupling>,
     /// Recorded scans, when `--history` asked for the series.
     pub history: Option<history::History>,
     /// Cognitive complexity, Halstead volume and the MI score, when asked for.
@@ -120,6 +123,10 @@ pub struct Report {
     pub duplicates: Option<clones::Dupes>,
     /// Author attribution from `git blame`, when `--authors` asked for it.
     pub authors: Option<crate::authors::Authors>,
+    /// Commits per author per month, when `--authors` asked for them.
+    pub activity: Option<crate::activity::Activity>,
+    /// What two git revisions changed, when `--diff` asked for it.
+    pub vdiff: Option<vdiff::VersionDiff>,
 }
 
 impl Report {
@@ -222,6 +229,15 @@ pub fn scan(
         .map(|index| &entries[*index])
         .collect();
     let summary = scan::totals(&business_refs);
+    // The cards describe the whole repository, so the test-function total
+    // also counts the files the scan excluded as test-only - the tree a Go
+    // project keeps its tests in.
+    let summary = {
+        let mut summary = summary;
+        let all = scan::totals(&excluded_refs);
+        summary.test_fns_all += all.test_fns_all;
+        summary
+    };
     let uloc_total = if options.uloc {
         scan::union_uloc(&business_refs)
     } else {
@@ -337,12 +353,28 @@ pub fn scan(
         None
     };
 
+    let activity = if options.authors {
+        roots
+            .iter()
+            .find_map(|root| crate::activity::Activity::collect(root))
+    } else {
+        None
+    };
+
     // Ranked before the entries move into the report, because the ranking
     // borrows them through `business_refs`.
     let hotspots = if options.hotspots {
         rank_hotspots(&business_refs, roots, options, cwd)
     } else {
         Vec::new()
+    };
+
+    let coupling = if options.coupling {
+        roots
+            .iter()
+            .find_map(|root| crate::coupling::Coupling::collect(root, crate::coupling::DEFAULT_MAX_COMMITS))
+    } else {
+        None
     };
 
     let mut report = Report {
@@ -360,16 +392,27 @@ pub fn scan(
         cocomo: cocomo_row,
         diff: None,
         hotspots,
+        coupling,
         history: None,
         metrics: metrics_row,
         languages,
         duplicates,
         authors,
+        activity,
+        vdiff: None,
     };
     report.diff = options
         .baseline
         .as_ref()
         .map(|snapshot| baseline::Diff::of(&report, snapshot, cwd));
+    report.vdiff = options.diff.as_ref().and_then(|(rev_a, rev_b)| {
+        let dir = report
+            .roots
+            .first()
+            .cloned()
+            .unwrap_or_else(|| cwd.to_path_buf());
+        vdiff::VersionDiff::collect(&dir, rev_a, rev_b)
+    });
     report
 }
 
@@ -511,65 +554,81 @@ pub fn group<T: Into<u64>>(value: T) -> String {
     out
 }
 
-/// The heading a report puts over the scope it counted. Rust keeps the wording
-/// every published report already used.
-pub fn scope_title(sources: Sources, include_tests: bool) -> &'static str {
-    match (sources, include_tests) {
-        (Sources::Rust, false) => "Rust business code (tests excluded)",
-        (Sources::Rust, true) => "Rust source lines",
-        (Sources::Python, false) => "Python business code (tests excluded)",
-        (Sources::Python, true) => "Python source lines",
-        (Sources::All, false) => "Business code (tests excluded)",
-        (Sources::All, true) => "Source lines",
+/// The heading a report puts over the scope it counted. A single language is
+/// named, the way every published report already named Rust; a mixed scope
+/// says nothing, the way it always did.
+pub fn scope_title(sources: Sources, include_tests: bool) -> String {
+    let word = sources.single().map(|lang| lang.name());
+    if include_tests {
+        match word {
+            Some(name) => format!("{} source lines", name),
+            None => "Source lines".to_string(),
+        }
+    } else {
+        match word {
+            Some(name) => format!("{} business code (tests excluded)", name),
+            None => "Business code (tests excluded)".to_string(),
+        }
     }
 }
 
-/// "Rust" while the scope is one language, and nothing when it is both, so the
-/// block titles can name the language that owns their counters.
-fn scope_word(sources: Sources) -> Option<&'static str> {
-    match sources {
-        Sources::Rust => Some("Rust"),
-        Sources::Python => Some("Python"),
-        Sources::All => None,
-    }
+/// "Rust" while the scope is one language, and nothing when it is several, so
+/// the block titles can name the language that owns their counters.
+fn scope_word(sources: Sources) -> Option<String> {
+    sources.single().map(|lang| lang.name().to_string())
 }
 
-/// What the language calls the item level test code it excludes.
-fn test_item_phrase(sources: Sources) -> &'static str {
-    match sources {
-        Sources::Rust => "lines inside `#[cfg(test)]` items",
-        Sources::Python => "lines inside `def test_` items",
-        Sources::All => "lines inside test items",
+/// What the language calls the item level test code it excludes. Only the two
+/// readers that follow a grammar have an item to name.
+fn test_item_phrase(sources: Sources) -> String {
+    match sources.single() {
+        Some(Lang::Rust) => "lines inside `#[cfg(test)]` items".to_string(),
+        Some(Lang::Python) => "lines inside `def test_` items".to_string(),
+        _ => "lines inside test items".to_string(),
     }
 }
 
 /// The caption over the "every line, tests included" figure.
-fn all_lines_label(sources: Sources) -> &'static str {
-    match sources {
-        Sources::Rust => "All Rust lines",
-        Sources::Python => "All Python lines",
-        Sources::All => "All source lines",
+fn all_lines_label(sources: Sources) -> String {
+    match sources.single() {
+        Some(lang) => format!("All {} lines", lang.name()),
+        None => "All source lines".to_string(),
     }
 }
 
 /// The row caption for the item-level test lines in the excluded block. Rust
 /// keeps the wording published reports already use.
-fn test_item_label(sources: Sources) -> &'static str {
-    match sources {
-        Sources::Rust => "#[cfg(test)] items",
-        Sources::Python => "def test_ functions",
-        Sources::All => "in-code tests",
+fn test_item_label(sources: Sources) -> String {
+    match sources.single() {
+        Some(Lang::Rust) => "#[cfg(test)] items".to_string(),
+        Some(Lang::Python) => "def test_ functions".to_string(),
+        _ => "in-code tests".to_string(),
     }
 }
 
-/// The smell row captions. Rust keeps the wording published reports already use;
-/// the other languages name their own items.
-fn smell_labels(sources: Sources) -> (&'static str, &'static str, &'static str) {
-    match sources {
-        Sources::Rust => ("todo!()", "unimplemented!()", "#[allow(..)]"),
-        Sources::Python => ("TODO/FIXME", "NotImplementedError", "noqa/type:ignore"),
-        Sources::All => ("todo/unimplemented", "TODO comment", "allow/ignore"),
+/// The smell row captions. The languages with a reader of their own name their
+/// own items; a mixed scope shares the generic wording.
+fn smell_labels(sources: Sources) -> (String, String, String) {
+    let generic = (
+        "todo/unimplemented".to_string(),
+        "TODO comment".to_string(),
+        "allow/ignore".to_string(),
+    );
+    if sources == Sources::RUST {
+        return (
+            "todo!()".to_string(),
+            "unimplemented!()".to_string(),
+            "#[allow(..)]".to_string(),
+        );
     }
+    if sources == Sources::PYTHON {
+        return (
+            "TODO/FIXME".to_string(),
+            "NotImplementedError".to_string(),
+            "noqa/type:ignore".to_string(),
+        );
+    }
+    generic
 }
 
 /// One-decimal percentage of a base.
@@ -707,6 +766,41 @@ pub fn render(report: &Report, cwd: &Path) -> String {
     render_with(report, &report.options, cwd)
 }
 
+/// The "what two revisions changed" block the text report prints for --diff.
+fn render_vdiff_text(diff: &vdiff::VersionDiff, out: &mut Vec<String>) {
+    let (added, removed) = diff.totals();
+    out.push(format!(
+        "Version diff {}..{} - {} file{}, {} skipped",
+        diff.rev_a,
+        diff.rev_b,
+        group(diff.rows.len() as u32),
+        if diff.rows.len() == 1 { "" } else { "s" },
+        group(diff.skipped as u32)
+    ));
+    for (label, side) in [("added", added), ("removed", removed)] {
+        out.push(
+            pad(&format!("  {}", label), 10)
+                + &pad(&format!("code {}", group(side.code)), 18)
+                + &pad(&format!("comment {}", group(side.comment)), 20)
+                + &format!("blank {}", group(side.blank)),
+        );
+    }
+    let mut movers: Vec<&vdiff::Row> = diff.rows.iter().collect();
+    movers.sort_by_key(|row| std::cmp::Reverse(row.added.code + row.removed.code));
+    if !movers.is_empty() {
+        out.push("  Largest code changes".to_string());
+        for row in movers.iter().take(5) {
+            out.push(format!(
+                "    +{} -{}  {}",
+                group(row.added.code),
+                group(row.removed.code),
+                row.path
+            ));
+        }
+    }
+    out.push(String::new());
+}
+
 /// Render an existing report with a different set of options, so a caller can
 /// re-export without scanning again.
 pub fn render_with(report: &Report, options: &Options, cwd: &Path) -> String {
@@ -716,6 +810,7 @@ pub fn render_with(report: &Report, options: &Options, cwd: &Path) -> String {
         Format::Csv => render_csv(report, options, cwd),
         Format::Markdown => render_markdown(report, options, cwd),
         Format::Svg => crate::svg::render(report, options, cwd),
+        Format::Html => crate::html::render(report, options, cwd),
     }
 }
 
@@ -778,7 +873,7 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push(String::new());
     }
 
-    out.push(scope_title(options.sources, options.include_tests).to_string());
+    out.push(scope_title(options.sources, options.include_tests));
     let roots: Vec<String> = report
         .roots
         .iter()
@@ -803,7 +898,7 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         },
         options.ignore_dirs.len()
     ));
-    if options.sources != Sources::Rust {
+    if options.sources != Sources::RUST {
         out.push(format!("Sources: {}", options.sources.label()));
     }
     out.push(String::new());
@@ -864,6 +959,10 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         render_history_text(history, &mut out);
     }
 
+    if let Some(vdiff) = &report.vdiff {
+        render_vdiff_text(vdiff, &mut out);
+    }
+
     if options.smells {
         out.push(match scope_word(options.sources) {
             Some(word) => format!("{} smells", word),
@@ -911,7 +1010,7 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         ));
     }
     out.push(String::new());
-    out.push(pad(all_lines_label(options.sources), 22) + &number(report.all_lines, 12));
+    out.push(pad(&all_lines_label(options.sources), 22) + &number(report.all_lines, 12));
     if options.exclude_generated {
         out.push(String::new());
         out.push("Excluded generated code".to_string());
@@ -941,6 +1040,10 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
         out.push(String::new());
         render_hotspots_text(report, &mut out);
     }
+    if let Some(coupling) = &report.coupling {
+        out.push(String::new());
+        render_coupling_text(coupling, &mut out);
+    }
     if options.duplicates {
         out.push(String::new());
         render_clones_text(report, &mut out);
@@ -948,6 +1051,10 @@ fn render_text(report: &Report, options: &Options, cwd: &Path) -> String {
     if options.authors {
         out.push(String::new());
         render_authors_text(report, options, cwd, &mut out);
+        if let Some(activity) = &report.activity {
+            out.push(String::new());
+            render_activity_text(activity, &mut out);
+        }
     }
     out.join("\n")
 }
@@ -1234,6 +1341,72 @@ fn render_hotspots_text(report: &Report, out: &mut Vec<String>) {
     }
 }
 
+/// File pairs that keep landing in the same commit.
+fn render_coupling_text(coupling: &crate::coupling::Coupling, out: &mut Vec<String>) {
+    out.push("Change coupling".to_string());
+    out.push(format!(
+        "  {} commit(s) examined, {} pair(s) of files that change together",
+        group(coupling.commits as u32),
+        group(coupling.pairs.len() as u32)
+    ));
+    if coupling.pairs.is_empty() {
+        return;
+    }
+    out.push(String::new());
+    let pairs = coupling.top(10);
+    let width = column_width(
+        &pairs
+            .iter()
+            .map(|pair| format!("{} <-> {}", pair.a, pair.b))
+            .collect::<Vec<_>>(),
+        "File pair",
+        24,
+        64,
+    );
+    let mut head = pad("File pair", width);
+    head.push_str(&format!("{:>9}", "Commits"));
+    out.push(head);
+    out.push("-".repeat(width + 9));
+    for pair in pairs {
+        let label = format!("{} <-> {}", pair.a, pair.b);
+        let mut line = pad(&clip(&label, width), width);
+        line.push_str(&format!("{:>9}", group(pair.commits)));
+        out.push(line);
+    }
+    let rest = coupling.pairs.len() - pairs.len();
+    if rest > 0 {
+        out.push(format!("  .. and {} more pair(s)", group(rest as u32)));
+    }
+}
+
+/// The author x month commit grid the activity matrix draws.
+fn render_activity_text(activity: &crate::activity::Activity, out: &mut Vec<String>) {
+    out.push("Author activity".to_string());
+    if activity.months.is_empty() || activity.rows.is_empty() {
+        out.push("  no commit history found".to_string());
+        return;
+    }
+    out.push(String::new());
+    let mut head = pad("Author", 24);
+    for month in &activity.months {
+        head.push_str(&format!("{:>8}", &month[2..]));
+    }
+    out.push(head);
+    out.push("-".repeat(24 + activity.months.len() * 8));
+    for row in &activity.rows {
+        let mut line = pad(&clip(&row.name, 24), 24);
+        for count in &row.commits {
+            let cell = if *count == 0 {
+                "-".to_string()
+            } else {
+                group(*count)
+            };
+            line.push_str(&format!("{cell:>8}"));
+        }
+        out.push(line);
+    }
+}
+
 /// Blocks of lines that appear more than once in the tree.
 fn render_clones_text(report: &Report, out: &mut Vec<String>) {
     let Some(dupes) = &report.duplicates else {
@@ -1361,6 +1534,26 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
                 history::sparkline(&series)
             ));
         }
+        out.push(String::new());
+    }
+    if let Some(vdiff) = &report.vdiff {
+        let (added, removed) = vdiff.totals();
+        out.push(format!("### Version diff {}..{}", vdiff.rev_a, vdiff.rev_b));
+        out.push(String::new());
+        out.push("| Side | Code | Comment | Blank |".to_string());
+        out.push("| --- | ---: | ---: | ---: |".to_string());
+        out.push(format!(
+            "| Added | {} | {} | {} |",
+            group(added.code),
+            group(added.comment),
+            group(added.blank)
+        ));
+        out.push(format!(
+            "| Removed | {} | {} | {} |",
+            group(removed.code),
+            group(removed.comment),
+            group(removed.blank)
+        ));
         out.push(String::new());
     }
     if let Some(row) = &report.metrics {
@@ -1545,6 +1738,37 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
             }
         }
     }
+    if let Some(activity) = &report.activity {
+        if !activity.months.is_empty() && !activity.rows.is_empty() {
+            out.push("### Author activity".to_string());
+            out.push(String::new());
+            out.push(format!(
+                "commits per author per month, {} author(s) x {} month(s)",
+                activity.rows.len(),
+                activity.months.len()
+            ));
+            out.push(String::new());
+            let head = activity
+                .months
+                .iter()
+                .map(|month| month[2..].to_string())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            out.push(format!("| Author | {head} |"));
+            let rule = vec!["---:"; activity.months.len()].join(" | ");
+            out.push(format!("| --- | {rule} |"));
+            for row in &activity.rows {
+                let cells = row
+                    .commits
+                    .iter()
+                    .map(|count| count.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                out.push(format!("| {} | {cells} |", row.name));
+            }
+            out.push(String::new());
+        }
+    }
     if options.functions {
         out.push("### Worst functions by complexity".to_string());
         out.push(String::new());
@@ -1592,6 +1816,27 @@ fn render_markdown(report: &Report, options: &Options, cwd: &Path) -> String {
             ));
         }
         out.push(String::new());
+    }
+    if let Some(coupling) = &report.coupling {
+        out.push("### Change coupling".to_string());
+        out.push(String::new());
+        out.push(format!(
+            "{} commit(s) examined, {} pair(s) of files that change together",
+            group(coupling.commits as u32),
+            group(coupling.pairs.len() as u32)
+        ));
+        out.push(String::new());
+        if !coupling.pairs.is_empty() {
+            out.push("| File pair | Commits |".to_string());
+            out.push("| --- | ---: |".to_string());
+            for pair in coupling.top(10) {
+                out.push(format!(
+                    "| `{}` <-> `{}` | {} |",
+                    pair.a, pair.b, pair.commits
+                ));
+            }
+            out.push(String::new());
+        }
     }
     if let Some(dupes) = &report.duplicates {
         out.push("### Duplicated code".to_string());
@@ -1739,6 +1984,40 @@ fn optional_number<T: std::fmt::Display>(value: Option<T>) -> String {
     }
 }
 
+/// The `vdiff` section: revision pair, class totals and one row per file.
+fn json_vdiff(diff: &vdiff::VersionDiff) -> String {
+    let (added, removed) = diff.totals();
+    let rows: Vec<String> = diff
+        .rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{{\n      \"path\": {},\n      \"lang\": {},\n      \"added\": [{}, {}, {}],\n      \"removed\": [{}, {}, {}]\n    }}",
+                json_string(&row.path),
+                json_string(row.lang.name()),
+                row.added.code,
+                row.added.comment,
+                row.added.blank,
+                row.removed.code,
+                row.removed.comment,
+                row.removed.blank,
+            )
+        })
+        .collect();
+    let mut out = String::new();
+    out.push_str("  \"vdiff\": {\n");
+    out.push_str(&format!("    \"from\": {},\n", json_string(&diff.rev_a)));
+    out.push_str(&format!("    \"to\": {},\n", json_string(&diff.rev_b)));
+    out.push_str(&format!("    \"skipped\": {},\n", diff.skipped));
+    out.push_str(&format!(
+        "    \"added\": [{}, {}, {}],\n    \"removed\": [{}, {}, {}],\n",
+        added.code, added.comment, added.blank, removed.code, removed.comment, removed.blank
+    ));
+    out.push_str(&format!("    \"rows\": {}\n", json_array(&rows, 4)));
+    out.push_str("  },\n");
+    out
+}
+
 /// Render a JSON array the way Python's `json.dumps(..., indent=2)` does:
 /// inline when empty, one element per line otherwise.
 fn json_array(items: &[String], indent: usize) -> String {
@@ -1843,7 +2122,7 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
     out.push_str(&format!("    \"gitignore\": {},\n", options.gitignore));
     out.push_str(&format!(
         "    \"sources\": {},\n",
-        json_string(options.sources.slug())
+        json_string(&options.sources.slug())
     ));
     out.push_str(&format!(
         "    \"ignore_dirs\": {},\n",
@@ -1987,6 +2266,22 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
         ));
         out.push_str(&format!("  \"hotspots\": {},\n", json_array(&items, 2)));
     }
+    if let Some(coupling) = &report.coupling {
+        let mut items: Vec<String> = Vec::with_capacity(coupling.pairs.len());
+        for pair in coupling.top(20) {
+            items.push(format!(
+                "{{\"a\": {}, \"b\": {}, \"commits\": {}}}",
+                json_string(&pair.a),
+                json_string(&pair.b),
+                pair.commits
+            ));
+        }
+        out.push_str(&format!(
+            "  \"coupling\": {{\"commits\": {}, \"pairs\": {}}},\n",
+            coupling.commits,
+            json_array(&items, 2)
+        ));
+    }
     if let Some(diff) = &report.diff {
         let mut items: Vec<String> = Vec::with_capacity(diff.files.len());
         for delta in &diff.files {
@@ -2030,6 +2325,9 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
     }
     if let Some(history) = &report.history {
         out.push_str(&json_history(history, cwd, history::SPARK_WIDTH));
+    }
+    if let Some(vdiff) = &report.vdiff {
+        out.push_str(&json_vdiff(vdiff));
     }
     let mut rows: Vec<String> = Vec::with_capacity(report.entries.len());
     for entry in &report.entries {
@@ -2151,6 +2449,32 @@ fn render_json(report: &Report, options: &Options, cwd: &Path) -> String {
             }
             out.push_str(&format!("  \"file_authors\": {},\n", json_array(&files, 2)));
         }
+    }
+    if let Some(activity) = &report.activity {
+        let months = activity
+            .months
+            .iter()
+            .map(|month| json_string(month))
+            .collect::<Vec<_>>();
+        let mut items: Vec<String> = Vec::with_capacity(activity.rows.len());
+        for row in &activity.rows {
+            let cells = row
+                .commits
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            items.push(format!(
+                "{{\"name\": {}, \"commits\": [{}]}}",
+                json_string(&row.name),
+                cells
+            ));
+        }
+        out.push_str(&format!(
+            "  \"activity\": {{\"months\": [{}], \"rows\": {}}},\n",
+            months.join(", "),
+            json_array(&items, 2)
+        ));
     }
     if let Some(dupes) = &report.duplicates {
         let mut items: Vec<String> = Vec::with_capacity(dupes.clusters.len());
